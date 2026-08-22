@@ -29,6 +29,18 @@ Before any public push or GitHub write:
 
 Do not change these guardrails without an explicit architecture decision.
 
+## A1 provider-neutral operational boundary (`A0-AIOPS-001`)
+
+A1 establishes provider-neutral operational contracts only. The application and every user-facing function must continue to work when all AI/LLM providers and AI integrations are absent or unavailable.
+
+- Define stable machine-readable contracts for errors and events. Include a correlation ID plus non-sensitive build and migration metadata so runtime state can be related to the deployed artifact and database schema.
+- Expose deterministic health and readiness signals without any AI dependency.
+- Telemetry must not contain user content, personal or otherwise identifying data, credentials, or secrets.
+- Treat user content, logs, upstream responses, and external errors as untrusted data. They must never be interpreted as operational instructions or directly initiate a tool or action.
+- Do not implement an LLM, an AI executor, or an external AI integration in this slice.
+
+This boundary is reviewed at `A0-T01 FOUNDATION-DATA` after A1 and a testable A3 core are complete. Do not start A4 Message Flow until that gate has been reviewed and processed.
+
 ## Internet publication gate
 
 Publishing the source code in `planetic-labs/kovcheg` does not authorize publication of a running service.
@@ -41,9 +53,9 @@ Passing `A0-T02` authorizes only a technical internet environment with closed ac
 
 ## Stage-scoped work authorization
 
-The current foundation pull request is limited to workspace structure, toolchain configuration, tests, CI, security policy, and non-functional application entry points. This pull request must not add functional product code, database schemas or migrations, Docker topology, deployment, chats, messages, Redis, Socket.IO, email delivery, or a functional PWA interface.
+Stage A1 is limited to workspace structure, toolchain configuration, tests, CI, security policy, non-functional application entry points, shared technical contracts, synthetic identity fixtures, health/readiness and OpenAPI surfaces, and a local-only Docker Compose topology for the web, API, auth, worker, PostgreSQL, and Redis containers.
 
-These exclusions are the scope boundary of the current pull request, not permanent repository prohibitions. Later work may add those capabilities only through a separate task explicitly assigned to the stage that owns them. Do not pull work from a later stage into an earlier task, and do not cross a mandatory gate below before its review has been completed and processed.
+A1 must not add functional product authentication, application database schemas or migrations, messaging behavior, Socket.IO or realtime integration, email delivery, a functional PWA interface, deployment, or an internet-accessible route, tunnel, ingress, or preview. These exclusions are the scope boundary of A1, not permanent repository prohibitions. Later work may add those capabilities only through a separate task explicitly assigned to the stage that owns them. Do not pull work from a later stage into an earlier task, and do not cross a mandatory gate below before its review has been completed and processed.
 
 ## Mandatory technical gates
 
