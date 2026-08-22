@@ -1,0 +1,29 @@
+{
+  "name": "@kovcheg/workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kovcheg Alpha-0 monorepo foundation",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": "24.19.0"
+  },
+  "scripts": {
+    "build": "corepack pnpm --recursive --if-present run build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "prettier --check . && eslint . --max-warnings=0",
+    "test": "corepack pnpm --recursive --if-present run test",
+    "typecheck": "corepack pnpm --recursive --if-present run typecheck"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.9.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11"
+  }
+}
