@@ -53,9 +53,9 @@ Passing `A0-T02` authorizes only a technical internet environment with closed ac
 
 ## Stage-scoped work authorization
 
-The current foundation pull request is limited to workspace structure, toolchain configuration, tests, CI, security policy, and non-functional application entry points. This pull request must not add functional product code, database schemas or migrations, Docker topology, deployment, chats, messages, Redis, Socket.IO, email delivery, or a functional PWA interface.
+Stage A1 is limited to workspace structure, toolchain configuration, tests, CI, security policy, non-functional application entry points, shared technical contracts, synthetic identity fixtures, health/readiness and OpenAPI surfaces, and a local-only Docker Compose topology for the web, API, auth, worker, PostgreSQL, and Redis containers.
 
-These exclusions are the scope boundary of the current pull request, not permanent repository prohibitions. Later work may add those capabilities only through a separate task explicitly assigned to the stage that owns them. Do not pull work from a later stage into an earlier task, and do not cross a mandatory gate below before its review has been completed and processed.
+A1 must not add functional product authentication, application database schemas or migrations, messaging behavior, Socket.IO or realtime integration, email delivery, a functional PWA interface, deployment, or an internet-accessible route, tunnel, ingress, or preview. These exclusions are the scope boundary of A1, not permanent repository prohibitions. Later work may add those capabilities only through a separate task explicitly assigned to the stage that owns them. Do not pull work from a later stage into an earlier task, and do not cross a mandatory gate below before its review has been completed and processed.
 
 ## Mandatory technical gates
 
