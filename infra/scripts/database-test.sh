@@ -20,6 +20,13 @@ cleanup_project() {
 }
 
 cleanup() {
+  cleanup_status=$?
+  if [ "$cleanup_status" -ne 0 ]; then
+    for failed_project in "${base_project}-clean" "${base_project}-upgrade"; do
+      COMPOSE_PROJECT_NAME="$failed_project" compose ps --all || true
+      COMPOSE_PROJECT_NAME="$failed_project" compose logs --no-color postgres || true
+    done
+  fi
   cleanup_project "${base_project}-clean"
   cleanup_project "${base_project}-upgrade"
   find "$test_root" -type f -delete
