@@ -302,3 +302,23 @@ export class StaticOidcClientRepository implements OidcClientRepository {
     return Promise.resolve(this.clients.map((client) => Object.freeze({ ...client })));
   }
 }
+
+export class ConfiguredOidcClientRepository implements OidcClientRepository {
+  private readonly clients: readonly RegisteredOidcClient[];
+
+  constructor(clients: readonly RegisteredOidcClient[]) {
+    this.clients = Object.freeze(
+      clients.map((client) =>
+        Object.freeze({
+          ...client,
+          redirectUris: Object.freeze([...client.redirectUris]),
+          scopes: Object.freeze([...client.scopes]),
+        }),
+      ),
+    );
+  }
+
+  listRegisteredClients(): Promise<readonly RegisteredOidcClient[]> {
+    return Promise.resolve(this.clients);
+  }
+}
