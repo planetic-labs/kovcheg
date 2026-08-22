@@ -1,0 +1,27 @@
+import { loadServiceConfig } from '@kovcheg/config';
+import { createServiceHealth, serviceHealthJsonSchema } from '@kovcheg/contracts';
+import type { ServiceHealth } from '@kovcheg/contracts';
+import { Controller, Get } from '@nestjs/common';
+import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
+
+@ApiTags('health')
+@Controller('health')
+export class HealthController {
+  @ApiOkResponse({
+    description: 'The auth process is running.',
+    schema: serviceHealthJsonSchema,
+  })
+  @Get('live')
+  live(): ServiceHealth {
+    return createServiceHealth('auth', 'live', { build: loadServiceConfig('auth').build });
+  }
+
+  @ApiOkResponse({
+    description: 'The auth process is ready for local requests.',
+    schema: serviceHealthJsonSchema,
+  })
+  @Get('ready')
+  ready(): ServiceHealth {
+    return createServiceHealth('auth', 'ready', { build: loadServiceConfig('auth').build });
+  }
+}

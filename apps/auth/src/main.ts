@@ -1,14 +1,39 @@
 import 'reflect-metadata';
 
-import { NestFactory } from '@nestjs/core';
+import { loadServiceConfig } from '@kovcheg/config';
+import type { BuildMetadata } from '@kovcheg/contracts';
+import {
+  createCorrelationId,
+  createOperationalEvent,
+  unknownBuildMetadata,
+} from '@kovcheg/contracts';
+import { Logger } from '@nestjs/common';
 
-import { AuthModule } from './auth.module.js';
+import { createAuthApplication } from './application.js';
+
+const logger = new Logger('Bootstrap');
+let buildMetadata: BuildMetadata = unknownBuildMetadata;
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AuthModule);
-  const port = Number.parseInt(process.env.PORT ?? '3002', 10);
+  const config = loadServiceConfig('auth');
+  buildMetadata = config.build;
+  const app = await createAuthApplication(config);
 
-  await app.listen(port, '0.0.0.0');
+  app.enableShutdownHooks();
+  await app.listen(config.port, config.host);
 }
 
-void bootstrap();
+void bootstrap().catch(() => {
+  logger.error(
+    JSON.stringify(
+      createOperationalEvent({
+        build: buildMetadata,
+        correlationId: createCorrelationId(),
+        name: 'service.start-failed',
+        outcome: 'failure',
+        service: 'auth',
+      }),
+    ),
+  );
+  process.exitCode = 1;
+});

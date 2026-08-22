@@ -1,6 +1,8 @@
 packages:
   - apps/*
   - packages/*
+allowBuilds:
+  '@scarf/scarf': false
 minimumReleaseAgeExclude:
   - '@next/env@16.3.2'
   - '@next/swc-darwin-arm64@16.3.2'

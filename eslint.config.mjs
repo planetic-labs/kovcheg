@@ -20,4 +20,21 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-imports': 'error',
     },
   },
+  {
+    files: ['**/*.{ts,tsx}'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              message: 'Synthetic identity fixtures are test-only.',
+              name: '@kovcheg/contracts/testing',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );
