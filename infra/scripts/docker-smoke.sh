@@ -3,6 +3,9 @@
 set -eu
 
 smoke_project="kovcheg-smoke-$$"
+mkdir -p "$PWD/.local"
+smoke_secret_directory=$(mktemp -d "$PWD/.local/docker-smoke.XXXXXX")
+export KOVCHEG_LOCAL_SECRET_DIR="$smoke_secret_directory"
 
 compose() {
   sh infra/scripts/compose.sh -p "$smoke_project" "$@"
@@ -10,6 +13,8 @@ compose() {
 
 cleanup() {
   compose down --volumes --remove-orphans
+  find "$smoke_secret_directory" -type f -delete
+  find "$smoke_secret_directory" -depth -type d -empty -delete
 }
 
 trap cleanup EXIT INT TERM

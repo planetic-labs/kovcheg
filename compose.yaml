@@ -3,19 +3,71 @@ name: kovcheg-local
 services:
   postgres:
     image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    command: ['postgres', '-c', 'password_encryption=scram-sha-256']
     environment:
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: kovcheg
+      POSTGRES_INITDB_ARGS: '--auth-host=scram-sha-256 --auth-local=scram-sha-256'
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+      POSTGRES_USER: postgres
     expose:
       - '5432'
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready --username postgres --dbname postgres']
+      test: ['CMD-SHELL', 'pg_isready --host 127.0.0.1 --username postgres --dbname kovcheg']
       interval: 5s
       timeout: 3s
       retries: 20
     networks:
       - local
+    secrets:
+      - postgres_audit_password
+      - postgres_migration_password
+      - postgres_runtime_password
+      - postgres_superuser_password
     volumes:
+      - ./infra/postgres:/workspace/infra/postgres:ro
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
       - postgres-data:/var/lib/postgresql/data
+
+  migrate:
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    command: ['/workspace/infra/postgres/migrate.sh']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_migration_password
+      PGUSER: kovcheg_migrator
+    networks:
+      - local
+    profiles:
+      - data
+    secrets:
+      - postgres_migration_password
+    volumes:
+      - ./infra/postgres:/workspace/infra/postgres:ro
+
+  database-test:
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    command: ['/workspace/infra/postgres/tests/verify.sh']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+    networks:
+      - local
+    profiles:
+      - data
+    secrets:
+      - postgres_audit_password
+      - postgres_migration_password
+      - postgres_runtime_password
+      - postgres_superuser_password
+    volumes:
+      - ./infra/postgres:/workspace/infra/postgres:ro
 
   redis:
     image: redis:8.2.1-bookworm@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
@@ -211,6 +263,16 @@ networks:
   local:
     driver: bridge
     internal: true
+
+secrets:
+  postgres_audit_password:
+    file: ${KOVCHEG_POSTGRES_AUDIT_PASSWORD_FILE:?local audit password file is required}
+  postgres_migration_password:
+    file: ${KOVCHEG_POSTGRES_MIGRATION_PASSWORD_FILE:?local migration password file is required}
+  postgres_runtime_password:
+    file: ${KOVCHEG_POSTGRES_RUNTIME_PASSWORD_FILE:?local runtime password file is required}
+  postgres_superuser_password:
+    file: ${KOVCHEG_POSTGRES_SUPERUSER_PASSWORD_FILE:?local superuser password file is required}
 
 volumes:
   postgres-data:
