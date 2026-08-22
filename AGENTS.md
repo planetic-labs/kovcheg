@@ -55,6 +55,10 @@ Passing `A0-T02` authorizes only a technical internet environment with closed ac
 
 Stage A1 is limited to workspace structure, toolchain configuration, tests, CI, security policy, non-functional application entry points, shared technical contracts, synthetic identity fixtures, health/readiness and OpenAPI surfaces, and a local-only Docker Compose topology for the web, API, auth, worker, PostgreSQL, and Redis containers.
 
+Within A1, the only routing seam is a neutral local same-origin edge exposed through a loopback-only entry point. Until `A0-T02 BACKEND-SECURITY-DELIVERY` has been reviewed and processed, do not introduce real domains, TLS, DNS, ingress, tunnels, external previews, internet access, or private operational identifiers.
+
+A1 contains no functionality owned by A2 through A7. Close A1 only after its changes are merged into protected `main` and the post-merge CI and Security workflows succeed.
+
 A1 must not add functional product authentication, application database schemas or migrations, messaging behavior, Socket.IO or realtime integration, email delivery, a functional PWA interface, deployment, or an internet-accessible route, tunnel, ingress, or preview. These exclusions are the scope boundary of A1, not permanent repository prohibitions. Later work may add those capabilities only through a separate task explicitly assigned to the stage that owns them. Do not pull work from a later stage into an earlier task, and do not cross a mandatory gate below before its review has been completed and processed.
 
 ## Mandatory technical gates
