@@ -29,9 +29,24 @@ Before any public push or GitHub write:
 
 Do not change these guardrails without an explicit architecture decision.
 
-## Current foundation scope
+## Stage-scoped work authorization
 
-The foundation may contain workspace structure, toolchain configuration, tests, CI, security policy, and non-functional application entry points. It must not yet implement authentication, database schemas or migrations, chats, messages, Redis, Socket.IO, email delivery, a functional PWA interface, or deployment.
+The current foundation pull request is limited to workspace structure, toolchain configuration, tests, CI, security policy, and non-functional application entry points. This pull request must not add functional product code, database schemas or migrations, Docker topology, deployment, chats, messages, Redis, Socket.IO, email delivery, or a functional PWA interface.
+
+These exclusions are the scope boundary of the current pull request, not permanent repository prohibitions. Later work may add those capabilities only through a separate task explicitly assigned to the stage that owns them. Do not pull work from a later stage into an earlier task, and do not cross a mandatory gate below before its review has been completed and processed.
+
+## Mandatory technical gates
+
+- `A0-T01 FOUNDATION-DATA` occurs after A1 and a testable A3 core are complete, before starting A4 Message Flow.
+- `A0-T02 BACKEND-SECURITY-DELIVERY` occurs after A2, A4, and A5 are complete, before connecting real sign-in or a live backend to A6.
+- `A0-T03 OPERATIONS-ACCEPTANCE` occurs after A6, A7, and the synthetic A8 acceptance run are complete, before giving test users access.
+- `A0-T04 SENSITIVE-USE` occurs before any sensitive real conversations. It does not replace specialized security and privacy review or an explicit access decision.
+
+When work reaches a gate, the coding task must stop only the affected next stage and tell Alexey that the checkpoint has been reached, why review is required, and which completed technical slice will be reviewed. Review preparation starts only after Alexey gives the explicit review command. Review packets, private requirements, and review reports remain in the private project and must never be published in this repository, its GitHub records, or workflow logs.
+
+## Stage parallelism and ownership
+
+After the interfaces and identity stub are stable in A1, A2 and A3 may proceed in parallel in separate branches. A3 exclusively owns the PostgreSQL schema, Prisma/custom SQL migrations, and database roles. A2 owns authentication, OIDC, and session logic and tests; it consumes the agreed data interfaces and must not change A3-owned schema or migrations independently.
 
 ## Development rules
 
