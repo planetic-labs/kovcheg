@@ -1,13 +1,18 @@
 import 'reflect-metadata';
 
-import { NestFactory } from '@nestjs/core';
+import { loadServiceConfig } from '@kovcheg/config';
 
-import { WorkerModule } from './worker.module.js';
+import { createWorkerApplication } from './application.js';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.createApplicationContext(WorkerModule);
+  const config = loadServiceConfig('worker');
+  const app = await createWorkerApplication();
 
   app.enableShutdownHooks();
+  await app.listen(config.port, config.host);
 }
 
-void bootstrap();
+void bootstrap().catch((error: unknown) => {
+  console.error('Worker service failed to start', error);
+  process.exitCode = 1;
+});

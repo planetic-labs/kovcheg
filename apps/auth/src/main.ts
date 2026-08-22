@@ -1,14 +1,18 @@
 import 'reflect-metadata';
 
-import { NestFactory } from '@nestjs/core';
+import { loadServiceConfig } from '@kovcheg/config';
 
-import { AuthModule } from './auth.module.js';
+import { createAuthApplication } from './application.js';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AuthModule);
-  const port = Number.parseInt(process.env.PORT ?? '3002', 10);
+  const config = loadServiceConfig('auth');
+  const app = await createAuthApplication();
 
-  await app.listen(port, '0.0.0.0');
+  app.enableShutdownHooks();
+  await app.listen(config.port, config.host);
 }
 
-void bootstrap();
+void bootstrap().catch((error: unknown) => {
+  console.error('Auth service failed to start', error);
+  process.exitCode = 1;
+});

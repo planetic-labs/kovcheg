@@ -2,7 +2,7 @@
 
 Kovcheg is a greenfield web/PWA messenger platform. This repository contains only public application code and the technical files required to build and verify it.
 
-The current branch establishes the Alpha-0 monorepo foundation. It deliberately contains no product authentication, database schema, messaging behavior, realtime integration, email delivery, functional PWA interface, deployment, or private product material.
+The Alpha-0 foundation contains the monorepo, local-only container topology, technical contracts, synthetic identity fixtures, typed non-secret configuration, health/readiness endpoints, and a minimal OpenAPI surface. It deliberately contains no product authentication, database schema, messaging behavior, realtime integration, email delivery, functional PWA interface, internet deployment, or private product material.
 
 ## Toolchain
 
@@ -20,6 +20,7 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm docker:smoke
 ```
 
 ## Repository structure
@@ -36,7 +37,20 @@ packages/
 infra/       Infrastructure placeholders and public operational notes
 ```
 
-These directories are intentionally minimal. Service connections, Docker topology, persistence, API contracts, and product behavior are added in later reviewed changes.
+The A1 contracts define technical seams only. The synthetic identity stub uses fixed non-personal UUIDs for future integration tests and does not authenticate users. PostgreSQL has no application schema or migrations, and Redis has no application behavior.
+
+## Local container topology
+
+`compose.yaml` starts `web`, `api`, `auth`, `worker`, PostgreSQL, and Redis on an isolated Docker network. Only the web and local HTTP service ports bind to `127.0.0.1`; nothing creates DNS, ingress, a tunnel, an external preview, or deployment configuration.
+
+- Web health: `http://127.0.0.1:3000/health/ready`
+- API health: `http://127.0.0.1:3001/health/ready`
+- API OpenAPI JSON: `http://127.0.0.1:3001/openapi.json`
+- API documentation: `http://127.0.0.1:3001/docs`
+- Auth health: `http://127.0.0.1:3002/health/ready`
+- Auth OpenAPI JSON: `http://127.0.0.1:3002/openapi.json`
+
+`pnpm docker:smoke` builds the images, verifies all six containers and endpoints, then stops the topology and removes the temporary test volume.
 
 ## Security
 

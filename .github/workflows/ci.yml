@@ -121,3 +121,5 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build all workspaces
         run: pnpm build
+      - name: Run local container smoke
+        run: pnpm docker:smoke

@@ -1,14 +1,18 @@
 import 'reflect-metadata';
 
-import { NestFactory } from '@nestjs/core';
+import { loadServiceConfig } from '@kovcheg/config';
 
-import { ApiModule } from './api.module.js';
+import { createApiApplication } from './application.js';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(ApiModule);
-  const port = Number.parseInt(process.env.PORT ?? '3001', 10);
+  const config = loadServiceConfig('api');
+  const app = await createApiApplication();
 
-  await app.listen(port, '0.0.0.0');
+  app.enableShutdownHooks();
+  await app.listen(config.port, config.host);
 }
 
-void bootstrap();
+void bootstrap().catch((error: unknown) => {
+  console.error('API service failed to start', error);
+  process.exitCode = 1;
+});
