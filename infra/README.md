@@ -2,13 +2,15 @@
 
 The Alpha-0 A1 topology is local-only and contains no deployment route, ingress, tunnel, or external preview.
 
-`compose.yaml` starts six isolated containers:
+`compose.yaml` starts seven isolated containers:
 
-- `web`, `api`, `auth`, and `worker` from their own Dockerfiles;
+- a neutral local `edge` plus `web`, `api`, `auth`, and `worker`;
 - PostgreSQL without application schema or migrations;
 - Redis without application queues, caching, or realtime behavior.
 
-Only `127.0.0.1` ports `3000`, `3001`, and `3002` are published. PostgreSQL, Redis, and the worker health port remain inside the local Docker network. The temporary PostgreSQL trust mode is limited to that internal, non-published network and is not deployment configuration.
+Only the edge publishes `127.0.0.1:3000`. It routes `/` to web, `/api/` to the technical API surface, and `/auth/` to the technical auth surface. Every upstream port, PostgreSQL, Redis, and the worker health endpoint remain inside an `internal: true` Docker service network. Edge alone also joins a dedicated host-loopback bridge so Docker can expose the loopback entry. This is a local same-origin seam, not an ingress or deployment route.
+
+The temporary PostgreSQL trust mode remains limited to the internal, non-published network and is not deployment configuration. A later data-stage task owns credentials and database authentication.
 
 Run the verified local lifecycle with:
 
@@ -16,4 +18,4 @@ Run the verified local lifecycle with:
 pnpm docker:smoke
 ```
 
-The smoke script builds the four application images, waits for all six containers, verifies health/readiness and the API/Auth OpenAPI documents, and always stops the topology and removes its test volume.
+The smoke script uses its own uniquely named Compose project. It builds the four application images, waits for all seven containers, verifies the exact service, network, and loopback-port sets, checks that the service network is internal, calls the documented routes from the host, validates API/Auth readiness responses against their published OpenAPI schemas, tests correlation IDs, and inspects production runtime contents and build provenance. Its cleanup cannot address a developer project's volume.

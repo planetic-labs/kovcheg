@@ -11,15 +11,15 @@
   },
   "scripts": {
     "build": "corepack pnpm --recursive --if-present run build",
-    "docker:config": "docker compose config --quiet",
-    "docker:down": "docker compose down --volumes --remove-orphans",
+    "docker:config": "sh infra/scripts/compose.sh config --quiet",
+    "docker:down": "sh infra/scripts/compose.sh down --volumes --remove-orphans",
     "docker:smoke": "sh infra/scripts/docker-smoke.sh",
-    "docker:up": "docker compose up --build --detach --wait",
+    "docker:up": "sh infra/scripts/compose.sh up --build --detach --wait",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "prettier --check . && eslint . --max-warnings=0",
     "test": "corepack pnpm --filter @kovcheg/contracts --filter @kovcheg/config run build && corepack pnpm --recursive --if-present run test",
-    "typecheck": "corepack pnpm --recursive --if-present run typecheck"
+    "typecheck": "corepack pnpm --filter @kovcheg/contracts --filter @kovcheg/config run build && corepack pnpm --recursive --if-present run typecheck"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

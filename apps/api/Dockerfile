@@ -1,4 +1,4 @@
-FROM node:24.19.0-bookworm-slim AS build
+FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS build
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PNPM_HOME=/pnpm
@@ -20,19 +20,27 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 
 RUN pnpm --filter @kovcheg/api... build
+RUN pnpm --filter @kovcheg/api deploy --prod --legacy /runtime
+RUN find /runtime -type f \( -name '*.map' -o -name '*.ts' -o -name '*.md' \) -delete
 
-FROM node:24.19.0-bookworm-slim AS runtime
+FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
 
+ARG BUILD_COMMIT_SHA=""
+
+LABEL org.opencontainers.image.revision=$BUILD_COMMIT_SHA
+
+ENV BUILD_COMMIT_SHA=$BUILD_COMMIT_SHA
 ENV HOST=0.0.0.0
+ENV LOG_LEVEL=info
 ENV NODE_ENV=production
 ENV PORT=3001
 
-WORKDIR /workspace
+WORKDIR /app
 
-COPY --from=build --chown=node:node /workspace /workspace
+COPY --from=build --chown=node:node /runtime/ ./
 
 USER node
 
 EXPOSE 3001
 
-CMD ["node", "apps/api/dist/main.js"]
+CMD ["node", "dist/main.js"]

@@ -32,4 +32,10 @@ describe('SyntheticIdentityStub', () => {
 
     await expect(stub.findById(unknownUserId)).resolves.toBeNull();
   });
+
+  it('fails loudly in a production runtime', () => {
+    expect(() => createSyntheticIdentityStub({ NODE_ENV: 'production' })).toThrow(
+      'Synthetic identity fixtures are unavailable in production',
+    );
+  });
 });

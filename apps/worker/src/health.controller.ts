@@ -1,3 +1,4 @@
+import { loadServiceConfig } from '@kovcheg/config';
 import { createServiceHealth } from '@kovcheg/contracts';
 import type { ServiceHealth } from '@kovcheg/contracts';
 import { Controller, Get } from '@nestjs/common';
@@ -6,11 +7,15 @@ import { Controller, Get } from '@nestjs/common';
 export class HealthController {
   @Get('live')
   live(): ServiceHealth {
-    return createServiceHealth('worker', 'live');
+    return createServiceHealth('worker', 'live', {
+      build: loadServiceConfig('worker').build,
+    });
   }
 
   @Get('ready')
   ready(): ServiceHealth {
-    return createServiceHealth('worker', 'ready');
+    return createServiceHealth('worker', 'ready', {
+      build: loadServiceConfig('worker').build,
+    });
   }
 }

@@ -1,18 +1,39 @@
 import 'reflect-metadata';
 
 import { loadServiceConfig } from '@kovcheg/config';
+import type { BuildMetadata } from '@kovcheg/contracts';
+import {
+  createCorrelationId,
+  createOperationalEvent,
+  unknownBuildMetadata,
+} from '@kovcheg/contracts';
+import { Logger } from '@nestjs/common';
 
 import { createAuthApplication } from './application.js';
 
+const logger = new Logger('Bootstrap');
+let buildMetadata: BuildMetadata = unknownBuildMetadata;
+
 async function bootstrap(): Promise<void> {
   const config = loadServiceConfig('auth');
-  const app = await createAuthApplication();
+  buildMetadata = config.build;
+  const app = await createAuthApplication(config);
 
   app.enableShutdownHooks();
   await app.listen(config.port, config.host);
 }
 
-void bootstrap().catch((error: unknown) => {
-  console.error('Auth service failed to start', error);
+void bootstrap().catch(() => {
+  logger.error(
+    JSON.stringify(
+      createOperationalEvent({
+        build: buildMetadata,
+        correlationId: createCorrelationId(),
+        name: 'service.start-failed',
+        outcome: 'failure',
+        service: 'auth',
+      }),
+    ),
+  );
   process.exitCode = 1;
 });

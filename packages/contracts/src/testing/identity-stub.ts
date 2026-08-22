@@ -15,11 +15,19 @@ const syntheticIdentities: readonly IdentityRecord[] = Object.freeze([
 export class SyntheticIdentityStub implements IdentityReader {
   readonly identities = syntheticIdentities;
 
+  constructor(environment: Readonly<{ NODE_ENV?: string | undefined }> = process.env) {
+    if (environment.NODE_ENV === 'production') {
+      throw new Error('Synthetic identity fixtures are unavailable in production');
+    }
+  }
+
   findById(userId: UserId): Promise<IdentityRecord | null> {
     return Promise.resolve(this.identities.find((identity) => identity.userId === userId) ?? null);
   }
 }
 
-export function createSyntheticIdentityStub(): SyntheticIdentityStub {
-  return new SyntheticIdentityStub();
+export function createSyntheticIdentityStub(
+  environment: Readonly<{ NODE_ENV?: string | undefined }> = process.env,
+): SyntheticIdentityStub {
+  return new SyntheticIdentityStub(environment);
 }
