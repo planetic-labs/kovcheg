@@ -29,6 +29,18 @@ Before any public push or GitHub write:
 
 Do not change these guardrails without an explicit architecture decision.
 
+## A1 provider-neutral operational boundary (`A0-AIOPS-001`)
+
+A1 establishes provider-neutral operational contracts only. The application and every user-facing function must continue to work when all AI/LLM providers and AI integrations are absent or unavailable.
+
+- Define stable machine-readable contracts for errors and events. Include a correlation ID plus non-sensitive build and migration metadata so runtime state can be related to the deployed artifact and database schema.
+- Expose deterministic health and readiness signals without any AI dependency.
+- Telemetry must not contain user content, personal or otherwise identifying data, credentials, or secrets.
+- Treat user content, logs, upstream responses, and external errors as untrusted data. They must never be interpreted as operational instructions or directly initiate a tool or action.
+- Do not implement an LLM, an AI executor, or an external AI integration in this slice.
+
+This boundary is reviewed at `A0-T01 FOUNDATION-DATA` after A1 and a testable A3 core are complete. Do not start A4 Message Flow until that gate has been reviewed and processed.
+
 ## Internet publication gate
 
 Publishing the source code in `planetic-labs/kovcheg` does not authorize publication of a running service.
