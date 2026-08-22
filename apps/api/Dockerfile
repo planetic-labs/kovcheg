@@ -21,7 +21,29 @@ COPY . .
 
 RUN pnpm --filter @kovcheg/api... build
 RUN pnpm --filter @kovcheg/api deploy --prod --legacy /runtime
-RUN find /runtime -type f \( -name '*.map' -o -name '*.ts' -o -name '*.md' \) -delete
+RUN find /runtime -type f \( -name '*.map' -o -name '*.ts' -o -name '*.md' -o -name '*.spec.js' -o -name '*.test.js' \) -delete
+
+FROM build AS message-flow-test-build
+
+RUN contract_dist="$(find /runtime/node_modules/.pnpm -path '*/node_modules/@kovcheg/contracts/dist' -type d -print -quit)" \
+  && test -n "$contract_dist" \
+  && mkdir -p "$contract_dist/testing" \
+  && cp /workspace/packages/contracts/dist/testing/*.js "$contract_dist/testing/"
+
+FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS message-flow-test
+
+ENV HOST=127.0.0.1
+ENV LOG_LEVEL=error
+ENV NODE_ENV=test
+ENV PORT=3001
+
+WORKDIR /app
+
+COPY --from=message-flow-test-build --chown=node:node /runtime/ ./
+
+USER node
+
+CMD ["node", "dist/message-flow/message-flow.integration-check.js"]
 
 FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
 

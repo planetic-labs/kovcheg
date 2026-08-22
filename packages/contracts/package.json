@@ -6,7 +6,9 @@
   "type": "module",
   "files": [
     "dist/index.d.ts",
-    "dist/index.js"
+    "dist/index.js",
+    "dist/message-flow.d.ts",
+    "dist/message-flow.js"
   ],
   "exports": {
     ".": {

@@ -22,7 +22,7 @@ export default tseslint.config(
   },
   {
     files: ['**/*.{ts,tsx}'],
-    ignores: ['**/*.spec.ts'],
+    ignores: ['**/*.integration-check.ts', '**/*.spec.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

@@ -1,3 +1,5 @@
+import { messageFlowErrorCodes } from './message-flow.js';
+
 export const foundationContractVersion = 1 as const;
 export const buildMetadataContractVersion = foundationContractVersion;
 export const healthContractVersion = foundationContractVersion;
@@ -77,6 +79,7 @@ export const errorCodes = Object.freeze([
   'foundation.conflict',
   'foundation.unavailable',
   'foundation.internal-error',
+  ...messageFlowErrorCodes,
 ] as const);
 
 export type ErrorCode = (typeof errorCodes)[number];
@@ -88,6 +91,19 @@ export interface MachineError {
   readonly httpStatus: number;
   readonly title: string;
 }
+
+export const machineErrorJsonSchema = {
+  additionalProperties: false,
+  properties: {
+    code: { enum: [...errorCodes], type: 'string' },
+    contractVersion: { enum: [machineErrorContractVersion], type: 'integer' },
+    correlationId: { pattern: correlationIdPattern, type: 'string' },
+    httpStatus: { maximum: 599, minimum: 400, type: 'integer' },
+    title: { minLength: 1, type: 'string' },
+  },
+  required: ['code', 'contractVersion', 'correlationId', 'httpStatus', 'title'],
+  type: 'object',
+};
 
 export const operationalEventNames = Object.freeze([
   'service.started',
@@ -288,3 +304,22 @@ export const serviceHealthJsonSchema = {
   required: ['build', 'checks', 'contractVersion', 'service', 'state', 'status'],
   type: 'object',
 };
+
+export {
+  createTextMessageRequestJsonSchema,
+  createTextMessageResponseJsonSchema,
+  identityStubHeaderName,
+  messageFlowContractVersion,
+  messageFlowErrorCodes,
+  messageHistoryPageJsonSchema,
+  textMessageJsonSchema,
+} from './message-flow.js';
+export type {
+  ChatSequence,
+  CreateTextMessageRequest,
+  CreateTextMessageResponse,
+  MessageFlowErrorCode,
+  MessageFlowRequestContext,
+  MessageHistoryPage,
+  TextMessage,
+} from './message-flow.js';

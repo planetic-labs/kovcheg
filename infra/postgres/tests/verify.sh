@@ -32,6 +32,11 @@ query_as_runtime() {
     --set=ON_ERROR_STOP=1 --username kovcheg_app --command "$1"
 }
 
+query_as_migration() {
+  PGPASSWORD="$migration_password" psql --no-psqlrc --tuples-only --no-align \
+    --set=ON_ERROR_STOP=1 --username kovcheg_migrator --command "$1"
+}
+
 run_parallel_sequence_test() {
   parallel_chat_id=$(
     query_as_runtime "SELECT id FROM kovcheg.chats WHERE provisioned_for_account_id = '00000000-0000-4000-8000-000000002001' ORDER BY id LIMIT 1"
@@ -71,6 +76,91 @@ run_parallel_sequence_test() {
   done
 }
 
+run_message_flow_race_test() {
+  parallel_chat_id=$(
+    query_as_runtime "SELECT id FROM kovcheg.chats WHERE provisioned_for_account_id = '00000000-0000-4000-8000-000000002001' ORDER BY id LIMIT 1"
+  )
+  counter_before=$(
+    query_as_migration "SELECT next_sequence FROM kovcheg.chat_counters WHERE chat_id = '$parallel_chat_id'"
+  )
+
+  parallel_number=1
+  parallel_pids=''
+  while [ "$parallel_number" -le 12 ]; do
+    PGPASSWORD="$runtime_password" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+      --username kovcheg_app --command="
+        SELECT * FROM kovcheg.create_text_message(
+          '$parallel_chat_id',
+          '00000000-0000-4000-8000-000000002001',
+          'message-flow-race-001',
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          'Synthetic concurrent retry',
+          'database-message-flow-race-$parallel_number'
+        )
+      " >/dev/null &
+    parallel_pids="$parallel_pids $!"
+    parallel_number=$((parallel_number + 1))
+  done
+
+  for parallel_pid in $parallel_pids; do
+    wait "$parallel_pid"
+  done
+
+  race_state=$(
+    query_as_migration "
+      SELECT
+        (SELECT count(*) FROM kovcheg.messages WHERE chat_id = '$parallel_chat_id' AND client_idempotency_key = 'message-flow-race-001') || ':' ||
+        (SELECT next_sequence - $counter_before FROM kovcheg.chat_counters WHERE chat_id = '$parallel_chat_id') || ':' ||
+        (SELECT count(*) FROM kovcheg.outbox_events WHERE correlation_id LIKE 'database-message-flow-race-%')
+    "
+  )
+  if [ "$race_state" != '1:1:1' ]; then
+    echo 'Concurrent identical retries did not preserve one message, sequence, and outbox event.' >&2
+    exit 1
+  fi
+
+  counter_before=$(
+    query_as_migration "SELECT next_sequence FROM kovcheg.chat_counters WHERE chat_id = '$parallel_chat_id'"
+  )
+  parallel_number=1
+  parallel_pids=''
+  while [ "$parallel_number" -le 12 ]; do
+    PGPASSWORD="$runtime_password" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+      --username kovcheg_app --command="
+        SELECT * FROM kovcheg.create_text_message(
+          '$parallel_chat_id',
+          '00000000-0000-4000-8000-000000002001',
+          'message-flow-parallel-$parallel_number',
+          'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+          'Synthetic parallel message $parallel_number',
+          'database-message-flow-parallel-$parallel_number'
+        )
+      " >/dev/null &
+    parallel_pids="$parallel_pids $!"
+    parallel_number=$((parallel_number + 1))
+  done
+
+  for parallel_pid in $parallel_pids; do
+    wait "$parallel_pid"
+  done
+
+  sequence_state=$(
+    query_as_migration "
+      SELECT
+        count(*) || ':' ||
+        (max(chat_sequence) - min(chat_sequence) + 1) || ':' ||
+        (SELECT next_sequence - $counter_before FROM kovcheg.chat_counters WHERE chat_id = '$parallel_chat_id')
+      FROM kovcheg.messages
+      WHERE chat_id = '$parallel_chat_id'
+        AND client_idempotency_key LIKE 'message-flow-parallel-%'
+    "
+  )
+  if [ "$sequence_state" != '12:12:12' ]; then
+    echo 'Concurrent distinct sends did not preserve a gap-free chat-local sequence.' >&2
+    exit 1
+  fi
+}
+
 run_core_tests() {
   run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
   run_sql kovcheg_migrator "$migration_password" "$test_root/verify-core.sql"
@@ -80,11 +170,20 @@ run_core_tests() {
   run_sql kovcheg_migrator "$migration_password" "$test_root/verify-state-and-plans.sql"
 }
 
+run_message_flow_tests() {
+  run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+  run_sql kovcheg_migrator "$migration_password" "$test_root/verify-core.sql"
+  run_sql kovcheg_app "$runtime_password" "$test_root/verify-message-flow.sql"
+  run_message_flow_race_test
+  run_sql kovcheg_migrator "$migration_password" "$test_root/verify-message-flow-authorization.sql"
+  run_sql kovcheg_audit_writer "$audit_password" "$test_root/verify-audit-writer.sql"
+  run_sql kovcheg_migrator "$migration_password" "$test_root/verify-state-and-plans.sql"
+}
+
 case "$scenario" in
   clean)
-    run_core_tests
+    run_message_flow_tests
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-latest.sql"
-    run_sql kovcheg_app "$runtime_password" "$test_root/verify-runtime-claims.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     ;;
   upgrade-v1)
@@ -95,11 +194,13 @@ case "$scenario" in
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v2.sql"
     run_sql kovcheg_app "$runtime_password" "$test_root/verify-runtime-claims.sql"
     ;;
-  upgrade-latest)
+  upgrade-v3)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v3.sql"
+    ;;
+  upgrade-latest)
+    run_message_flow_tests
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-latest.sql"
-    run_sql kovcheg_app "$runtime_password" "$test_root/verify-runtime-claims.sql"
-    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-state-and-plans.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     ;;
   *)

@@ -40,6 +40,7 @@ run_clean_scenario() {
   compose up --detach --wait postgres
   compose --profile data run --rm migrate
   compose --profile data run --rm -e TEST_SCENARIO=clean database-test
+  compose --profile data run --rm message-flow-test
   compose --profile data run --rm migrate
   cleanup_project "$COMPOSE_PROJECT_NAME"
 }
@@ -51,6 +52,8 @@ run_upgrade_scenario() {
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-v1 database-test
   compose --profile data run --rm -e MIGRATION_TARGET=0002 migrate
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-v2 database-test
+  compose --profile data run --rm -e MIGRATION_TARGET=0003 migrate
+  compose --profile data run --rm -e TEST_SCENARIO=upgrade-v3 database-test
   compose --profile data run --rm migrate
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-latest database-test
   compose --profile data run --rm migrate

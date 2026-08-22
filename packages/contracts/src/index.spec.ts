@@ -10,6 +10,7 @@ import {
   denyAllAuthorizationEvaluator,
   errorCodes,
   foundationContractVersion,
+  machineErrorJsonSchema,
   parseCorrelationId,
   serviceHealthJsonSchema,
   unknownBuildMetadata,
@@ -89,7 +90,15 @@ describe('foundation contracts', () => {
       'foundation.conflict',
       'foundation.unavailable',
       'foundation.internal-error',
+      'message-flow.invalid-request',
+      'message-flow.identity-unavailable',
+      'message-flow.unauthenticated',
+      'message-flow.forbidden',
+      'message-flow.idempotency-key-reused',
+      'message-flow.unavailable',
+      'message-flow.internal-error',
     ]);
+    expect(machineErrorJsonSchema.properties.code.enum).toEqual(errorCodes);
   });
 
   it('creates versioned operational events without arbitrary payload data', () => {
