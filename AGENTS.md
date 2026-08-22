@@ -29,6 +29,16 @@ Before any public push or GitHub write:
 
 Do not change these guardrails without an explicit architecture decision.
 
+## Internet publication gate for app.m6z.ru
+
+Publishing the source code in `planetic-labs/kovcheg` does not authorize publication of a running service.
+
+Until `A0-T02 BACKEND-SECURITY-DELIVERY` has been completed, reviewed, and processed, work is limited to localhost and an isolated local Docker environment. Do not create an internet-accessible DNS route, ingress, tunnel, or external preview URL for `app.m6z.ru` before that gate.
+
+`A0-T02` must prove that unknown, unauthenticated, and deactivated users receive no application session and cannot access the web application, API, or Socket.IO. Only a pre-created active account with a valid one-time email code may sign in, and the external response for an unknown email address must remain neutral.
+
+Passing `A0-T02` authorizes only a technical internet environment with closed access. Test users still wait for processed `A0-T03`, and sensitive real conversations still wait for `A0-T04`.
+
 ## Stage-scoped work authorization
 
 The current foundation pull request is limited to workspace structure, toolchain configuration, tests, CI, security policy, and non-functional application entry points. This pull request must not add functional product code, database schemas or migrations, Docker topology, deployment, chats, messages, Redis, Socket.IO, email delivery, or a functional PWA interface.
@@ -40,7 +50,7 @@ These exclusions are the scope boundary of the current pull request, not permane
 The required late-stage sequence is `A5 → A0-T02 → A6 → A6.5 Web Push → A7 → A0-T03 → A8`.
 
 - `A0-T01 FOUNDATION-DATA` occurs after A1 and a testable A3 core are complete, before starting A4 Message Flow.
-- `A0-T02 BACKEND-SECURITY-DELIVERY` occurs after A2, A4, and A5 are complete, before connecting real sign-in or a live backend to A6.
+- `A0-T02 BACKEND-SECURITY-DELIVERY` occurs after A2, A4, and A5 are complete, before connecting real sign-in or a live backend to A6 or exposing `app.m6z.ru` to the internet.
 - `A0-T03 OPERATIONS-ACCEPTANCE` occurs after A6.5 Web Push and A7 are complete, before A8 begins and before giving test users access. It must cover Service Worker behavior, notification permission states, per-device subscription and revocation flows, Socket.IO/push deduplication, notification payload privacy, navigation into the authorized chat, and real-device behavior on iPhone, iPad, and Android.
 - `A0-T04 SENSITIVE-USE` occurs before any sensitive real conversations. It does not replace specialized security and privacy review or an explicit access decision.
 
