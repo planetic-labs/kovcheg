@@ -127,6 +127,7 @@ dist
 
 # pnpm
 .pnpm-store
+.local/
 
 # yarn v3
 .pnp.*

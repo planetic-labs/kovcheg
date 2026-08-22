@@ -1,5 +1,6 @@
 .git
 .github
+.local
 AGENTS.md
 README.md
 SECURITY.md

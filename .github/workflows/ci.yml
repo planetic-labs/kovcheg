@@ -121,5 +121,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build all workspaces
         run: pnpm build
+      - name: Verify database migrations and constraints
+        run: pnpm database:test
       - name: Run local container smoke
         run: pnpm docker:smoke
