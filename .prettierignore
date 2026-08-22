@@ -1,0 +1,5 @@
+**/.next/**
+**/coverage/**
+**/dist/**
+apps/web/next-env.d.ts
+pnpm-lock.yaml
