@@ -14,12 +14,16 @@ esac
 
 umask 077
 mkdir -p "$secret_directory"
+chmod 0700 "$secret_directory"
 
 create_secret() {
   secret_path=$1
   if [ ! -s "$secret_path" ]; then
+    chmod 0600 "$secret_path" 2>/dev/null || true
     node --input-type=module -e "import {randomBytes} from 'node:crypto'; process.stdout.write(randomBytes(32).toString('hex'))" >"$secret_path"
   fi
+  # The owner-only parent protects the host path; read-only files let non-root container users read explicitly mounted secrets.
+  chmod 0444 "$secret_path"
 }
 
 create_secret "$secret_directory/audit"
