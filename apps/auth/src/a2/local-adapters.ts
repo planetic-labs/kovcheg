@@ -1,0 +1,407 @@
+import { timingSafeEqual } from 'node:crypto';
+
+import type { SessionId, UserId, Uuid } from '@kovcheg/contracts';
+
+import { AuthRepositoryConflictError } from './contracts.js';
+import type {
+  AccountRecord,
+  AccountRole,
+  AccountStatus,
+  BootstrapAdministratorInput,
+  ChallengeRecordInput,
+  EmailChallengeMessage,
+  RateLimitRule,
+  SessionPrincipal,
+  SessionRecordInput,
+} from './contracts.js';
+import type {
+  AuthRepository,
+  BootstrapAdministratorResult,
+  Clock,
+  ConsumeChallengeResult,
+  EmailChallengeDelivery,
+  IssueChallengeResult,
+  RateLimitDecision,
+  RateLimiter,
+} from './ports.js';
+
+interface StoredAccount {
+  displayName: string;
+  email: string;
+  roles: AccountRole[];
+  status: AccountStatus;
+  userId: UserId;
+}
+
+interface StoredChallenge extends ChallengeRecordInput {
+  accountId: UserId;
+  attempts: number;
+  invalidatedAt: number | null;
+  usedAt: number | null;
+}
+
+interface StoredSession extends SessionRecordInput {
+  accountId: UserId;
+  idleExpiresAt: number;
+  lastSeenAt: number;
+  revokedAt: number | null;
+}
+
+function cloneAccount(account: StoredAccount): AccountRecord {
+  return Object.freeze({
+    displayName: account.displayName,
+    email: account.email,
+    roles: Object.freeze([...account.roles]),
+    status: account.status,
+    userId: account.userId,
+  });
+}
+
+function safeVerifierEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, 'utf8');
+  const rightBytes = Buffer.from(right, 'utf8');
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+class ExclusiveQueue {
+  private tail: Promise<void> = Promise.resolve();
+
+  run<T>(operation: () => T | Promise<T>): Promise<T> {
+    const result = this.tail.then(operation, operation);
+    this.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+}
+
+export class LocalAuthRepository implements AuthRepository {
+  private readonly accountsByEmail = new Map<string, StoredAccount>();
+  private readonly accountsById = new Map<UserId, StoredAccount>();
+  private readonly bootstrapAccounts = new Map<string, UserId>();
+  private readonly challenges = new Map<Uuid, StoredChallenge>();
+  private readonly latestChallengeAt = new Map<UserId, number>();
+  private readonly queue = new ExclusiveQueue();
+  private readonly sessionsByVerifier = new Map<string, StoredSession>();
+
+  constructor(environment: Readonly<{ NODE_ENV?: string | undefined }> = process.env) {
+    if (environment.NODE_ENV === 'production') {
+      throw new Error('Local auth repository is unavailable in production');
+    }
+  }
+
+  authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null> {
+    return this.queue.run(() => {
+      const session = this.sessionsByVerifier.get(tokenVerifier);
+      if (session === undefined || session.revokedAt !== null) {
+        return null;
+      }
+      const account = this.accountsById.get(session.accountId);
+      if (
+        account === undefined ||
+        account.status !== 'active' ||
+        now >= session.absoluteExpiresAt ||
+        now >= session.idleExpiresAt
+      ) {
+        session.revokedAt = now;
+        return null;
+      }
+
+      session.lastSeenAt = now;
+      session.idleExpiresAt = Math.min(session.absoluteExpiresAt, now + session.idleLifetimeMs);
+      return Object.freeze({
+        roles: Object.freeze([...account.roles]),
+        sessionId: session.sessionId,
+        userId: session.accountId,
+      });
+    });
+  }
+
+  bootstrapAdministrator(
+    input: BootstrapAdministratorInput,
+  ): Promise<BootstrapAdministratorResult> {
+    return this.queue.run(() => {
+      const bootstrappedUserId = this.bootstrapAccounts.get(input.bootstrapId);
+      if (bootstrappedUserId !== undefined) {
+        const account = this.accountsById.get(bootstrappedUserId);
+        if (
+          account === undefined ||
+          account.userId !== input.userId ||
+          account.email !== input.email
+        ) {
+          throw new AuthRepositoryConflictError();
+        }
+        return { account: cloneAccount(account), created: false };
+      }
+      if (this.accountsById.has(input.userId) || this.accountsByEmail.has(input.email)) {
+        throw new AuthRepositoryConflictError();
+      }
+
+      const account: StoredAccount = {
+        displayName: input.displayName,
+        email: input.email,
+        roles: ['administrator'],
+        status: 'active',
+        userId: input.userId,
+      };
+      this.accountsById.set(account.userId, account);
+      this.accountsByEmail.set(account.email, account);
+      this.bootstrapAccounts.set(input.bootstrapId, account.userId);
+      return { account: cloneAccount(account), created: true };
+    });
+  }
+
+  consumeChallengeAndCreateSession(input: {
+    readonly candidateCodeVerifier: string;
+    readonly challengeId: Uuid;
+    readonly now: number;
+    readonly session: SessionRecordInput;
+  }): Promise<ConsumeChallengeResult> {
+    return this.queue.run(() => {
+      const challenge = this.challenges.get(input.challengeId);
+      if (
+        challenge === undefined ||
+        challenge.invalidatedAt !== null ||
+        challenge.usedAt !== null ||
+        input.now >= challenge.expiresAt ||
+        challenge.attempts >= challenge.maxAttempts
+      ) {
+        return { kind: 'invalid' };
+      }
+
+      if (!safeVerifierEqual(challenge.codeVerifier, input.candidateCodeVerifier)) {
+        challenge.attempts += 1;
+        return { kind: 'invalid' };
+      }
+
+      const account = this.accountsById.get(challenge.accountId);
+      if (account === undefined || account.status !== 'active') {
+        challenge.invalidatedAt = input.now;
+        return { kind: 'invalid' };
+      }
+      if (this.sessionsByVerifier.has(input.session.tokenVerifier)) {
+        throw new AuthRepositoryConflictError();
+      }
+
+      challenge.usedAt = input.now;
+      const session: StoredSession = {
+        ...input.session,
+        accountId: account.userId,
+        idleExpiresAt: Math.min(
+          input.session.absoluteExpiresAt,
+          input.session.issuedAt + input.session.idleLifetimeMs,
+        ),
+        lastSeenAt: input.session.issuedAt,
+        revokedAt: null,
+      };
+      this.sessionsByVerifier.set(session.tokenVerifier, session);
+      return {
+        kind: 'authenticated',
+        principal: Object.freeze({
+          roles: Object.freeze([...account.roles]),
+          sessionId: session.sessionId,
+          userId: account.userId,
+        }),
+      };
+    });
+  }
+
+  createAccount(input: {
+    readonly displayName: string;
+    readonly email: string;
+    readonly userId: UserId;
+  }): Promise<AccountRecord> {
+    return this.queue.run(() => {
+      if (this.accountsById.has(input.userId) || this.accountsByEmail.has(input.email)) {
+        throw new AuthRepositoryConflictError();
+      }
+      const account: StoredAccount = {
+        displayName: input.displayName,
+        email: input.email,
+        roles: ['student'],
+        status: 'active',
+        userId: input.userId,
+      };
+      this.accountsById.set(account.userId, account);
+      this.accountsByEmail.set(account.email, account);
+      return cloneAccount(account);
+    });
+  }
+
+  findAccountById(userId: UserId): Promise<AccountRecord | null> {
+    return this.queue.run(() => {
+      const account = this.accountsById.get(userId);
+      return account === undefined ? null : cloneAccount(account);
+    });
+  }
+
+  invalidateChallenge(challengeId: Uuid, now: number): Promise<void> {
+    return this.queue.run(() => {
+      const challenge = this.challenges.get(challengeId);
+      if (challenge !== undefined && challenge.usedAt === null) {
+        challenge.invalidatedAt = now;
+      }
+    });
+  }
+
+  issueChallengeForActiveAccount(input: {
+    readonly challenge: ChallengeRecordInput;
+    readonly email: string;
+    readonly resendCooldownMs: number;
+  }): Promise<IssueChallengeResult> {
+    return this.queue.run(() => {
+      const account = this.accountsByEmail.get(input.email);
+      if (account === undefined || account.status !== 'active') {
+        return { kind: 'neutral' };
+      }
+      const lastIssuedAt = this.latestChallengeAt.get(account.userId);
+      if (
+        lastIssuedAt !== undefined &&
+        input.challenge.issuedAt - lastIssuedAt < input.resendCooldownMs
+      ) {
+        return { kind: 'neutral' };
+      }
+
+      for (const challenge of this.challenges.values()) {
+        if (
+          challenge.accountId === account.userId &&
+          challenge.usedAt === null &&
+          challenge.invalidatedAt === null
+        ) {
+          challenge.invalidatedAt = input.challenge.issuedAt;
+        }
+      }
+      this.challenges.set(input.challenge.challengeId, {
+        ...input.challenge,
+        accountId: account.userId,
+        attempts: 0,
+        invalidatedAt: null,
+        usedAt: null,
+      });
+      this.latestChallengeAt.set(account.userId, input.challenge.issuedAt);
+      return {
+        accountId: account.userId,
+        challengeId: input.challenge.challengeId,
+        kind: 'issued',
+        recipient: account.email,
+      };
+    });
+  }
+
+  revokeSessionById(sessionId: SessionId, now: number): Promise<boolean> {
+    return this.queue.run(() => {
+      for (const session of this.sessionsByVerifier.values()) {
+        if (session.sessionId === sessionId && session.revokedAt === null) {
+          session.revokedAt = now;
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  revokeSessionByVerifier(tokenVerifier: string, now: number): Promise<boolean> {
+    return this.queue.run(() => {
+      const session = this.sessionsByVerifier.get(tokenVerifier);
+      if (session === undefined || session.revokedAt !== null) {
+        return false;
+      }
+      session.revokedAt = now;
+      return true;
+    });
+  }
+
+  setAccountStatusAndRevoke(input: {
+    readonly now: number;
+    readonly status: AccountStatus;
+    readonly userId: UserId;
+  }): Promise<AccountRecord | null> {
+    return this.queue.run(() => {
+      const account = this.accountsById.get(input.userId);
+      if (account === undefined) {
+        return null;
+      }
+      account.status = input.status;
+      if (input.status === 'deactivated') {
+        for (const session of this.sessionsByVerifier.values()) {
+          if (session.accountId === input.userId && session.revokedAt === null) {
+            session.revokedAt = input.now;
+          }
+        }
+        for (const challenge of this.challenges.values()) {
+          if (
+            challenge.accountId === input.userId &&
+            challenge.invalidatedAt === null &&
+            challenge.usedAt === null
+          ) {
+            challenge.invalidatedAt = input.now;
+          }
+        }
+      }
+      return cloneAccount(account);
+    });
+  }
+}
+
+export class LocalEmailChallengeDelivery implements EmailChallengeDelivery {
+  readonly messages: EmailChallengeMessage[] = [];
+
+  constructor(environment: Readonly<{ NODE_ENV?: string | undefined }> = process.env) {
+    if (environment.NODE_ENV === 'production') {
+      throw new Error('Local email challenge delivery is unavailable in production');
+    }
+  }
+
+  send(message: EmailChallengeMessage): Promise<void> {
+    this.messages.push(Object.freeze({ ...message }));
+    return Promise.resolve();
+  }
+}
+
+export class LocalRateLimiter implements RateLimiter {
+  private readonly attempts = new Map<string, number[]>();
+  private readonly queue = new ExclusiveQueue();
+
+  constructor(environment: Readonly<{ NODE_ENV?: string | undefined }> = process.env) {
+    if (environment.NODE_ENV === 'production') {
+      throw new Error('Local rate limiter is unavailable in production');
+    }
+  }
+
+  consume(input: {
+    readonly key: string;
+    readonly now: number;
+    readonly rule: RateLimitRule;
+  }): Promise<RateLimitDecision> {
+    return this.queue.run(() => {
+      const cutoff = input.now - input.rule.windowMs;
+      const recent = (this.attempts.get(input.key) ?? []).filter((attempt) => attempt > cutoff);
+      if (recent.length >= input.rule.limit) {
+        this.attempts.set(input.key, recent);
+        return 'limited';
+      }
+      recent.push(input.now);
+      this.attempts.set(input.key, recent);
+      return 'allowed';
+    });
+  }
+}
+
+export class UnavailableRateLimiter implements RateLimiter {
+  consume(): Promise<RateLimitDecision> {
+    return Promise.resolve('unavailable');
+  }
+}
+
+export class ManualClock implements Clock {
+  constructor(private currentTime: number) {}
+
+  advance(milliseconds: number): void {
+    this.currentTime += milliseconds;
+  }
+
+  now(): number {
+    return this.currentTime;
+  }
+}
