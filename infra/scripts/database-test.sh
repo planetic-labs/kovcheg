@@ -42,6 +42,8 @@ run_upgrade_scenario() {
   compose up --detach --wait postgres
   compose --profile data run --rm -e MIGRATION_TARGET=0001 migrate
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-v1 database-test
+  compose --profile data run --rm -e MIGRATION_TARGET=0002 migrate
+  compose --profile data run --rm -e TEST_SCENARIO=upgrade-v2 database-test
   compose --profile data run --rm migrate
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-latest database-test
   compose --profile data run --rm migrate

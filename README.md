@@ -44,7 +44,9 @@ The A1 contracts define technical seams only: machine-readable errors and operat
 
 ## PostgreSQL data core
 
-The forward-only custom SQL migration chain starts at `0001_data_core.sql`. It creates UUID accounts, memberships, chats, messages, message versions and read cursors; hash-partitions messages and versions by `chat_id`; allocates chat-local sequences from a transactional row-counter; and enforces idempotency with database constraints. A transactional outbox and protected append-only audit and operation events retain correlation and migration metadata.
+The forward-only custom SQL migration chain starts at `0001_data_core.sql`. It creates UUID accounts, memberships, chats, messages, message versions and read cursors; hash-partitions messages and versions by `chat_id`; allocates chat-local sequences from a transactional row-counter; and enforces idempotency with database constraints. The additive chain also defines PostgreSQL authorization facts for platform roles, chat administration, audience and posting policies, service labels, and preserved membership periods. A transactional outbox and protected append-only audit and operation events retain correlation and migration metadata.
+
+Message insertion serializes each idempotency key before allocating its chat sequence. A same-fingerprint retry is skipped before the counter changes, including an `ON CONFLICT DO NOTHING` retry; reuse with a different fingerprint is rejected. Runtime posting is also checked against active membership and the chat's PostgreSQL posting policy before sequence allocation.
 
 Provisioning is one database transaction. An account is active only after it receives the required non-empty starter chat set. Seeded fixtures use fixed synthetic UUIDs and neutral technical slugs; they contain no contact fields or real identities.
 
@@ -55,7 +57,7 @@ sh infra/scripts/compose.sh up --detach --wait postgres
 sh infra/scripts/compose.sh --profile data run --rm migrate
 ```
 
-`pnpm database:test` verifies the latest schema from a clean volume and a compatible `0001 → 0002` upgrade on another clean volume. It checks catalog shape, constraints, role privileges, SCRAM rules, partition pruning, outbox plans, append-only audit behavior, atomic zero-set rejection, idempotency, and concurrent gap-free row-counter allocation.
+`pnpm database:test` verifies the latest schema from a clean volume and the compatible boundaries `0001 → 0002 → 0003` on another clean volume. It checks catalog shape, positive and negative role privileges, SCRAM rules, authorization functions, membership-period boundaries, partition pruning, planner-selected message/outbox indexes after representative loading and `ANALYZE`, real outbox claim/delivery operations, owner-level append-only triggers, partial-failure provisioning rollback, sanitized event metadata, idempotency, and concurrent gap-free row-counter allocation.
 
 ## Local container topology
 

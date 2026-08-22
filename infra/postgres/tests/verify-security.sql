@@ -62,7 +62,13 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   pg_has_role('kovcheg_migrator', 'kovcheg_migration', 'MEMBER')
   AND pg_has_role('kovcheg_app', 'kovcheg_runtime', 'MEMBER')
-  AND pg_has_role('kovcheg_audit_writer', 'kovcheg_audit', 'MEMBER'),
+  AND pg_has_role('kovcheg_audit_writer', 'kovcheg_audit', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_migrator', 'kovcheg_runtime', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_migrator', 'kovcheg_audit', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_app', 'kovcheg_migration', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_app', 'kovcheg_audit', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_audit_writer', 'kovcheg_migration', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_audit_writer', 'kovcheg_runtime', 'MEMBER'),
   'login roles must inherit only their explicit group role'
 );
 SELECT pg_temp.assert_true(

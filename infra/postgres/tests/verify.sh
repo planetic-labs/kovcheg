@@ -84,14 +84,23 @@ case "$scenario" in
   clean)
     run_core_tests
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-latest.sql"
+    run_sql kovcheg_app "$runtime_password" "$test_root/verify-runtime-claims.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     ;;
   upgrade-v1)
     run_core_tests
     ;;
+  upgrade-v2)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v2.sql"
+    run_sql kovcheg_app "$runtime_password" "$test_root/verify-runtime-claims.sql"
+    ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-latest.sql"
+    run_sql kovcheg_app "$runtime_password" "$test_root/verify-runtime-claims.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-state-and-plans.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     ;;
   *)
     echo 'Unknown database test scenario.' >&2

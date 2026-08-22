@@ -48,43 +48,37 @@ SELECT pg_temp.assert_true(
   'transactional outbox fixture must persist'
 );
 
-SET enable_seqscan = off;
 DO $$
-DECLARE
-  target_chat_id uuid;
-  message_plan json;
-  outbox_plan json;
-  partition_relation_count integer;
 BEGIN
-  SELECT id INTO target_chat_id
-  FROM kovcheg.chats
-  WHERE provisioned_for_account_id = '00000000-0000-4000-8000-000000002001'
-  ORDER BY id
-  LIMIT 1;
+  BEGIN
+    UPDATE kovcheg.audit_events
+    SET details = details
+    WHERE id = (SELECT id FROM kovcheg.audit_events ORDER BY occurred_at LIMIT 1);
+    RAISE EXCEPTION 'audit UPDATE bypassed its append-only trigger';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
 
-  EXECUTE format(
-    'EXPLAIN (FORMAT JSON) SELECT id, chat_sequence FROM kovcheg.messages WHERE chat_id = %L ORDER BY chat_sequence DESC LIMIT 20',
-    target_chat_id
-  ) INTO message_plan;
+  BEGIN
+    DELETE FROM kovcheg.operation_events
+    WHERE id = (SELECT id FROM kovcheg.operation_events ORDER BY occurred_at LIMIT 1);
+    RAISE EXCEPTION 'operation DELETE bypassed its append-only trigger';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
 
-  SELECT count(*) INTO partition_relation_count
-  FROM regexp_matches(message_plan::text, '"Relation Name": "messages_p[0-7]"', 'g');
+  BEGIN
+    TRUNCATE TABLE kovcheg.audit_events;
+    RAISE EXCEPTION 'audit TRUNCATE bypassed its append-only trigger';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
 
-  IF partition_relation_count <> 1 OR message_plan::text NOT LIKE '%Index Scan%' THEN
-    RAISE EXCEPTION 'message history plan did not prune to one indexed partition: %', message_plan;
-  END IF;
-
-  EXPLAIN (FORMAT JSON)
-  SELECT id
-  FROM kovcheg.outbox_events
-  WHERE delivered_at IS NULL AND available_at <= clock_timestamp()
-  ORDER BY available_at, occurred_at, id
-  LIMIT 20
-  INTO outbox_plan;
-
-  IF outbox_plan::text NOT LIKE '%outbox_events_pending_idx%' THEN
-    RAISE EXCEPTION 'outbox claim plan did not use the pending index: %', outbox_plan;
-  END IF;
+  BEGIN
+    TRUNCATE TABLE kovcheg.operation_events;
+    RAISE EXCEPTION 'operation TRUNCATE bypassed its append-only trigger';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
 END;
 $$;
-RESET enable_seqscan;
