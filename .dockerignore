@@ -1,10 +1,12 @@
 .git
 .github
 .local
+.artifacts
 AGENTS.md
 README.md
 SECURITY.md
 compose.yaml
+verification
 infra/*
 !infra/realtime/
 infra/realtime/*

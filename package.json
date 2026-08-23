@@ -21,16 +21,26 @@
     "lint": "prettier --check . && eslint . --max-warnings=0",
     "realtime:smoke": "corepack pnpm --filter @kovcheg/contracts run build && sh infra/scripts/realtime-smoke.sh",
     "test": "corepack pnpm --filter @kovcheg/contracts --filter @kovcheg/config run build && corepack pnpm --recursive --if-present run test",
-    "typecheck": "corepack pnpm --filter @kovcheg/contracts --filter @kovcheg/config run build && corepack pnpm --recursive --if-present run typecheck"
+    "typecheck": "corepack pnpm --filter @kovcheg/contracts --filter @kovcheg/config run build && corepack pnpm --recursive --if-present run typecheck",
+    "verify:code-quality": "node verification/run-profile.mjs code-quality",
+    "verify:deep": "node verification/run-profile.mjs deep",
+    "verify:duplication-report": "jscpd --config verification/jscpd.json apps/api/src apps/auth/src apps/web/src apps/worker/src packages/config/src packages/contracts/src",
+    "verify:fast": "node verification/run-profile.mjs fast",
+    "verify:workflows": "node verification/workflow-policy.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.11",
     "eslint": "10.9.0",
+    "jscpd": "5.0.16",
+    "knip": "6.32.2",
+    "pg": "8.23.0",
     "prettier": "3.9.6",
     "socket.io-client": "4.8.3",
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "yaml": "2.9.0"
   }
 }

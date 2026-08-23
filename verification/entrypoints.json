@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "productionApplications": [
+    {
+      "dockerfile": "apps/api/Dockerfile",
+      "image": "kovcheg-api",
+      "sourceEntrypoint": "apps/api/src/main.ts",
+      "target": "runtime",
+      "workspace": "apps/api"
+    },
+    {
+      "dockerfile": "apps/auth/Dockerfile",
+      "image": "kovcheg-auth",
+      "sourceEntrypoint": "apps/auth/src/main.ts",
+      "target": "runtime",
+      "workspace": "apps/auth"
+    },
+    {
+      "dockerfile": "apps/web/Dockerfile",
+      "image": "kovcheg-web",
+      "sourceEntrypoint": "apps/web/src/app/page.tsx",
+      "target": "runtime",
+      "workspace": "apps/web"
+    },
+    {
+      "dockerfile": "apps/worker/Dockerfile",
+      "image": "kovcheg-worker",
+      "sourceEntrypoint": "apps/worker/src/main.ts",
+      "target": "runtime",
+      "workspace": "apps/worker"
+    }
+  ],
+  "shellEntrypoints": [
+    "infra/postgres/migrate.sh",
+    "infra/postgres/tests/verify.sh",
+    "infra/scripts/compose.sh",
+    "infra/scripts/database-test.sh",
+    "infra/scripts/docker-smoke.sh",
+    "infra/scripts/docker-up.sh",
+    "infra/scripts/realtime-smoke.sh"
+  ],
+  "testOnlyEntrypoints": [
+    {
+      "path": "apps/api/src/message-flow/message-flow.integration-check.ts",
+      "reason": "Disposable database integration target used only by the data profile."
+    },
+    {
+      "path": "apps/auth/src/a2/auth.integration-check.ts",
+      "reason": "Disposable auth integration target used only by the data profile."
+    },
+    {
+      "path": "infra/realtime/test-api-main.mjs",
+      "reason": "Isolated realtime failure and recovery test entrypoint."
+    },
+    {
+      "path": "packages/contracts/src/testing/index.ts",
+      "reason": "Synthetic identity helpers are exported only for tests."
+    }
+  ]
+}

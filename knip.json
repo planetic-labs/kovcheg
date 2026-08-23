@@ -1,0 +1,38 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "treatConfigHintsAsErrors": true,
+  "workspaces": {
+    ".": {
+      "entry": [
+        "infra/scripts/**/*.{mjs,sh}",
+        "infra/postgres/**/*.sh",
+        "verification/**/*.{mjs,sh,ts}"
+      ],
+      "project": ["*.mjs", "infra/scripts/**/*.mjs", "verification/**/*.{mjs,ts}"]
+    },
+    "apps/api": {
+      "entry": ["src/main.ts!", "src/**/*.spec.ts", "src/**/*.integration-check.ts"],
+      "project": ["src/**/*.ts!"]
+    },
+    "apps/auth": {
+      "entry": ["src/main.ts!", "src/**/*.spec.ts", "src/**/*.integration-check.ts"],
+      "project": ["src/**/*.ts!"]
+    },
+    "apps/web": {
+      "entry": ["src/**/*.spec.ts"],
+      "project": ["src/**/*.{ts,tsx}!"]
+    },
+    "apps/worker": {
+      "entry": ["src/main.ts!", "src/**/*.spec.ts"],
+      "project": ["src/**/*.ts!"]
+    },
+    "packages/config": {
+      "entry": ["src/**/*.spec.ts"],
+      "project": ["src/**/*.ts!"]
+    },
+    "packages/contracts": {
+      "entry": ["src/**/*.spec.ts"],
+      "project": ["src/**/*.ts!", "!src/testing/**!"]
+    }
+  }
+}

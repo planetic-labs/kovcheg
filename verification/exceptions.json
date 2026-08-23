@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "exceptions": [
+    {
+      "check": "knip-production",
+      "path": "packages/contracts/src/testing/**",
+      "reason": "The explicit test-only package subpath must not become a production entrypoint."
+    },
+    {
+      "check": "production-payload",
+      "path": "apps/api/src/message-flow/message-flow.integration-check.ts",
+      "reason": "The integration-check target is built only for disposable database verification."
+    },
+    {
+      "check": "production-payload",
+      "path": "apps/auth/src/a2/auth.integration-check.ts",
+      "reason": "The integration-check target is built only for disposable auth verification."
+    },
+    {
+      "check": "production-payload",
+      "path": "infra/realtime/test-api-main.mjs",
+      "reason": "The isolated realtime test image is not a production image."
+    }
+  ]
+}
