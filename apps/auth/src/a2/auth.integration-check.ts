@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 
-import type { SessionId, UserId } from '@kovcheg/contracts';
+import { correlationIdHeaderName } from '@kovcheg/contracts';
+import type { CorrelationId, UserId } from '@kovcheg/contracts';
 import type { JWKS } from 'oidc-provider';
 
 import { createAuthApplication } from '../application.js';
@@ -24,6 +25,10 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function correlationId(value: string): CorrelationId {
+  return value as CorrelationId;
 }
 
 function signingKeys(): JWKS {
@@ -125,6 +130,25 @@ async function requestChallenge(baseUrl: string, email: string, suffix: string):
   });
 }
 
+async function administrativeRequest(input: {
+  readonly baseUrl: string;
+  readonly body?: unknown;
+  readonly cookie?: string;
+  readonly correlationId: string;
+  readonly method: 'DELETE' | 'PATCH' | 'POST';
+  readonly path: string;
+}): Promise<Response> {
+  return fetch(`${input.baseUrl}${input.path}`, {
+    ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+    headers: {
+      ...(input.cookie === undefined ? {} : { cookie: input.cookie }),
+      [correlationIdHeaderName]: input.correlationId,
+      ...(input.body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    method: input.method,
+  });
+}
+
 async function main(): Promise<void> {
   const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
   const administratorId = randomUUID() as UserId;
@@ -191,6 +215,7 @@ async function main(): Promise<void> {
         displayName: 'Synthetic Active Account',
         email: activeEmail,
       },
+      correlationId(`integration-admin-create-active-${suffix}`),
     );
     const inactiveAccount = await runtime.authService.createAccount(
       administratorSession.sessionToken,
@@ -198,11 +223,13 @@ async function main(): Promise<void> {
         displayName: 'Synthetic Inactive Account',
         email: inactiveEmail,
       },
+      correlationId(`integration-admin-create-inactive-${suffix}`),
     );
     await runtime.authService.setAccountStatus(
       administratorSession.sessionToken,
       inactiveAccount.userId,
       'deactivated',
+      correlationId(`integration-admin-deactivate-inactive-${suffix}`),
     );
     clock.advance(emailChallengePolicy.resendCooldownMs);
 
@@ -211,6 +238,135 @@ async function main(): Promise<void> {
     await app.listen(4302, '127.0.0.1');
     const baseUrl = await app.getUrl();
     try {
+      integrationStage = 'administrative-http';
+      const administratorCookie = `${runtime.sessionCookie.name}=${administratorSession.sessionToken}`;
+      const httpManagedEmail = `http-managed-${suffix}@auth.invalid`;
+      const httpCreate = await administrativeRequest({
+        baseUrl,
+        body: { displayName: 'Synthetic HTTP Managed Account', email: httpManagedEmail },
+        cookie: administratorCookie,
+        correlationId: `integration-admin-http-create-${suffix}`,
+        method: 'POST',
+        path: '/admin/accounts',
+      });
+      assert(httpCreate.status === 201, 'The protected HTTP API must create an account');
+      const httpManagedAccount = await readJson(httpCreate);
+      const httpManagedAccountId = httpManagedAccount.userId;
+      assert(typeof httpManagedAccountId === 'string', 'The HTTP-created account must have an ID');
+
+      const httpUpdate = await administrativeRequest({
+        baseUrl,
+        body: {
+          displayName: 'Synthetic HTTP Managed Account Updated',
+          email: `HTTP-MANAGED-${suffix}@AUTH.INVALID`,
+        },
+        cookie: administratorCookie,
+        correlationId: `integration-admin-http-update-${suffix}`,
+        method: 'PATCH',
+        path: `/admin/accounts/${httpManagedAccountId}`,
+      });
+      assert(httpUpdate.status === 200, 'The protected HTTP API must update an account');
+      const httpUpdatedAccount = await readJson(httpUpdate);
+      assert(
+        httpUpdatedAccount.email === httpManagedEmail &&
+          httpUpdatedAccount.displayName === 'Synthetic HTTP Managed Account Updated',
+        'The protected HTTP update must normalize identity fields',
+      );
+
+      const httpConflict = await administrativeRequest({
+        baseUrl,
+        body: { displayName: 'Must Roll Back', email: activeEmail },
+        cookie: administratorCookie,
+        correlationId: `integration-admin-http-conflict-${suffix}`,
+        method: 'PATCH',
+        path: `/admin/accounts/${httpManagedAccountId}`,
+      });
+      assert(httpConflict.status === 409, 'A normalized-email conflict must be machine-readable');
+      const conflictBody = await readJson(httpConflict);
+      assert(
+        conflictBody.error === 'auth.conflict' &&
+          conflictBody.correlationId === `integration-admin-http-conflict-${suffix}`,
+        'The conflict response must contain only its stable code and correlation ID',
+      );
+
+      const missingAdministrator = await administrativeRequest({
+        baseUrl,
+        body: { displayName: 'Denied', email: `denied-${suffix}@auth.invalid` },
+        correlationId: `integration-admin-http-missing-${suffix}`,
+        method: 'POST',
+        path: '/admin/accounts',
+      });
+      assert(
+        missingAdministrator.status === 401,
+        'A missing administrator session must fail closed',
+      );
+
+      const firstManagedChallenge = await requestChallenge(
+        baseUrl,
+        httpManagedEmail,
+        'http-managed-first',
+      );
+      const firstManagedChallengeBody = await readJson(firstManagedChallenge);
+      const firstManagedMessage = delivery.messages.at(-1);
+      assert(
+        firstManagedMessage !== undefined,
+        'The HTTP-managed account must receive a challenge',
+      );
+      const firstManagedVerification = await fetch(
+        `${baseUrl}/session/challenges/${String(firstManagedChallengeBody.challengeId)}/verify`,
+        {
+          body: JSON.stringify({ code: firstManagedMessage.code }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      const firstManagedCookie = responseCookie(firstManagedVerification);
+      clock.advance(emailChallengePolicy.resendCooldownMs);
+      const secondManagedChallenge = await requestChallenge(
+        baseUrl,
+        httpManagedEmail,
+        'http-managed-second',
+      );
+      const secondManagedChallengeBody = await readJson(secondManagedChallenge);
+      const secondManagedMessage = delivery.messages.at(-1);
+      assert(secondManagedMessage !== undefined, 'A second managed challenge must be delivered');
+      const secondManagedVerification = await fetch(
+        `${baseUrl}/session/challenges/${String(secondManagedChallengeBody.challengeId)}/verify`,
+        {
+          body: JSON.stringify({ code: secondManagedMessage.code }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      const secondManagedCookie = responseCookie(secondManagedVerification);
+      const revokeAllResponses = await Promise.all(
+        Array.from({ length: 8 }, async (_, index) =>
+          administrativeRequest({
+            baseUrl,
+            cookie: administratorCookie,
+            correlationId: `integration-admin-http-revoke-all-${suffix}-${index + 1}`,
+            method: 'DELETE',
+            path: `/admin/accounts/${httpManagedAccountId}/sessions`,
+          }),
+        ),
+      );
+      const revokeAllBodies = await Promise.all(revokeAllResponses.map(readJson));
+      assert(
+        revokeAllBodies.reduce(
+          (total, body) => total + Number(body.revokedSessionCount ?? Number.NaN),
+          0,
+        ) === 2 &&
+          revokeAllBodies.filter((body) => Number(body.revokedSessionCount) > 0).length === 1,
+        'Concurrent HTTP revoke-all retries must revoke each managed session exactly once',
+      );
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: firstManagedCookie } })).status ===
+          401 &&
+          (await fetch(`${baseUrl}/session`, { headers: { cookie: secondManagedCookie } }))
+            .status === 401,
+        'HTTP revoke-all must invalidate every target session',
+      );
+
       integrationStage = 'neutral-http-responses';
       const deliveredBeforeNeutralRequests = delivery.messages.length;
       const [known, inactive, unknown, unauthorized] = await Promise.all([
@@ -268,11 +424,16 @@ async function main(): Promise<void> {
         (await fetch(`${baseUrl}/session`, { headers: { cookie: activeCookie } })).status === 200,
         'A new durable session must authenticate',
       );
+      const revokeOne = await administrativeRequest({
+        baseUrl,
+        cookie: administratorCookie,
+        correlationId: `integration-admin-revoke-one-${suffix}`,
+        method: 'DELETE',
+        path: `/admin/accounts/${activeAccount.userId}/sessions/${activeSessionId}`,
+      });
+      assert(revokeOne.status === 200, 'Administrator session revoke must be available over HTTP');
       assert(
-        await runtime.authService.revokeSession(
-          administratorSession.sessionToken,
-          activeSessionId as SessionId,
-        ),
+        (await readJson(revokeOne)).revoked === true,
         'Administrator session revoke must change one durable session',
       );
       assert(
@@ -366,27 +527,64 @@ async function main(): Promise<void> {
         code: deactivationMessage.code,
         networkAddress: 'integration-network-deactivation',
       });
-      await runtime.authService
-        .createAccount(deactivationSession.sessionToken, {
+      const forbiddenAdministrativeRequest = await administrativeRequest({
+        baseUrl,
+        body: {
           displayName: 'Forbidden Synthetic Account',
           email: `forbidden-${suffix}@auth.invalid`,
+        },
+        cookie: `${runtime.sessionCookie.name}=${deactivationSession.sessionToken}`,
+        correlationId: `integration-admin-forbidden-${suffix}`,
+        method: 'POST',
+        path: '/admin/accounts',
+      });
+      assert(
+        forbiddenAdministrativeRequest.status === 403 &&
+          (await readJson(forbiddenAdministrativeRequest)).error === 'auth.forbidden',
+        'A non-administrator must be rejected by the protected HTTP API',
+      );
+      clock.advance(emailChallengePolicy.resendCooldownMs);
+      const pendingChallenge = await runtime.authService.requestEmailChallenge({
+        email: activeEmail,
+        fingerprint: `pending-deactivation-${suffix}`,
+        networkAddress: 'integration-network-pending-deactivation',
+      });
+      const pendingChallengeMessage = delivery.messages.at(-1);
+      assert(
+        pendingChallengeMessage !== undefined &&
+          pendingChallengeMessage.challengeId === pendingChallenge.challengeId,
+        'A pending challenge must exist before deactivation',
+      );
+      const deactivateAccount = await administrativeRequest({
+        baseUrl,
+        body: { status: 'deactivated' },
+        cookie: administratorCookie,
+        correlationId: `integration-admin-deactivate-active-${suffix}`,
+        method: 'PATCH',
+        path: `/admin/accounts/${activeAccount.userId}/status`,
+      });
+      assert(
+        deactivateAccount.status === 200 &&
+          (await readJson(deactivateAccount)).status === 'deactivated',
+        'Administrative deactivation must succeed through its protected HTTP wrapper',
+      );
+      await runtime.authService
+        .verifyEmailChallenge({
+          challengeId: pendingChallenge.challengeId,
+          code: pendingChallengeMessage.code,
+          networkAddress: 'integration-network-pending-deactivation',
         })
         .then(
           () => {
-            throw new Error('A non-administrator created an account');
+            throw new Error('A pending challenge survived deactivation');
           },
           (error: unknown) => {
             assert(
-              (error as { readonly code?: string }).code === 'auth.forbidden',
-              'A non-administrator must be rejected',
+              (error as { readonly code?: string }).code === 'auth.invalid-or-expired-challenge',
+              'Deactivation must invalidate every pending challenge',
             );
           },
         );
-      await runtime.authService.setAccountStatus(
-        administratorSession.sessionToken,
-        activeAccount.userId,
-        'deactivated',
-      );
       await runtime.authService.authenticateSession(deactivationSession.sessionToken).then(
         () => {
           throw new Error('A deactivated account retained its session');

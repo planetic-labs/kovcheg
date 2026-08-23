@@ -1,8 +1,10 @@
-import type { SessionId, UserId, Uuid } from '@kovcheg/contracts';
+import type { CorrelationId, SessionId, UserId, Uuid } from '@kovcheg/contracts';
 
 import {
   AuthError,
+  AuthRepositoryAuthorizationError,
   AuthRepositoryConflictError,
+  AuthRepositoryNotFoundError,
   normalizeDisplayName,
   normalizeEmail,
 } from './contracts.js';
@@ -16,6 +18,7 @@ import type {
   CreateAccountInput,
   RateLimitRule,
   SessionPrincipal,
+  UpdateAccountInput,
 } from './contracts.js';
 import type {
   AuthCrypto,
@@ -131,19 +134,20 @@ export class AuthService {
     }
   }
 
-  async createAccount(sessionToken: string, input: CreateAccountInput): Promise<AccountRecord> {
-    await this.requireAdministrator(sessionToken);
+  async createAccount(
+    administratorSessionToken: string,
+    input: CreateAccountInput,
+    correlationId: CorrelationId,
+  ): Promise<AccountRecord> {
     try {
-      return await this.dependencies.repository.createAccount({
+      return await this.dependencies.repository.createAccountAsAdministrator({
+        ...this.administrativeContext(administratorSessionToken, correlationId),
         displayName: normalizeDisplayName(input.displayName),
         email: normalizeEmail(input.email),
         userId: this.dependencies.random.userId(),
       });
     } catch (error) {
-      if (error instanceof AuthRepositoryConflictError) {
-        throw new AuthError('auth.conflict', 'An account already uses this identity');
-      }
-      throw error;
+      this.mapAdministrativeError(error);
     }
   }
 
@@ -207,27 +211,71 @@ export class AuthService {
     return Object.freeze({ challengeId, status: 'accepted' });
   }
 
-  async revokeSession(administratorSessionToken: string, sessionId: SessionId): Promise<boolean> {
-    await this.requireAdministrator(administratorSessionToken);
-    return this.dependencies.repository.revokeSessionById(sessionId, this.dependencies.clock.now());
+  async revokeAllSessions(
+    administratorSessionToken: string,
+    userId: UserId,
+    correlationId: CorrelationId,
+  ): Promise<number> {
+    try {
+      return await this.dependencies.repository.revokeAllSessionsAsAdministrator({
+        ...this.administrativeContext(administratorSessionToken, correlationId),
+        userId,
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
+    }
+  }
+
+  async revokeSession(
+    administratorSessionToken: string,
+    userId: UserId,
+    sessionId: SessionId,
+    correlationId: CorrelationId,
+  ): Promise<boolean> {
+    try {
+      return await this.dependencies.repository.revokeSessionAsAdministrator({
+        ...this.administrativeContext(administratorSessionToken, correlationId),
+        sessionId,
+        userId,
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
+    }
   }
 
   async setAccountStatus(
     administratorSessionToken: string,
     userId: UserId,
     status: AccountStatus,
+    correlationId: CorrelationId,
   ): Promise<AccountRecord> {
-    await this.requireAdministrator(administratorSessionToken);
-    const account = await this.dependencies.repository.setAccountStatusAndRevoke({
-      now: this.dependencies.clock.now(),
-      status,
-      userId,
-    });
-    if (account === null) {
-      throw new AuthError('auth.not-found', 'The account does not exist');
+    try {
+      return await this.dependencies.repository.setAccountStatusAsAdministrator({
+        ...this.administrativeContext(administratorSessionToken, correlationId),
+        status,
+        userId,
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
     }
+  }
 
-    return account;
+  async updateAccount(
+    administratorSessionToken: string,
+    userId: UserId,
+    input: UpdateAccountInput,
+    correlationId: CorrelationId,
+  ): Promise<AccountRecord> {
+    try {
+      return await this.dependencies.repository.updateAccountAsAdministrator({
+        ...this.administrativeContext(administratorSessionToken, correlationId),
+        displayName: normalizeDisplayName(input.displayName),
+        email: normalizeEmail(input.email),
+        userId,
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
+    }
   }
 
   async verifyEmailChallenge(input: ChallengeVerificationInput): Promise<AuthenticatedSession> {
@@ -302,12 +350,31 @@ export class AuthService {
     }
   }
 
-  private async requireAdministrator(sessionToken: string): Promise<SessionPrincipal> {
-    const principal = await this.authenticateSession(sessionToken);
-    if (!principal.roles.includes('administrator')) {
-      throw new AuthError('auth.forbidden', 'Administrator permission is required');
-    }
+  private administrativeContext(
+    sessionToken: string,
+    correlationId: CorrelationId,
+  ): {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+  } {
+    return Object.freeze({
+      actorSessionVerifier: this.dependencies.crypto.sessionTokenVerifier(sessionToken),
+      correlationId,
+      now: this.dependencies.clock.now(),
+    });
+  }
 
-    return principal;
+  private mapAdministrativeError(error: unknown): never {
+    if (error instanceof AuthRepositoryAuthorizationError) {
+      throw new AuthError('auth.forbidden', 'Administrative authorization failed');
+    }
+    if (error instanceof AuthRepositoryConflictError) {
+      throw new AuthError('auth.conflict', 'The administrative operation conflicts');
+    }
+    if (error instanceof AuthRepositoryNotFoundError) {
+      throw new AuthError('auth.not-found', 'The requested account does not exist');
+    }
+    throw error;
   }
 }

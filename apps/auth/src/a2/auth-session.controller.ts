@@ -5,7 +5,6 @@ import {
   Get,
   Header,
   HttpCode,
-  HttpException,
   HttpStatus,
   Inject,
   Param,
@@ -14,15 +13,20 @@ import {
   Res,
 } from '@nestjs/common';
 
-import type { Uuid } from '@kovcheg/contracts';
+import type { CorrelationId, Uuid } from '@kovcheg/contracts';
 
-import { toAuthHttpException } from './http-errors.js';
+import { authHttpException, toAuthHttpException } from './http-errors.js';
 import type { AuthRuntime } from './runtime.js';
 import { authRuntimeToken } from './runtime.js';
 
 interface AuthHttpRequest {
+  readonly correlationId?: CorrelationId;
   readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>;
   readonly socket: { readonly remoteAddress?: string | undefined };
+}
+
+function correlationId(request: AuthHttpRequest): CorrelationId {
+  return request.correlationId as CorrelationId;
 }
 
 interface AuthHttpResponse {
@@ -67,7 +71,7 @@ export class AuthSessionController {
         ...requestDimensions(request),
       });
     } catch (error) {
-      toAuthHttpException(error);
+      toAuthHttpException(error, correlationId(request));
     }
   }
 
@@ -85,10 +89,7 @@ export class AuthSessionController {
         challengeId,
       )
     ) {
-      throw new HttpException(
-        Object.freeze({ error: 'auth.invalid-or-expired-challenge' }),
-        HttpStatus.UNAUTHORIZED,
-      );
+      throw authHttpException('auth.invalid-or-expired-challenge', correlationId(request));
     }
     try {
       const session = await this.runtime.authService.verifyEmailChallenge({
@@ -104,7 +105,7 @@ export class AuthSessionController {
         userId: session.userId,
       });
     } catch (error) {
-      toAuthHttpException(error);
+      toAuthHttpException(error, correlationId(request));
     }
   }
 
@@ -113,15 +114,12 @@ export class AuthSessionController {
   async getSession(@Req() request: AuthHttpRequest) {
     const token = this.runtime.sessionCookie.read(cookieHeader(request));
     if (token === null) {
-      throw new HttpException(
-        Object.freeze({ error: 'auth.invalid-session' }),
-        HttpStatus.UNAUTHORIZED,
-      );
+      throw authHttpException('auth.invalid-session', correlationId(request));
     }
     try {
       return await this.runtime.authService.authenticateSession(token);
     } catch (error) {
-      toAuthHttpException(error);
+      toAuthHttpException(error, correlationId(request));
     }
   }
 
@@ -138,7 +136,7 @@ export class AuthSessionController {
       try {
         await this.runtime.authService.logout(token);
       } catch (error) {
-        toAuthHttpException(error);
+        toAuthHttpException(error, correlationId(request));
       }
     }
   }

@@ -5,7 +5,12 @@ import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
 import type { PoolConfig, QueryResultRow } from 'pg';
 import { Pool } from 'pg';
 
-import { AuthError, AuthRepositoryConflictError } from './contracts.js';
+import {
+  AuthError,
+  AuthRepositoryAuthorizationError,
+  AuthRepositoryConflictError,
+  AuthRepositoryNotFoundError,
+} from './contracts.js';
 import type { AccountRecord, AccountRole, AccountStatus, SessionPrincipal } from './contracts.js';
 import type { OidcClientRepository, RegisteredOidcClient } from './oidc.js';
 import type {
@@ -89,8 +94,14 @@ function mapPostgresError(error: unknown): Error {
     return error;
   }
   const postgresError = error as { readonly code?: string };
+  if (postgresError.code === '42501') {
+    return new AuthRepositoryAuthorizationError();
+  }
   if (postgresError.code === '23505') {
     return new AuthRepositoryConflictError();
+  }
+  if (postgresError.code === 'P0002') {
+    return new AuthRepositoryNotFoundError();
   }
   return unavailable();
 }
@@ -237,14 +248,26 @@ export class PostgresAuthRepository implements AuthRepository {
     });
   }
 
-  async createAccount(
-    input: Parameters<AuthRepository['createAccount']>[0],
+  async createAccountAsAdministrator(
+    input: Parameters<AuthRepository['createAccountAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     const rows = await query<AccountRow>(
       this.client,
-      `SELECT account_id, email, display_name, auth_role, account_status
-       FROM kovcheg.create_auth_account($1, $2, $3)`,
-      [input.userId, input.email, input.displayName],
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $5)
+       )
+       SELECT account_id, email, display_name, auth_role, account_status
+       FROM session_activity
+       CROSS JOIN LATERAL kovcheg.admin_create_auth_account($1, $2, $3, $4, $5, $6)`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.email,
+        input.displayName,
+        new Date(input.now),
+        input.correlationId,
+      ],
     );
     const account = mapAccount(rows[0]);
     if (account === null) {
@@ -304,24 +327,107 @@ export class PostgresAuthRepository implements AuthRepository {
     });
   }
 
-  async revokeSessionById(sessionId: SessionId, now: number): Promise<boolean> {
-    return this.booleanFunction('kovcheg.revoke_auth_session_by_id', sessionId, now);
+  async revokeAllSessionsAsAdministrator(
+    input: Parameters<AuthRepository['revokeAllSessionsAsAdministrator']>[0],
+  ): Promise<number> {
+    const rows = await query<CountRow>(
+      this.client,
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $3)
+       )
+       SELECT kovcheg.admin_revoke_all_auth_sessions($1, $2, $3, $4) AS result
+       FROM session_activity`,
+      [input.actorSessionVerifier, input.userId, new Date(input.now), input.correlationId],
+    );
+    if (!Number.isSafeInteger(rows[0]?.result) || (rows[0]?.result ?? -1) < 0) {
+      throw unavailable();
+    }
+    return rows[0]?.result ?? 0;
+  }
+
+  async revokeSessionAsAdministrator(
+    input: Parameters<AuthRepository['revokeSessionAsAdministrator']>[0],
+  ): Promise<boolean> {
+    const rows = await query<BooleanRow>(
+      this.client,
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $4)
+       )
+       SELECT kovcheg.admin_revoke_auth_session($1, $2, $3, $4, $5) AS result
+       FROM session_activity`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.sessionId,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    if (typeof rows[0]?.result !== 'boolean') {
+      throw unavailable();
+    }
+    return rows[0].result;
   }
 
   async revokeSessionByVerifier(tokenVerifier: string, now: number): Promise<boolean> {
     return this.booleanFunction('kovcheg.revoke_auth_session_by_verifier', tokenVerifier, now);
   }
 
-  async setAccountStatusAndRevoke(
-    input: Parameters<AuthRepository['setAccountStatusAndRevoke']>[0],
-  ): Promise<AccountRecord | null> {
+  async setAccountStatusAsAdministrator(
+    input: Parameters<AuthRepository['setAccountStatusAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
     const rows = await query<AccountRow>(
       this.client,
-      `SELECT account_id, email, display_name, auth_role, account_status
-       FROM kovcheg.set_auth_account_status_and_revoke($1, $2, $3)`,
-      [input.userId, input.status, new Date(input.now)],
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $4)
+       )
+       SELECT account_id, email, display_name, auth_role, account_status
+       FROM session_activity
+       CROSS JOIN LATERAL kovcheg.admin_set_auth_account_status($1, $2, $3, $4, $5)`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.status,
+        new Date(input.now),
+        input.correlationId,
+      ],
     );
-    return mapAccount(rows[0]);
+    const account = mapAccount(rows[0]);
+    if (account === null) {
+      throw unavailable();
+    }
+    return account;
+  }
+
+  async updateAccountAsAdministrator(
+    input: Parameters<AuthRepository['updateAccountAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    const rows = await query<AccountRow>(
+      this.client,
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $5)
+       )
+       SELECT account_id, email, display_name, auth_role, account_status
+       FROM session_activity
+       CROSS JOIN LATERAL kovcheg.admin_update_auth_account($1, $2, $3, $4, $5, $6)`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.email,
+        input.displayName,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const account = mapAccount(rows[0]);
+    if (account === null) {
+      throw unavailable();
+    }
+    return account;
   }
 
   private async booleanFunction(

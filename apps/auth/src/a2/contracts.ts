@@ -23,6 +23,8 @@ export interface CreateAccountInput {
   readonly email: string;
 }
 
+export type UpdateAccountInput = CreateAccountInput;
+
 export interface ChallengeRecordInput {
   readonly challengeId: Uuid;
   readonly codeVerifier: string;
@@ -142,5 +144,19 @@ export class AuthRepositoryConflictError extends Error {
   constructor() {
     super('The requested auth record conflicts with existing state');
     this.name = 'AuthRepositoryConflictError';
+  }
+}
+
+export class AuthRepositoryAuthorizationError extends Error {
+  constructor() {
+    super('Administrative authorization failed');
+    this.name = 'AuthRepositoryAuthorizationError';
+  }
+}
+
+export class AuthRepositoryNotFoundError extends Error {
+  constructor() {
+    super('The requested auth record does not exist');
+    this.name = 'AuthRepositoryNotFoundError';
   }
 }

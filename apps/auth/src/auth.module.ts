@@ -2,6 +2,7 @@ import type { DynamicModule } from '@nestjs/common';
 import type { OnApplicationShutdown } from '@nestjs/common';
 import { Inject, Injectable, Module } from '@nestjs/common';
 
+import { AuthAdministrationController } from './a2/auth-administration.controller.js';
 import { AuthSessionController } from './a2/auth-session.controller.js';
 import { OidcInteractionController } from './a2/oidc-interaction.controller.js';
 import { authRuntimeToken } from './a2/runtime.js';
@@ -21,7 +22,7 @@ class AuthRuntimeLifecycle implements OnApplicationShutdown {
 export class AuthModule {
   static register(runtime: AuthRuntime): DynamicModule {
     return {
-      controllers: [AuthSessionController, OidcInteractionController],
+      controllers: [AuthAdministrationController, AuthSessionController, OidcInteractionController],
       module: AuthModule,
       providers: [{ provide: authRuntimeToken, useValue: runtime }, AuthRuntimeLifecycle],
     };

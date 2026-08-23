@@ -1,4 +1,5 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
+import type { CorrelationId } from '@kovcheg/contracts';
 
 import { AuthError } from './contracts.js';
 
@@ -13,9 +14,16 @@ const statusByCode: Readonly<Record<AuthError['code'], HttpStatus>> = Object.fre
   'auth.unavailable': HttpStatus.SERVICE_UNAVAILABLE,
 });
 
-export function toAuthHttpException(error: unknown): never {
+export function authHttpException(
+  code: AuthError['code'],
+  correlationId: CorrelationId,
+): HttpException {
+  return new HttpException(Object.freeze({ correlationId, error: code }), statusByCode[code]);
+}
+
+export function toAuthHttpException(error: unknown, correlationId: CorrelationId): never {
   if (error instanceof AuthError) {
-    throw new HttpException(Object.freeze({ error: error.code }), statusByCode[error.code]);
+    throw authHttpException(error.code, correlationId);
   }
   throw error;
 }

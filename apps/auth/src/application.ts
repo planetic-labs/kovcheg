@@ -17,6 +17,8 @@ function isNestOwnedPath(url: string | undefined): boolean {
     path === '/session' ||
     path === '/session/challenges' ||
     path.startsWith('/session/challenges/') ||
+    path === '/admin/accounts' ||
+    path.startsWith('/admin/accounts/') ||
     path === '/health' ||
     path.startsWith('/health/') ||
     path === '/docs' ||

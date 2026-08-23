@@ -1,8 +1,12 @@
 import { timingSafeEqual } from 'node:crypto';
 
-import type { SessionId, UserId, Uuid } from '@kovcheg/contracts';
+import type { UserId, Uuid } from '@kovcheg/contracts';
 
-import { AuthRepositoryConflictError } from './contracts.js';
+import {
+  AuthRepositoryAuthorizationError,
+  AuthRepositoryConflictError,
+  AuthRepositoryNotFoundError,
+} from './contracts.js';
 import type {
   AccountRecord,
   AccountRole,
@@ -207,12 +211,11 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
-  createAccount(input: {
-    readonly displayName: string;
-    readonly email: string;
-    readonly userId: UserId;
-  }): Promise<AccountRecord> {
+  createAccountAsAdministrator(
+    input: Parameters<AuthRepository['createAccountAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
     return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
       if (this.accountsById.has(input.userId) || this.accountsByEmail.has(input.email)) {
         throw new AuthRepositoryConflictError();
       }
@@ -289,11 +292,40 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
-  revokeSessionById(sessionId: SessionId, now: number): Promise<boolean> {
+  revokeAllSessionsAsAdministrator(
+    input: Parameters<AuthRepository['revokeAllSessionsAsAdministrator']>[0],
+  ): Promise<number> {
     return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      if (!this.accountsById.has(input.userId)) {
+        throw new AuthRepositoryNotFoundError();
+      }
+      let revokedSessionCount = 0;
       for (const session of this.sessionsByVerifier.values()) {
-        if (session.sessionId === sessionId && session.revokedAt === null) {
-          session.revokedAt = now;
+        if (session.accountId === input.userId && session.revokedAt === null) {
+          session.revokedAt = input.now;
+          revokedSessionCount += 1;
+        }
+      }
+      return revokedSessionCount;
+    });
+  }
+
+  revokeSessionAsAdministrator(
+    input: Parameters<AuthRepository['revokeSessionAsAdministrator']>[0],
+  ): Promise<boolean> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      if (!this.accountsById.has(input.userId)) {
+        throw new AuthRepositoryNotFoundError();
+      }
+      for (const session of this.sessionsByVerifier.values()) {
+        if (
+          session.accountId === input.userId &&
+          session.sessionId === input.sessionId &&
+          session.revokedAt === null
+        ) {
+          session.revokedAt = input.now;
           return true;
         }
       }
@@ -312,15 +344,14 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
-  setAccountStatusAndRevoke(input: {
-    readonly now: number;
-    readonly status: AccountStatus;
-    readonly userId: UserId;
-  }): Promise<AccountRecord | null> {
+  setAccountStatusAsAdministrator(
+    input: Parameters<AuthRepository['setAccountStatusAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
     return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
       const account = this.accountsById.get(input.userId);
       if (account === undefined) {
-        return null;
+        throw new AuthRepositoryNotFoundError();
       }
       account.status = input.status;
       if (input.status === 'deactivated') {
@@ -341,6 +372,51 @@ export class LocalAuthRepository implements AuthRepository {
       }
       return cloneAccount(account);
     });
+  }
+
+  updateAccountAsAdministrator(
+    input: Parameters<AuthRepository['updateAccountAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const account = this.accountsById.get(input.userId);
+      if (account === undefined) {
+        throw new AuthRepositoryNotFoundError();
+      }
+      const emailOwner = this.accountsByEmail.get(input.email);
+      if (emailOwner !== undefined && emailOwner.userId !== account.userId) {
+        throw new AuthRepositoryConflictError();
+      }
+      this.accountsByEmail.delete(account.email);
+      account.email = input.email;
+      account.displayName = input.displayName;
+      this.accountsByEmail.set(account.email, account);
+      return cloneAccount(account);
+    });
+  }
+
+  private requireAdministrator(actorSessionVerifier: string, now: number): StoredAccount {
+    const session = this.sessionsByVerifier.get(actorSessionVerifier);
+    if (
+      session === undefined ||
+      session.revokedAt !== null ||
+      now < session.issuedAt ||
+      now >= session.idleExpiresAt ||
+      now >= session.absoluteExpiresAt
+    ) {
+      throw new AuthRepositoryAuthorizationError();
+    }
+    const account = this.accountsById.get(session.accountId);
+    if (
+      account === undefined ||
+      account.status !== 'active' ||
+      !account.roles.includes('administrator')
+    ) {
+      throw new AuthRepositoryAuthorizationError();
+    }
+    session.lastSeenAt = now;
+    session.idleExpiresAt = Math.min(session.absoluteExpiresAt, now + session.idleLifetimeMs);
+    return account;
   }
 }
 

@@ -1,7 +1,12 @@
+import type { CorrelationId } from '@kovcheg/contracts';
 import type { QueryResultRow } from 'pg';
 import { describe, expect, it } from 'vitest';
 
-import { AuthRepositoryConflictError } from './contracts.js';
+import {
+  AuthRepositoryAuthorizationError,
+  AuthRepositoryConflictError,
+  AuthRepositoryNotFoundError,
+} from './contracts.js';
 import {
   createPostgresOidcStorageAdapter,
   PostgresAuthRepository,
@@ -95,12 +100,106 @@ describe('A2 PostgreSQL auth repository', () => {
     const client = new QueryFixture([{ error: { code: '23505' } }]);
     const repository = new PostgresAuthRepository(client);
     await expect(
-      repository.createAccount({
+      repository.createAccountAsAdministrator({
+        actorSessionVerifier: 'v'.repeat(43),
+        correlationId: 'postgres-admin-conflict' as CorrelationId,
         displayName: 'Synthetic Duplicate',
         email: 'synthetic-duplicate@example.invalid',
+        now: Date.now(),
         userId: '00000000-0000-4000-8000-000000000053',
       }),
     ).rejects.toBeInstanceOf(AuthRepositoryConflictError);
+  });
+
+  it('uses only actor-verified 0006 wrappers for every administrative mutation', async () => {
+    const account = {
+      account_id: '00000000-0000-4000-8000-000000000053',
+      account_status: 'active',
+      auth_role: 'student',
+      display_name: 'Synthetic Account',
+      email: 'synthetic-account@example.invalid',
+    };
+    const client = new QueryFixture([
+      [account],
+      [account],
+      [account],
+      [{ result: true }],
+      [{ result: 3 }],
+    ]);
+    const repository = new PostgresAuthRepository(client);
+    const administrative = {
+      actorSessionVerifier: 'a'.repeat(43),
+      correlationId: 'postgres-admin-operation' as CorrelationId,
+      now: Date.parse('2030-01-01T00:00:00Z'),
+      userId: '00000000-0000-4000-8000-000000000053' as const,
+    };
+
+    await repository.createAccountAsAdministrator({
+      ...administrative,
+      displayName: account.display_name,
+      email: account.email,
+    });
+    await repository.updateAccountAsAdministrator({
+      ...administrative,
+      displayName: account.display_name,
+      email: account.email,
+    });
+    await repository.setAccountStatusAsAdministrator({
+      ...administrative,
+      status: 'active',
+    });
+    await expect(
+      repository.revokeSessionAsAdministrator({
+        ...administrative,
+        sessionId: '00000000-0000-4000-8000-000000000054',
+      }),
+    ).resolves.toBe(true);
+    await expect(repository.revokeAllSessionsAsAdministrator(administrative)).resolves.toBe(3);
+
+    expect(client.calls.map((call) => call.text)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('kovcheg.admin_create_auth_account'),
+        expect.stringContaining('kovcheg.admin_update_auth_account'),
+        expect.stringContaining('kovcheg.admin_set_auth_account_status'),
+        expect.stringContaining('kovcheg.admin_revoke_auth_session'),
+        expect.stringContaining('kovcheg.admin_revoke_all_auth_sessions'),
+      ]),
+    );
+    expect(
+      client.calls.every((call) => call.values[0] === administrative.actorSessionVerifier),
+    ).toBe(true);
+    expect(
+      client.calls.every(
+        (call) =>
+          !/\b(?:INSERT|UPDATE|DELETE)\b/i.test(call.text) &&
+          !/FROM kovcheg\.create_auth_account\(/.test(call.text) &&
+          !/FROM kovcheg\.set_auth_account_status_and_revoke\(/.test(call.text) &&
+          !/kovcheg\.revoke_auth_session_by_id\(/.test(call.text),
+      ),
+    ).toBe(true);
+  });
+
+  it('maps protected-wrapper authorization and missing-target failures without details', async () => {
+    const client = new QueryFixture([
+      { error: { code: '42501', detail: 'must not escape' } },
+      { error: { code: 'P0002', detail: 'must not escape' } },
+    ]);
+    const repository = new PostgresAuthRepository(client);
+    const administrative = {
+      actorSessionVerifier: 'a'.repeat(43),
+      correlationId: 'postgres-admin-failure' as CorrelationId,
+      displayName: 'Synthetic Account',
+      email: 'synthetic-account@example.invalid',
+      now: Date.parse('2030-01-01T00:00:00Z'),
+      userId: '00000000-0000-4000-8000-000000000053' as const,
+    };
+
+    await expect(repository.createAccountAsAdministrator(administrative)).rejects.toEqual(
+      new AuthRepositoryAuthorizationError(),
+    );
+    await expect(repository.updateAccountAsAdministrator(administrative)).rejects.toEqual(
+      new AuthRepositoryNotFoundError(),
+    );
   });
 });
 

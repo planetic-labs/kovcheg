@@ -1,4 +1,4 @@
-import type { SessionId, UserId, Uuid } from '@kovcheg/contracts';
+import type { CorrelationId, SessionId, UserId, Uuid } from '@kovcheg/contracts';
 
 import type {
   AccountRecord,
@@ -38,9 +38,12 @@ export interface AuthRepository {
     readonly now: number;
     readonly session: SessionRecordInput;
   }): Promise<ConsumeChallengeResult>;
-  createAccount(input: {
+  createAccountAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
     readonly displayName: string;
     readonly email: string;
+    readonly now: number;
     readonly userId: UserId;
   }): Promise<AccountRecord>;
   findAccountById(userId: UserId): Promise<AccountRecord | null>;
@@ -50,13 +53,35 @@ export interface AuthRepository {
     readonly email: string;
     readonly resendCooldownMs: number;
   }): Promise<IssueChallengeResult>;
-  revokeSessionById(sessionId: SessionId, now: number): Promise<boolean>;
+  revokeAllSessionsAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+    readonly userId: UserId;
+  }): Promise<number>;
+  revokeSessionAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+    readonly sessionId: SessionId;
+    readonly userId: UserId;
+  }): Promise<boolean>;
   revokeSessionByVerifier(tokenVerifier: string, now: number): Promise<boolean>;
-  setAccountStatusAndRevoke(input: {
+  setAccountStatusAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
     readonly now: number;
     readonly status: AccountStatus;
     readonly userId: UserId;
-  }): Promise<AccountRecord | null>;
+  }): Promise<AccountRecord>;
+  updateAccountAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly displayName: string;
+    readonly email: string;
+    readonly now: number;
+    readonly userId: UserId;
+  }): Promise<AccountRecord>;
 }
 
 export interface AuthCrypto {

@@ -1,13 +1,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { Controller, Get, HttpException, HttpStatus, Inject, Req, Res } from '@nestjs/common';
+import { Controller, Get, Inject, Req, Res } from '@nestjs/common';
+import type { CorrelationId } from '@kovcheg/contracts';
 
-import { toAuthHttpException } from './http-errors.js';
+import { authHttpException, toAuthHttpException } from './http-errors.js';
 import { completeOidcInteraction } from './oidc.js';
 import type { AuthRuntime } from './runtime.js';
 import { authRuntimeToken } from './runtime.js';
 
 type InteractionRequest = IncomingMessage & {
+  readonly correlationId?: CorrelationId;
   readonly headers: IncomingMessage['headers'];
 };
 
@@ -22,10 +24,7 @@ export class OidcInteractionController {
   ): Promise<void> {
     const sessionToken = this.runtime.sessionCookie.read(request.headers.cookie);
     if (sessionToken === null) {
-      throw new HttpException(
-        Object.freeze({ error: 'auth.invalid-session' }),
-        HttpStatus.UNAUTHORIZED,
-      );
+      throw authHttpException('auth.invalid-session', request.correlationId as CorrelationId);
     }
     try {
       await completeOidcInteraction({
@@ -37,7 +36,7 @@ export class OidcInteractionController {
         sessionToken,
       });
     } catch (error) {
-      toAuthHttpException(error);
+      toAuthHttpException(error, request.correlationId as CorrelationId);
     }
   }
 }

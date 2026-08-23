@@ -1,4 +1,5 @@
-import type { UserId } from '@kovcheg/contracts';
+import { correlationIdHeaderName } from '@kovcheg/contracts';
+import type { CorrelationId, UserId } from '@kovcheg/contracts';
 import { loadServiceConfig } from '@kovcheg/config';
 import { exportJWK, generateKeyPair } from 'jose';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +12,7 @@ import { createAuthRuntime } from './runtime.js';
 import type { EnabledAuthRuntimeConfig } from './runtime-config.js';
 
 const administratorId = '00000000-0000-4000-8000-000000000031' satisfies UserId;
+const setupCorrelationId = 'http-runtime-setup' as CorrelationId;
 const openApplications: Awaited<ReturnType<typeof createAuthApplication>>[] = [];
 
 afterEach(async () => {
@@ -110,21 +112,27 @@ async function createFixture() {
     code: administratorMessage.code,
     networkAddress: 'fixture-network',
   });
-  const activeAccount = await runtime.authService.createAccount(administratorSession.sessionToken, {
-    displayName: 'Active HTTP Account',
-    email: 'active-http@example.invalid',
-  });
+  const activeAccount = await runtime.authService.createAccount(
+    administratorSession.sessionToken,
+    {
+      displayName: 'Active HTTP Account',
+      email: 'active-http@example.invalid',
+    },
+    setupCorrelationId,
+  );
   const inactiveAccount = await runtime.authService.createAccount(
     administratorSession.sessionToken,
     {
       displayName: 'Inactive HTTP Account',
       email: 'inactive-http@example.invalid',
     },
+    setupCorrelationId,
   );
   await runtime.authService.setAccountStatus(
     administratorSession.sessionToken,
     inactiveAccount.userId,
     'deactivated',
+    setupCorrelationId,
   );
   delivery.messages.splice(0);
 
@@ -160,6 +168,56 @@ function responseCookie(response: Response): string {
   return setCookie.split(';', 1)[0] ?? '';
 }
 
+function issuedCookie(
+  runtime: Awaited<ReturnType<typeof createFixture>>['runtime'],
+  token: string,
+) {
+  return runtime.sessionCookie.issue(token).split(';', 1)[0] ?? '';
+}
+
+async function loginThroughHttp(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  email: string,
+): Promise<{ readonly cookie: string; readonly sessionId: string }> {
+  const challengeResponse = await requestChallenge(fixture.baseUrl, email);
+  const challenge = (await challengeResponse.json()) as { readonly challengeId: string };
+  const message = fixture.delivery.messages.at(-1);
+  if (message === undefined || message.challengeId !== challenge.challengeId) {
+    throw new Error('Expected an HTTP challenge delivery');
+  }
+  const verification = await fetch(
+    `${fixture.baseUrl}/session/challenges/${challenge.challengeId}/verify`,
+    {
+      body: JSON.stringify({ code: message.code }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    },
+  );
+  const body = (await verification.json()) as { readonly sessionId: string };
+  return Object.freeze({ cookie: responseCookie(verification), sessionId: body.sessionId });
+}
+
+async function adminRequest(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  input: {
+    readonly body?: unknown;
+    readonly cookie?: string;
+    readonly correlationId: string;
+    readonly method: 'DELETE' | 'PATCH' | 'POST';
+    readonly path: string;
+  },
+): Promise<Response> {
+  return fetch(`${fixture.baseUrl}${input.path}`, {
+    ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+    headers: {
+      ...(input.cookie === undefined ? {} : { cookie: input.cookie }),
+      [correlationIdHeaderName]: input.correlationId,
+      ...(input.body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    method: input.method,
+  });
+}
+
 describe('A2 auth HTTP runtime', () => {
   it('returns the same neutral response shape for known, inactive, and unknown email', async () => {
     const fixture = await createFixture();
@@ -191,9 +249,9 @@ describe('A2 auth HTTP runtime', () => {
     expect(fixture.delivery.messages).toHaveLength(1);
     expect(fixture.delivery.messages[0]?.recipient).toBe('active-http@example.invalid');
     expect(unauthorized.status).toBe(401);
-    await expect(unauthorized.json()).resolves.toEqual({ error: 'auth.invalid-session' });
+    await expect(unauthorized.json()).resolves.toMatchObject({ error: 'auth.invalid-session' });
     expect(oidcUnauthorized.status).toBe(401);
-    await expect(oidcUnauthorized.json()).resolves.toEqual({ error: 'auth.invalid-session' });
+    await expect(oidcUnauthorized.json()).resolves.toMatchObject({ error: 'auth.invalid-session' });
     expect(discovery.status).toBe(200);
     await expect(discovery.json()).resolves.toMatchObject({
       issuer: 'http://127.0.0.1:4301',
@@ -283,6 +341,236 @@ describe('A2 auth HTTP runtime', () => {
     ).toMatchObject({ status: 200 });
   });
 
+  it('exposes protected create, update, status, and scoped session revocation over HTTP', async () => {
+    const fixture = await createFixture();
+    const administratorCookie = issuedCookie(
+      fixture.runtime,
+      fixture.administratorSession.sessionToken,
+    );
+    const createdResponse = await adminRequest(fixture, {
+      body: {
+        displayName: '  Administrative   HTTP Account ',
+        email: ' ADMINISTRATION@example.invalid ',
+      },
+      cookie: administratorCookie,
+      correlationId: 'http-admin-create',
+      method: 'POST',
+      path: '/admin/accounts',
+    });
+    expect(createdResponse.status).toBe(201);
+    expect(createdResponse.headers.get(correlationIdHeaderName)).toBe('http-admin-create');
+    const created = (await createdResponse.json()) as {
+      readonly displayName: string;
+      readonly email: string;
+      readonly userId: string;
+    };
+    expect(created).toMatchObject({
+      displayName: 'Administrative HTTP Account',
+      email: 'administration@example.invalid',
+    });
+
+    const unexpectedFieldResponse = await adminRequest(fixture, {
+      body: {
+        displayName: 'Rejected Account',
+        email: 'rejected-account@example.invalid',
+        unexpected: true,
+      },
+      cookie: administratorCookie,
+      correlationId: 'http-admin-unexpected-field',
+      method: 'POST',
+      path: '/admin/accounts',
+    });
+    expect(unexpectedFieldResponse.status).toBe(400);
+    await expect(unexpectedFieldResponse.json()).resolves.toEqual({
+      correlationId: 'http-admin-unexpected-field',
+      error: 'auth.invalid-input',
+    });
+
+    const updatedResponse = await adminRequest(fixture, {
+      body: {
+        displayName: 'Updated Administrative Account',
+        email: 'updated-administration@example.invalid',
+      },
+      cookie: administratorCookie,
+      correlationId: 'http-admin-update',
+      method: 'PATCH',
+      path: `/admin/accounts/${created.userId}`,
+    });
+    expect(updatedResponse.status).toBe(200);
+    await expect(updatedResponse.json()).resolves.toMatchObject({
+      displayName: 'Updated Administrative Account',
+      email: 'updated-administration@example.invalid',
+    });
+
+    const conflictResponse = await adminRequest(fixture, {
+      body: { displayName: 'Must Roll Back', email: 'active-http@example.invalid' },
+      cookie: administratorCookie,
+      correlationId: 'http-admin-update-conflict',
+      method: 'PATCH',
+      path: `/admin/accounts/${created.userId}`,
+    });
+    expect(conflictResponse.status).toBe(409);
+    await expect(conflictResponse.json()).resolves.toEqual({
+      correlationId: 'http-admin-update-conflict',
+      error: 'auth.conflict',
+    });
+
+    const missingResponse = await adminRequest(fixture, {
+      body: { displayName: 'Missing', email: 'missing-http@example.invalid' },
+      cookie: administratorCookie,
+      correlationId: 'http-admin-missing-target',
+      method: 'PATCH',
+      path: '/admin/accounts/00000000-0000-4000-8000-000000000099',
+    });
+    expect(missingResponse.status).toBe(404);
+    await expect(missingResponse.json()).resolves.toEqual({
+      correlationId: 'http-admin-missing-target',
+      error: 'auth.not-found',
+    });
+
+    const firstSession = await loginThroughHttp(fixture, 'updated-administration@example.invalid');
+    fixture.clock.advance(emailChallengePolicy.resendCooldownMs);
+    const secondSession = await loginThroughHttp(fixture, 'updated-administration@example.invalid');
+    const otherSession = await loginThroughHttp(fixture, 'active-http@example.invalid');
+
+    const foreignRevoke = await adminRequest(fixture, {
+      cookie: administratorCookie,
+      correlationId: 'http-admin-revoke-foreign',
+      method: 'DELETE',
+      path: `/admin/accounts/${created.userId}/sessions/${otherSession.sessionId}`,
+    });
+    expect(foreignRevoke.status).toBe(200);
+    await expect(foreignRevoke.json()).resolves.toEqual({ revoked: false });
+    expect(
+      await fetch(`${fixture.baseUrl}/session`, { headers: { cookie: otherSession.cookie } }),
+    ).toMatchObject({ status: 200 });
+
+    const oneRevoke = await adminRequest(fixture, {
+      cookie: administratorCookie,
+      correlationId: 'http-admin-revoke-one',
+      method: 'DELETE',
+      path: `/admin/accounts/${created.userId}/sessions/${firstSession.sessionId}`,
+    });
+    await expect(oneRevoke.json()).resolves.toEqual({ revoked: true });
+    expect(
+      await fetch(`${fixture.baseUrl}/session`, { headers: { cookie: firstSession.cookie } }),
+    ).toMatchObject({ status: 401 });
+
+    const revokeAllResponses = await Promise.all(
+      Array.from({ length: 8 }, async (_, index) =>
+        adminRequest(fixture, {
+          cookie: administratorCookie,
+          correlationId: `http-admin-revoke-all-${index + 1}`,
+          method: 'DELETE',
+          path: `/admin/accounts/${created.userId}/sessions`,
+        }),
+      ),
+    );
+    const revokeAllBodies = (await Promise.all(
+      revokeAllResponses.map(async (response) => response.json()),
+    )) as { readonly revokedSessionCount: number }[];
+    expect(revokeAllBodies.reduce((sum, body) => sum + body.revokedSessionCount, 0)).toBe(1);
+    expect(revokeAllBodies.filter((body) => body.revokedSessionCount > 0)).toHaveLength(1);
+    expect(
+      await fetch(`${fixture.baseUrl}/session`, { headers: { cookie: secondSession.cookie } }),
+    ).toMatchObject({ status: 401 });
+
+    const statusResponse = await adminRequest(fixture, {
+      body: { status: 'deactivated' },
+      cookie: administratorCookie,
+      correlationId: 'http-admin-deactivate',
+      method: 'PATCH',
+      path: `/admin/accounts/${created.userId}/status`,
+    });
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({ status: 'deactivated' });
+  });
+
+  it('rejects missing, student, expired, revoked, and deactivated administrator sessions', async () => {
+    const missingFixture = await createFixture();
+    const missing = await adminRequest(missingFixture, {
+      body: { displayName: 'Denied', email: 'denied-missing@example.invalid' },
+      correlationId: 'http-admin-missing-session',
+      method: 'POST',
+      path: '/admin/accounts',
+    });
+    expect(missing.status).toBe(401);
+    await expect(missing.json()).resolves.toEqual({
+      correlationId: 'http-admin-missing-session',
+      error: 'auth.invalid-session',
+    });
+
+    const studentSession = await loginThroughHttp(missingFixture, 'active-http@example.invalid');
+    const student = await adminRequest(missingFixture, {
+      body: { displayName: 'Denied', email: 'denied-student@example.invalid' },
+      cookie: studentSession.cookie,
+      correlationId: 'http-admin-student-session',
+      method: 'POST',
+      path: '/admin/accounts',
+    });
+    expect(student.status).toBe(403);
+    await expect(student.json()).resolves.toEqual({
+      correlationId: 'http-admin-student-session',
+      error: 'auth.forbidden',
+    });
+
+    const revokedCookie = issuedCookie(
+      missingFixture.runtime,
+      missingFixture.administratorSession.sessionToken,
+    );
+    expect(
+      await fetch(`${missingFixture.baseUrl}/session`, {
+        headers: { cookie: revokedCookie },
+        method: 'DELETE',
+      }),
+    ).toMatchObject({ status: 204 });
+    const revoked = await adminRequest(missingFixture, {
+      body: { displayName: 'Denied', email: 'denied-revoked@example.invalid' },
+      cookie: revokedCookie,
+      correlationId: 'http-admin-revoked-session',
+      method: 'POST',
+      path: '/admin/accounts',
+    });
+    expect(revoked.status).toBe(403);
+
+    const expiredFixture = await createFixture();
+    const expiredCookie = issuedCookie(
+      expiredFixture.runtime,
+      expiredFixture.administratorSession.sessionToken,
+    );
+    expiredFixture.clock.advance((await testConfig()).policy.session.idleLifetimeMs);
+    const expired = await adminRequest(expiredFixture, {
+      body: { displayName: 'Denied', email: 'denied-expired@example.invalid' },
+      cookie: expiredCookie,
+      correlationId: 'http-admin-expired-session',
+      method: 'POST',
+      path: '/admin/accounts',
+    });
+    expect(expired.status).toBe(403);
+
+    const deactivatedFixture = await createFixture();
+    const deactivatedCookie = issuedCookie(
+      deactivatedFixture.runtime,
+      deactivatedFixture.administratorSession.sessionToken,
+    );
+    const deactivation = await adminRequest(deactivatedFixture, {
+      body: { status: 'deactivated' },
+      cookie: deactivatedCookie,
+      correlationId: 'http-admin-deactivate-actor',
+      method: 'PATCH',
+      path: `/admin/accounts/${administratorId}/status`,
+    });
+    expect(deactivation.status).toBe(200);
+    const deactivated = await adminRequest(deactivatedFixture, {
+      body: { displayName: 'Denied', email: 'denied-deactivated@example.invalid' },
+      cookie: deactivatedCookie,
+      correlationId: 'http-admin-deactivated-session',
+      method: 'POST',
+      path: '/admin/accounts',
+    });
+    expect(deactivated.status).toBe(403);
+  });
+
   it('rejects an existing session immediately after account deactivation', async () => {
     const fixture = await createFixture();
     const challenge = (await (
@@ -305,10 +593,11 @@ describe('A2 auth HTTP runtime', () => {
       fixture.administratorSession.sessionToken,
       fixture.activeAccount.userId,
       'deactivated',
+      setupCorrelationId,
     );
 
     const response = await fetch(`${fixture.baseUrl}/session`, { headers: { cookie } });
     expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: 'auth.invalid-session' });
+    await expect(response.json()).resolves.toMatchObject({ error: 'auth.invalid-session' });
   });
 });

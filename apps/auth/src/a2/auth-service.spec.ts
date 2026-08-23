@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { UserId } from '@kovcheg/contracts';
+import type { CorrelationId, UserId } from '@kovcheg/contracts';
 
 import { AuthService } from './auth-service.js';
 import { AuthError, emailChallengePolicy } from './contracts.js';
@@ -16,6 +16,7 @@ import {
 import type { EmailChallengeDelivery, RateLimiter } from './ports.js';
 
 const administratorId = '00000000-0000-4000-8000-000000000011' satisfies UserId;
+const administrationCorrelationId = 'auth-service-administration' as CorrelationId;
 const startTime = Date.UTC(2026, 0, 1, 12, 0, 0);
 
 function createPolicy(overrides: Partial<AuthPolicy['rateLimits']> = {}): AuthPolicy {
@@ -122,10 +123,14 @@ describe('A2 administrator and account use cases', () => {
       'administrator',
     );
 
-    const account = await fixture.service.createAccount(administratorSession.sessionToken, {
-      displayName: '  Test   Student  ',
-      email: '  STUDENT@example.invalid ',
-    });
+    const account = await fixture.service.createAccount(
+      administratorSession.sessionToken,
+      {
+        displayName: '  Test   Student  ',
+        email: '  STUDENT@example.invalid ',
+      },
+      administrationCorrelationId,
+    );
     expect(account).toMatchObject({
       displayName: 'Test Student',
       email: 'student@example.invalid',
@@ -134,24 +139,33 @@ describe('A2 administrator and account use cases', () => {
     });
 
     await expect(
-      fixture.service.createAccount(administratorSession.sessionToken, {
-        displayName: 'Duplicate',
-        email: 'student@example.invalid',
-      }),
+      fixture.service.createAccount(
+        administratorSession.sessionToken,
+        {
+          displayName: 'Duplicate',
+          email: 'student@example.invalid',
+        },
+        administrationCorrelationId,
+      ),
     ).rejects.toMatchObject({ code: 'auth.conflict' });
 
     const studentSession = await login(fixture, account.email, 'student');
     await expect(
-      fixture.service.createAccount(studentSession.sessionToken, {
-        displayName: 'Forbidden',
-        email: 'forbidden@example.invalid',
-      }),
+      fixture.service.createAccount(
+        studentSession.sessionToken,
+        {
+          displayName: 'Forbidden',
+          email: 'forbidden@example.invalid',
+        },
+        administrationCorrelationId,
+      ),
     ).rejects.toMatchObject({ code: 'auth.forbidden' });
 
     await fixture.service.setAccountStatus(
       administratorSession.sessionToken,
       account.userId,
       'deactivated',
+      administrationCorrelationId,
     );
     await expect(
       fixture.service.authenticateSession(studentSession.sessionToken),
@@ -175,12 +189,15 @@ describe('A2 administrator and account use cases', () => {
       administratorSession.sessionToken,
       account.userId,
       'active',
+      administrationCorrelationId,
     );
     const reactivatedSession = await login(fixture, account.email, 'reactivated');
     await expect(
       fixture.service.revokeSession(
         administratorSession.sessionToken,
+        account.userId,
         reactivatedSession.sessionId,
+        administrationCorrelationId,
       ),
     ).resolves.toBe(true);
     await expect(
@@ -201,10 +218,14 @@ describe('A2 administrator and account use cases', () => {
       'administrator@example.invalid',
       'session-policy-administrator',
     );
-    const account = await fixture.service.createAccount(administratorSession.sessionToken, {
-      displayName: 'Multi Session Account',
-      email: 'multi-session@example.invalid',
-    });
+    const account = await fixture.service.createAccount(
+      administratorSession.sessionToken,
+      {
+        displayName: 'Multi Session Account',
+        email: 'multi-session@example.invalid',
+      },
+      administrationCorrelationId,
+    );
 
     const browserSession = await login(fixture, account.email, 'browser');
     fixture.clock.advance(emailChallengePolicy.resendCooldownMs);
@@ -225,10 +246,193 @@ describe('A2 administrator and account use cases', () => {
       administratorSession.sessionToken,
       account.userId,
       'deactivated',
+      administrationCorrelationId,
     );
     await expect(
       fixture.service.authenticateSession(pwaSession.sessionToken),
     ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+  });
+
+  it('updates normalized profiles and isolates one-session and revoke-all operations', async () => {
+    const fixture = createFixture();
+    await bootstrap(fixture);
+    const administratorSession = await login(
+      fixture,
+      'administrator@example.invalid',
+      'administration-isolation',
+    );
+    const firstAccount = await fixture.service.createAccount(
+      administratorSession.sessionToken,
+      { displayName: 'First Account', email: 'first-account@example.invalid' },
+      administrationCorrelationId,
+    );
+    const secondAccount = await fixture.service.createAccount(
+      administratorSession.sessionToken,
+      { displayName: 'Second Account', email: 'second-account@example.invalid' },
+      administrationCorrelationId,
+    );
+
+    await expect(
+      fixture.service.updateAccount(
+        administratorSession.sessionToken,
+        firstAccount.userId,
+        { displayName: '  Updated   Account ', email: ' UPDATED@example.invalid ' },
+        administrationCorrelationId,
+      ),
+    ).resolves.toMatchObject({
+      displayName: 'Updated Account',
+      email: 'updated@example.invalid',
+    });
+    await expect(
+      fixture.service.updateAccount(
+        administratorSession.sessionToken,
+        secondAccount.userId,
+        { displayName: 'Must Roll Back', email: 'updated@example.invalid' },
+        administrationCorrelationId,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.conflict' });
+    await expect(fixture.repository.findAccountById(secondAccount.userId)).resolves.toMatchObject({
+      displayName: 'Second Account',
+      email: 'second-account@example.invalid',
+    });
+
+    const firstSession = await login(fixture, 'updated@example.invalid', 'first-session');
+    const secondAccountSession = await login(
+      fixture,
+      'second-account@example.invalid',
+      'second-account-session',
+    );
+    await expect(
+      fixture.service.revokeSession(
+        administratorSession.sessionToken,
+        firstAccount.userId,
+        secondAccountSession.sessionId,
+        administrationCorrelationId,
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      fixture.service.authenticateSession(secondAccountSession.sessionToken),
+    ).resolves.toMatchObject({ userId: secondAccount.userId });
+
+    fixture.clock.advance(emailChallengePolicy.resendCooldownMs);
+    const secondFirstAccountSession = await login(
+      fixture,
+      'updated@example.invalid',
+      'second-first-account-session',
+    );
+    const revokeAllResults = await Promise.all(
+      Array.from({ length: 8 }, async () =>
+        fixture.service.revokeAllSessions(
+          administratorSession.sessionToken,
+          firstAccount.userId,
+          administrationCorrelationId,
+        ),
+      ),
+    );
+    expect(revokeAllResults.reduce((total, count) => total + count, 0)).toBe(2);
+    expect(revokeAllResults.filter((count) => count > 0)).toHaveLength(1);
+    await expect(
+      fixture.service.authenticateSession(firstSession.sessionToken),
+    ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+    await expect(
+      fixture.service.authenticateSession(secondFirstAccountSession.sessionToken),
+    ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+    await expect(
+      fixture.service.authenticateSession(secondAccountSession.sessionToken),
+    ).resolves.toMatchObject({ userId: secondAccount.userId });
+  });
+
+  it('fails closed for missing, expired, revoked, and deactivated administrator sessions', async () => {
+    const missingFixture = createFixture();
+    await bootstrap(missingFixture);
+    const missingTargetSession = await login(
+      missingFixture,
+      'administrator@example.invalid',
+      'missing-target-setup',
+    );
+    const missingTarget = await missingFixture.service.createAccount(
+      missingTargetSession.sessionToken,
+      { displayName: 'Missing Actor Target', email: 'missing-target@example.invalid' },
+      administrationCorrelationId,
+    );
+    await expect(
+      missingFixture.service.updateAccount(
+        'missing-administrator-session-token-value',
+        missingTarget.userId,
+        { displayName: 'Forbidden Change', email: 'forbidden-change@example.invalid' },
+        administrationCorrelationId,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.forbidden' });
+    await expect(
+      missingFixture.service.updateAccount(
+        missingTargetSession.sessionToken,
+        '00000000-0000-4000-8000-000000000099',
+        { displayName: 'Missing', email: 'missing@example.invalid' },
+        administrationCorrelationId,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.not-found' });
+
+    const expiredFixture = createFixture();
+    await bootstrap(expiredFixture);
+    const expiredSession = await login(
+      expiredFixture,
+      'administrator@example.invalid',
+      'expired-administrator',
+    );
+    const expiredTarget = await expiredFixture.service.createAccount(
+      expiredSession.sessionToken,
+      { displayName: 'Expired Target', email: 'expired-target@example.invalid' },
+      administrationCorrelationId,
+    );
+    expiredFixture.clock.advance(expiredFixture.dependencies.policy.session.idleLifetimeMs);
+    await expect(
+      expiredFixture.service.setAccountStatus(
+        expiredSession.sessionToken,
+        expiredTarget.userId,
+        'deactivated',
+        administrationCorrelationId,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.forbidden' });
+    await expect(
+      expiredFixture.repository.findAccountById(expiredTarget.userId),
+    ).resolves.toMatchObject({ status: 'active' });
+
+    const revokedFixture = createFixture();
+    await bootstrap(revokedFixture);
+    const revokedSession = await login(
+      revokedFixture,
+      'administrator@example.invalid',
+      'revoked-administrator',
+    );
+    await revokedFixture.service.logout(revokedSession.sessionToken);
+    await expect(
+      revokedFixture.service.createAccount(
+        revokedSession.sessionToken,
+        { displayName: 'Forbidden Account', email: 'revoked-actor@example.invalid' },
+        administrationCorrelationId,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.forbidden' });
+
+    const deactivatedFixture = createFixture();
+    await bootstrap(deactivatedFixture);
+    const deactivatedSession = await login(
+      deactivatedFixture,
+      'administrator@example.invalid',
+      'deactivated-administrator',
+    );
+    await deactivatedFixture.service.setAccountStatus(
+      deactivatedSession.sessionToken,
+      administratorId,
+      'deactivated',
+      administrationCorrelationId,
+    );
+    await expect(
+      deactivatedFixture.service.revokeAllSessions(
+        deactivatedSession.sessionToken,
+        administratorId,
+        administrationCorrelationId,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.forbidden' });
   });
 });
 
@@ -241,14 +445,19 @@ describe('A2 email challenge security', () => {
       'administrator@example.invalid',
       'neutral-admin',
     );
-    const inactiveAccount = await fixture.service.createAccount(administratorSession.sessionToken, {
-      displayName: 'Inactive Account',
-      email: 'inactive@example.invalid',
-    });
+    const inactiveAccount = await fixture.service.createAccount(
+      administratorSession.sessionToken,
+      {
+        displayName: 'Inactive Account',
+        email: 'inactive@example.invalid',
+      },
+      administrationCorrelationId,
+    );
     await fixture.service.setAccountStatus(
       administratorSession.sessionToken,
       inactiveAccount.userId,
       'deactivated',
+      administrationCorrelationId,
     );
     fixture.clock.advance(emailChallengePolicy.resendCooldownMs);
 
