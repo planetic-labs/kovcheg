@@ -37,6 +37,10 @@ export async function createAuthApplication(
       logger: toNestLoggerLevels(config.logLevel),
     },
   );
+  const httpApplication = app.getHttpAdapter().getInstance() as {
+    set(setting: string, value: unknown): void;
+  };
+  httpApplication.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
   app.use(correlationIdMiddleware);
   if (runtime !== undefined) {
     const oidcHandler = runtime.oidcProvider.callback();

@@ -24,10 +24,14 @@ export function loadRealtimeApiRuntimeOptions(
   }
 
   const redisUrlValue = environment.REDIS_URL?.trim();
-  const redisUrl =
-    redisUrlValue && /^redis:\/\/[A-Za-z0-9_.-]+(?::[0-9]{1,5})?\/?$/u.test(redisUrlValue)
-      ? redisUrlValue
-      : null;
+  if (
+    redisUrlValue !== undefined &&
+    redisUrlValue !== '' &&
+    !/^redis:\/\/[A-Za-z0-9_.-]+(?::[0-9]{1,5})?\/?$/u.test(redisUrlValue)
+  ) {
+    throw new Error('REDIS_URL is invalid');
+  }
+  const redisUrl = redisUrlValue || null;
 
   const tokenFile = environment.REALTIME_RELAY_TOKEN_FILE?.trim();
   let relayToken: string | null = null;

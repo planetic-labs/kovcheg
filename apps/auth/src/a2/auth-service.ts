@@ -16,6 +16,7 @@ import type {
   BootstrapAdministratorInput,
   ChallengeRequestAccepted,
   CreateAccountInput,
+  EmailChallengeMessage,
   RateLimitRule,
   SessionPrincipal,
   UpdateAccountInput,
@@ -45,6 +46,7 @@ export interface AuthServiceDependencies {
   readonly clock: Clock;
   readonly crypto: AuthCrypto;
   readonly delivery: EmailChallengeDelivery;
+  readonly deliveryTimeoutMs?: number | undefined;
   readonly policy: AuthPolicy;
   readonly random: AuthRandomSource;
   readonly rateLimiter: RateLimiter;
@@ -87,8 +89,12 @@ function normalizeRateLimitDimension(name: string, value: string): string {
 }
 
 export class AuthService {
+  private readonly deliveryTimeoutMs: number;
+
   constructor(private readonly dependencies: AuthServiceDependencies) {
     validatePolicy(dependencies.policy);
+    this.deliveryTimeoutMs = dependencies.deliveryTimeoutMs ?? 5_000;
+    assertPositiveInteger('deliveryTimeoutMs', this.deliveryTimeoutMs);
   }
 
   async authenticateSession(sessionToken: string): Promise<SessionPrincipal> {
@@ -196,16 +202,15 @@ export class AuthService {
     });
 
     if (result.kind === 'issued') {
-      try {
-        await this.dependencies.delivery.send({
+      void this.deliverChallenge(
+        {
           challengeId: result.challengeId,
           code,
           expiresAt: now + this.dependencies.policy.challenge.ttlMs,
           recipient: result.recipient,
-        });
-      } catch {
-        await this.dependencies.repository.invalidateChallenge(challengeId, now);
-      }
+        },
+        now,
+      );
     }
 
     return Object.freeze({ challengeId, status: 'accepted' });
@@ -223,6 +228,30 @@ export class AuthService {
       });
     } catch (error) {
       this.mapAdministrativeError(error);
+    }
+  }
+
+  private async deliverChallenge(message: EmailChallengeMessage, issuedAt: number): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.dependencies.delivery.send(message),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error('Email challenge delivery timed out')),
+            this.deliveryTimeoutMs,
+          );
+          timeout.unref?.();
+        }),
+      ]);
+    } catch {
+      await this.dependencies.repository
+        .invalidateChallenge(message.challengeId, issuedAt)
+        .catch(() => undefined);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
     }
   }
 

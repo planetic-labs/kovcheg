@@ -77,14 +77,15 @@ export class RealtimeGateway implements OnGatewayConnection {
     if (request === null || userId === undefined) {
       return this.rejectedSubscription('0');
     }
+    const room = `chat:${request.chatId}`;
     try {
+      await socket.join(room);
       const subscription = await this.repository.subscribe({
         afterSequence: request.afterSequence,
         chatId: request.chatId,
         limit: 100,
         userId,
       });
-      await socket.join(`chat:${request.chatId}`);
       return Object.freeze({
         contractVersion: realtimeContractVersion,
         history: subscription.history,
@@ -95,6 +96,7 @@ export class RealtimeGateway implements OnGatewayConnection {
       if (!(error instanceof RealtimeRepositoryError)) {
         this.logger.error('Realtime subscription failed');
       }
+      await Promise.resolve(socket.leave(room)).catch(() => undefined);
       return this.rejectedSubscription(request.afterSequence);
     }
   }

@@ -16,7 +16,7 @@ http:
       middlewares:
         - strip-api-prefix
       priority: 100
-      rule: PathPrefix(`/api`)
+      rule: PathPrefix(`/api`) && !PathPrefix(`/api/internal`)
       service: api
     auth:
       entryPoints:
@@ -31,6 +31,12 @@ http:
         - local
       priority: 200
       rule: PathPrefix(`/socket.io`)
+      service: api
+    internal-realtime:
+      entryPoints:
+        - internal
+      priority: 300
+      rule: PathPrefix(`/internal/realtime`)
       service: api
     web:
       entryPoints:

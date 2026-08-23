@@ -220,7 +220,7 @@ services:
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:3002/health/ready').then(async r=>{const b=await r.json();if(!r.ok||b.status!=='ok')process.exit(1)}).catch(()=>process.exit(1))",
+          "const p=process.env.AUTH_RUNTIME_ENABLED==='true'?'/health/ready':'/health/live';fetch('http://127.0.0.1:3002'+p).then(async r=>{const b=await r.json();if(!r.ok||b.status!=='ok')process.exit(1)}).catch(()=>process.exit(1))",
         ]
       interval: 5s
       timeout: 3s
@@ -250,7 +250,7 @@ services:
       PGUSER: kovcheg_app
       PORT: '3003'
       REALTIME_RELAY_TOKEN_FILE: /run/secrets/realtime_relay_token
-      REALTIME_RELAY_URL: http://edge:8080/api/internal/realtime/events
+      REALTIME_RELAY_URL: http://edge:8081/internal/realtime/events
       REDIS_URL: redis://redis:6379
     depends_on:
       postgres:

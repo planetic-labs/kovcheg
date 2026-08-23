@@ -19,6 +19,7 @@ export interface RealtimeSubscriptionData {
 }
 
 export interface RealtimeRepository {
+  isReady(): Promise<boolean>;
   subscribe(command: RealtimeSubscriptionCommand): Promise<RealtimeSubscriptionData>;
 }
 
@@ -64,6 +65,10 @@ function mapMessage(row: MessageRow): TextMessage {
 }
 
 export class UnavailableRealtimeRepository implements RealtimeRepository {
+  isReady(): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
   subscribe(): Promise<RealtimeSubscriptionData> {
     return Promise.reject(new RealtimeRepositoryError('unavailable'));
   }
@@ -74,6 +79,15 @@ export class PostgresRealtimeRepository implements RealtimeRepository, OnModuleD
 
   async onModuleDestroy(): Promise<void> {
     await this.pool.end();
+  }
+
+  async isReady(): Promise<boolean> {
+    try {
+      await this.pool.query('SELECT 1');
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async subscribe(command: RealtimeSubscriptionCommand): Promise<RealtimeSubscriptionData> {

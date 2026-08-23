@@ -13,8 +13,10 @@ import { syntheticUserIds } from '../../packages/contracts/dist/testing/index.js
 import { io } from 'socket.io-client';
 
 const baseUrl = process.argv[2];
+const transport = process.argv[3];
 const composeProject = process.env.REALTIME_COMPOSE_PROJECT;
 assert.ok(baseUrl, 'A loopback base URL is required');
+assert.ok(transport === 'polling' || transport === 'websocket', 'A transport is required');
 assert.match(composeProject ?? '', /^[A-Za-z0-9_-]+$/);
 
 const chatId = '00000000-0000-4000-8000-000000001201';
@@ -67,7 +69,7 @@ function createClient(userId) {
     reconnection: true,
     reconnectionDelay: 100,
     reconnectionDelayMax: 500,
-    transports: ['polling'],
+    transports: [transport],
     withCredentials: true,
   });
   state.socket = socket;
@@ -123,18 +125,24 @@ async function subscribe(client) {
 
 async function sendMessage(userId, label) {
   clientMessageCounter += 1;
-  const response = await fetch(`${baseUrl}/api/chats/${chatId}/messages`, {
+  const request = {
     body: JSON.stringify({
-      clientMessageId: `realtime-${label}-${clientMessageCounter}`,
+      clientMessageId: `realtime-${transport}-${label}-${clientMessageCounter}`,
       text: `Synthetic realtime check ${clientMessageCounter}`,
     }),
     headers: {
       'content-type': 'application/json',
       [identityStubHeaderName]: userId,
-      'x-correlation-id': `realtime-${label}-${clientMessageCounter}`,
+      'x-correlation-id': `realtime-${transport}-${label}-${clientMessageCounter}`,
     },
     method: 'POST',
-  });
+  };
+  let response;
+  await waitUntil(async () => {
+    response = await fetch(`${baseUrl}/api/chats/${chatId}/messages`, request);
+    return response.status !== 502 && response.status !== 503;
+  }, `${label} message did not reach a ready API instance during bounded failover`);
+  assert.ok(response !== undefined);
   assert.equal(response.status, 201, `${label} message must be stored in PostgreSQL`);
   return response.json();
 }
@@ -183,7 +191,7 @@ try {
     }
     candidate.socket.disconnect();
   }
-  assert.ok(secondary, 'Polling clients must be distributed across both sticky API instances');
+  assert.ok(secondary, `${transport} clients must be distributed across both sticky API instances`);
   await Promise.all([subscribe(primary), subscribe(secondary)]);
 
   const crossInstance = await sendMessage(syntheticUserIds.activePrimary, 'cross-instance');

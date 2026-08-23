@@ -64,7 +64,7 @@ sh infra/scripts/compose.sh --profile data run --rm migrate
 
 Migration `0004_message_flow.sql` adds one narrow `SECURITY DEFINER` entrypoint for text creation. It atomically writes the message, initial version, sanitized outbox event, and protected audit event. The runtime role can execute this entrypoint but cannot bypass it with direct message or outbox inserts.
 
-`pnpm database:test` verifies the latest schema from a clean volume and each compatible boundary in `0001 → 0002 → 0003 → 0004 → 0005 → 0006` on another clean volume, then reapplies the completed migration chain. It checks catalog shape, positive and negative role privileges, SCRAM rules, authorization functions, membership-period boundaries, partition pruning, planner-selected message/outbox indexes after representative loading and `ANALYZE`, real outbox claim/delivery operations, owner-level append-only triggers, partial-failure rollback, sanitized event metadata, message and auth idempotency, concurrent message retries, gap-free row-counter allocation, actor-verified auth administration, exact audit cardinality and sanitization, cross-account session isolation, concurrent revoke-all retries, auth revocation, and concurrent one-time challenge consumption. A test-only API container also verifies the actual HTTP-to-PostgreSQL create, replay, conflict, authorization, history, and concurrency paths without publishing a port.
+`pnpm database:test` verifies the latest schema from a clean volume and each compatible boundary in `0001 → 0002 → 0003 → 0004 → 0005 → 0006` on another clean volume, then reapplies the completed migration chain. It checks catalog shape, positive and negative role privileges, SCRAM rules, authorization functions, membership-period boundaries, partition pruning, planner-selected message/outbox indexes after representative loading and `ANALYZE`, real outbox claim/delivery operations, owner-level append-only triggers, partial-failure rollback, sanitized event metadata, message and auth idempotency, concurrent message retries, gap-free row-counter allocation, actor-verified auth administration, exact audit cardinality and sanitization, cross-account session isolation, concurrent revoke-all retries, auth revocation, and concurrent one-time challenge consumption. Test-only API and Auth containers also verify the actual HTTP-to-PostgreSQL paths without publishing a port.
 
 ## A4 message flow
 
@@ -81,11 +81,11 @@ A4 accepts the `x-kovcheg-identity-stub-user-id` header only when a caller expli
 
 ## A5 realtime
 
-The worker claims one pending `message.created` outbox row with `FOR UPDATE SKIP LOCKED`, publishes its immutable event ID to `kovcheg:application-events:v1`, and marks the row delivered only after Redis accepts it. A separate `realtime-relay` consumer group acknowledges an application-stream entry only after a bearer-protected internal API endpoint accepts it. The API emits a sanitized event containing only technical IDs and the chat sequence; message bodies remain in PostgreSQL and reconnect catch-up reads authorized history by `afterSequence`.
+The worker claims one pending `message.created` outbox row with `FOR UPDATE SKIP LOCKED`, publishes its immutable event ID to `kovcheg:application-events:v1`, and marks the row delivered only after Redis accepts it. A separate `realtime-relay` consumer group acknowledges an application-stream entry only after a bearer-protected API endpoint on the edge's unexposed internal entrypoint accepts it; the public `/api/internal` path is rejected. The API emits a sanitized event containing only technical IDs and the chat sequence; message bodies remain in PostgreSQL and reconnect catch-up reads authorized history by `afterSequence`.
 
 Socket.IO uses its own `kovcheg:socket.io:v1` Redis Stream, distinct from the application stream and consumer group. Delivery is at least once. The shared client contract provides bounded deduplication by `eventId` plus `messageId`; room subscription rechecks active identity and PostgreSQL membership. Redis loss disconnects realtime transports, while REST persistence remains available. After Redis returns, the worker resumes pending outbox publication and clients recover any gap from PostgreSQL history.
 
-`pnpm realtime:smoke` uses the existing guarded test identity seam and an isolated Compose project. It proves polling-cookie stickiness, clients on different API instances, cross-instance fanout, reconnect catch-up, a message stored while Redis is down, outbox recovery after Redis returns, and continued delivery after one API stops. It publishes only the same loopback edge as the ordinary Docker smoke and removes its own volume and generated local secrets.
+`pnpm realtime:smoke` uses the existing guarded test identity seam and an isolated Compose project. It proves polling and WebSocket clients on different API instances, cross-instance fanout, reconnect catch-up, a message stored while Redis is down, outbox recovery after Redis returns, and continued delivery after one API stops. It publishes only the same loopback edge as the ordinary Docker smoke and removes its own volume and generated local secrets.
 
 ## Local container topology
 
@@ -94,7 +94,7 @@ Socket.IO uses its own `kovcheg:socket.io:v1` Redis Stream, distinct from the ap
 - Web health: `http://127.0.0.1:3000/health/ready`
 - API health: `http://127.0.0.1:3000/api/health/ready`
 - API OpenAPI JSON: `http://127.0.0.1:3000/api/openapi.json`
-- Auth health: `http://127.0.0.1:3000/auth/health/ready`
+- Auth liveness: `http://127.0.0.1:3000/auth/health/live`; readiness returns success only when the production auth runtime and its PostgreSQL/Redis dependencies are enabled and available.
 - Auth OpenAPI JSON: `http://127.0.0.1:3000/auth/openapi.json`
 
 Swagger UI is available only in a non-production application process; production images retain OpenAPI JSON but do not publish the interactive UI.

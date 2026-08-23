@@ -293,6 +293,15 @@ export class PostgresAuthRepository implements AuthRepository {
     ]);
   }
 
+  async isReady(): Promise<boolean> {
+    try {
+      await this.client.query('SELECT 1');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async issueChallengeForActiveAccount(
     input: Parameters<AuthRepository['issueChallengeForActiveAccount']>[0],
   ): Promise<IssueChallengeResult> {

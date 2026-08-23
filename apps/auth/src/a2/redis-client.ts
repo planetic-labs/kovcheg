@@ -3,13 +3,18 @@ import { createClient } from 'redis';
 import { AuthError } from './contracts.js';
 import type { RedisScriptClient, RedisScriptClientFactory } from './redis-rate-limiter.js';
 
+export function authRedisReconnectDelay(retries: number): number {
+  const boundedRetries = Number.isSafeInteger(retries) && retries > 0 ? Math.min(retries, 4) : 0;
+  return Math.min(250 * 2 ** boundedRetries, 4_000);
+}
+
 export const nodeRedisScriptClientFactory: RedisScriptClientFactory = Object.freeze({
   productionSafe: true,
   async connect(url: string): Promise<RedisScriptClient> {
     const client = createClient({
       socket: {
         connectTimeout: 5_000,
-        reconnectStrategy: false,
+        reconnectStrategy: (retries) => authRedisReconnectDelay(retries),
       },
       url,
     });
@@ -31,6 +36,9 @@ export const nodeRedisScriptClientFactory: RedisScriptClientFactory = Object.fre
             arguments: [...options.arguments],
             keys: [...options.keys],
           });
+        },
+        isReady(): boolean {
+          return client.isReady;
         },
       });
     } catch {

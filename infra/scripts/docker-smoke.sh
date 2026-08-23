@@ -85,6 +85,56 @@ done
 node infra/scripts/docker-smoke.mjs http://127.0.0.1:3000
 
 compose exec -T worker node --input-type=module -e "
+import { readFile } from 'node:fs/promises';
+
+const token = (await readFile('/run/secrets/realtime_relay_token', 'utf8')).trim();
+const event = {
+  contractVersion: 1,
+  correlationId: 'relay-boundary-smoke-001',
+  eventId: '00000000-0000-4000-8000-000000009901',
+  eventName: 'message.created',
+  occurredAt: '2026-01-01T00:00:00.000Z',
+  payload: {
+    chatId: '00000000-0000-4000-8000-000000009902',
+    chatSequence: '1',
+    messageId: '00000000-0000-4000-8000-000000009903',
+  },
+};
+const request = (authorization) => ({
+  body: JSON.stringify(event),
+  headers: {
+    ...(authorization === undefined ? {} : { authorization }),
+    'content-type': 'application/json',
+  },
+  method: 'POST',
+});
+
+const publicResponse = await fetch(
+  'http://edge:8080/api/internal/realtime/events',
+  request('Bearer ' + token),
+);
+if (publicResponse.status !== 404) {
+  throw new Error('The internal realtime relay route is reachable through the public entrypoint');
+}
+
+const unauthorizedResponse = await fetch(
+  'http://edge:8081/internal/realtime/events',
+  request(),
+);
+if (unauthorizedResponse.status !== 401) {
+  throw new Error('The internal realtime relay route accepted a request without its bearer token');
+}
+
+const internalResponse = await fetch(
+  'http://edge:8081/internal/realtime/events',
+  request('Bearer ' + token),
+);
+if (internalResponse.status !== 202) {
+  throw new Error('The internal realtime relay route rejected its worker credential');
+}
+"
+
+compose exec -T worker node --input-type=module -e "
 const response = await fetch('http://127.0.0.1:3003/health/ready', {
   headers: { 'x-correlation-id': 'worker-smoke-001' },
 });

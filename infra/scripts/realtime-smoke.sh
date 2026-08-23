@@ -40,6 +40,8 @@ compose --profile data run --rm message-flow-test
 compose up --build --detach --wait
 
 REALTIME_COMPOSE_PROJECT="$realtime_project" \
-  node infra/scripts/realtime-smoke.mjs http://127.0.0.1:3000
+  node infra/scripts/realtime-smoke.mjs http://127.0.0.1:3000 polling
+REALTIME_COMPOSE_PROJECT="$realtime_project" \
+  node infra/scripts/realtime-smoke.mjs http://127.0.0.1:3000 websocket
 
-echo 'Realtime smoke passed cross-instance delivery, polling stickiness, reconnect catch-up, Redis recovery, and one-API failover.'
+echo 'Realtime smoke passed polling and websocket cross-instance delivery, stickiness, reconnect catch-up, Redis recovery, and one-API failover.'

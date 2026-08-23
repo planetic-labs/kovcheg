@@ -86,7 +86,7 @@ describe('A2 production runtime boundary', () => {
         config,
         delivery: new LocalEmailChallengeDelivery({ NODE_ENV: 'test' }),
         redisClientFactory: {
-          connect: () => Promise.resolve({ eval: () => Promise.resolve(1) }),
+          connect: () => Promise.resolve({ eval: () => Promise.resolve(1), isReady: () => true }),
         },
         repository: new LocalAuthRepository({ NODE_ENV: 'test' }),
       }),

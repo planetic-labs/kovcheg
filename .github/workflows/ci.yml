@@ -125,3 +125,5 @@ jobs:
         run: pnpm database:test
       - name: Run local container smoke
         run: pnpm docker:smoke
+      - name: Run realtime failure and recovery smoke
+        run: pnpm realtime:smoke

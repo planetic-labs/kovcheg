@@ -19,6 +19,10 @@ export class RedisStreamsIoAdapter extends IoAdapter {
     await this.client.connect();
   }
 
+  isReady(): boolean {
+    return this.client.isReady;
+  }
+
   override createIOServer(port: number, options?: ServerOptions): Server {
     const server = super.createIOServer(port, options) as Server;
     server.adapter(

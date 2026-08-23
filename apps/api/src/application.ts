@@ -17,11 +17,16 @@ export async function createApiApplication(
   config: ServiceRuntimeConfig = loadServiceConfig('api'),
   options: ApiApplicationOptions = {},
 ): Promise<INestApplication> {
-  const app = await NestFactory.create(ApiModule.register(options), {
+  let adapter: RedisStreamsIoAdapter | undefined;
+  const transportReadiness = Object.freeze({
+    isReady: () =>
+      options.redisUrl === null || options.redisUrl === undefined || adapter?.isReady() === true,
+  });
+  const app = await NestFactory.create(ApiModule.register({ ...options, transportReadiness }), {
     logger: toNestLoggerLevels(config.logLevel),
   });
   if (options.redisUrl) {
-    const adapter = new RedisStreamsIoAdapter(app, options.redisUrl);
+    adapter = new RedisStreamsIoAdapter(app, options.redisUrl);
     await adapter.connect();
     app.useWebSocketAdapter(adapter);
   }

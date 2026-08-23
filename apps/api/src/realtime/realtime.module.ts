@@ -8,6 +8,12 @@ import { RealtimeRelayController, realtimeRelayToken } from './realtime-relay.co
 import type { RealtimeRepository } from './realtime.repository.js';
 import { createRealtimeRepository, realtimeRepositoryToken } from './realtime.repository.js';
 
+export const realtimeTransportReadinessToken = Symbol('realtimeTransportReadiness');
+
+export interface RealtimeTransportReadiness {
+  isReady(): boolean;
+}
+
 const unavailableIdentityProvider: MessageFlowIdentityProvider = Object.freeze({
   available: false,
   findById: () => Promise.resolve(null),
@@ -18,6 +24,7 @@ export interface RealtimeModuleOptions {
   readonly instanceId?: string | undefined;
   readonly relayToken?: string | null | undefined;
   readonly repository?: RealtimeRepository | undefined;
+  readonly transportReadiness?: RealtimeTransportReadiness | undefined;
 }
 
 @Module({})
@@ -25,6 +32,7 @@ export class RealtimeModule {
   static register(options: RealtimeModuleOptions = {}): DynamicModule {
     return {
       controllers: [RealtimeRelayController],
+      exports: [realtimeRepositoryToken, realtimeTransportReadinessToken],
       module: RealtimeModule,
       providers: [
         RealtimeGateway,
@@ -43,6 +51,10 @@ export class RealtimeModule {
         {
           provide: realtimeRepositoryToken,
           useFactory: () => options.repository ?? createRealtimeRepository(),
+        },
+        {
+          provide: realtimeTransportReadinessToken,
+          useValue: options.transportReadiness ?? Object.freeze({ isReady: () => true }),
         },
       ],
     };

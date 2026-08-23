@@ -15,6 +15,7 @@ export interface AuthRuntime {
   readonly authService: AuthService;
   readonly clock: Clock;
   close(): Promise<void>;
+  isReady(): Promise<boolean>;
   readonly oidcProvider: Provider;
   readonly sessionCookie: SessionCookie;
 }
@@ -106,6 +107,8 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
         await input.closePersistence?.();
       }
     },
+    isReady: async () =>
+      redisClient.isReady() && (await input.repository.isReady().catch(() => false)),
     oidcProvider,
     sessionCookie,
   });
