@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   trivy:
-    name: Trivy production images
+    name: Container security
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
