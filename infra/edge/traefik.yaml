@@ -1,0 +1,18 @@
+api:
+  dashboard: false
+
+entryPoints:
+  local:
+    address: ':8080'
+
+log:
+  format: json
+  level: WARN
+
+ping:
+  entryPoint: local
+
+providers:
+  file:
+    filename: /etc/traefik/routes.yaml
+    watch: false

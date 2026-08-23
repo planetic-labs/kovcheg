@@ -30,10 +30,10 @@ export COMPOSE_PARALLEL_LIMIT=1
 
 compose config --quiet
 
-expected_services=$(printf '%s\n' api auth edge postgres redis web worker)
+expected_services=$(printf '%s\n' api-1 api-2 auth edge postgres redis web worker)
 actual_services=$(compose config --services | sort)
 if [ "$actual_services" != "$expected_services" ]; then
-  echo 'Compose must contain exactly the seven documented local services.' >&2
+  echo 'Compose must contain exactly the eight documented local services.' >&2
   exit 1
 fi
 
@@ -98,7 +98,7 @@ if (health.service !== 'worker' || health.status !== 'ok') {
 }
 "
 
-for service in api auth worker web; do
+for service in api-1 api-2 auth worker web; do
   container_id=$(compose ps --quiet "$service")
   image_id=$(docker inspect --format '{{.Image}}' "$container_id")
   revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_id")
@@ -126,10 +126,10 @@ test ! -d /app/packages
 "
 done
 
-for service in api auth worker; do
+for service in api-1 api-2 auth worker; do
   compose exec -T "$service" sh -c '
 test ! -d /app/src
 '
 done
 
-echo 'Local Docker smoke passed for seven containers, same-origin routing, contracts, provenance, runtime contents, and local-only isolation.'
+echo 'Local Docker smoke passed for eight containers, two API instances, same-origin Traefik routing, contracts, provenance, runtime contents, and local-only isolation.'

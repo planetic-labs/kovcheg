@@ -323,3 +323,23 @@ export type {
   MessageHistoryPage,
   TextMessage,
 } from './message-flow.js';
+export {
+  createRealtimeEventDeduplicator,
+  parseMessageCreatedRealtimeEvent,
+  parseRealtimeSubscribeRequest,
+  realtimeAdapterStreamName,
+  realtimeApplicationStreamName,
+  realtimeContractVersion,
+  realtimeRelayConsumerGroup,
+  realtimeSocketEvents,
+  realtimeSocketPath,
+} from './realtime.js';
+export type {
+  MessageCreatedRealtimeEvent,
+  MessageCreatedRealtimePayload,
+  RealtimeEventDeduplicator,
+  RealtimeReadyEvent,
+  RealtimeSocketIdentity,
+  RealtimeSubscribeRequest,
+  RealtimeSubscribeResult,
+} from './realtime.js';

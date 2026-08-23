@@ -1,0 +1,65 @@
+http:
+  middlewares:
+    strip-api-prefix:
+      stripPrefix:
+        prefixes:
+          - /api
+    strip-auth-prefix:
+      stripPrefix:
+        prefixes:
+          - /auth
+
+  routers:
+    api:
+      entryPoints:
+        - local
+      middlewares:
+        - strip-api-prefix
+      priority: 100
+      rule: PathPrefix(`/api`)
+      service: api
+    auth:
+      entryPoints:
+        - local
+      middlewares:
+        - strip-auth-prefix
+      priority: 100
+      rule: PathPrefix(`/auth`)
+      service: auth
+    realtime:
+      entryPoints:
+        - local
+      priority: 200
+      rule: PathPrefix(`/socket.io`)
+      service: api
+    web:
+      entryPoints:
+        - local
+      priority: 1
+      rule: PathPrefix(`/`)
+      service: web
+
+  services:
+    api:
+      loadBalancer:
+        healthCheck:
+          interval: 2s
+          path: /health/ready
+          timeout: 1s
+        servers:
+          - url: http://api-1:3001
+          - url: http://api-2:3001
+        sticky:
+          cookie:
+            httpOnly: true
+            name: kovcheg_affinity
+            sameSite: lax
+            secure: false
+    auth:
+      loadBalancer:
+        servers:
+          - url: http://auth:3002
+    web:
+      loadBalancer:
+        servers:
+          - url: http://web:3000

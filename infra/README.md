@@ -1,16 +1,16 @@
 # Infrastructure
 
-The Alpha-0 A1 topology is local-only and contains no deployment route, ingress, tunnel, or external preview.
+The Alpha-0 topology is local-only and contains no deployment route, ingress, tunnel, or external preview.
 
-`compose.yaml` starts seven isolated default containers:
+`compose.yaml` starts eight isolated default containers:
 
-- a neutral local `edge` plus `web`, `api`, `auth`, and `worker`;
+- local Traefik `edge` plus `web`, `api-1`, `api-2`, `auth`, and `worker`;
 - PostgreSQL with SCRAM authentication and explicit least-privilege role bootstrap;
-- Redis without application queues, caching, or realtime behavior.
+- Redis for separate ephemeral application and Socket.IO streams.
 
-Only the edge publishes `127.0.0.1:3000`. It routes `/` to web, `/api/` to the technical API surface, and `/auth/` to the technical auth surface. Every upstream port, PostgreSQL, Redis, and the worker health endpoint remain inside an `internal: true` Docker service network. Edge alone also joins a dedicated host-loopback bridge so Docker can expose the loopback entry. This is a local same-origin seam, not an ingress or deployment route.
+Only the edge publishes `127.0.0.1:3000`. It routes `/` to web, `/api/` across two API instances, `/socket.io` to the same sticky API pool, and `/auth/` to the technical auth surface. Every upstream port, PostgreSQL, Redis, and the worker health endpoint remain inside an `internal: true` Docker service network. Edge alone also joins a dedicated host-loopback bridge so Docker can expose the loopback entry. This is a local same-origin seam, not an ingress or deployment route.
 
-The Compose wrapper generates random PostgreSQL passwords in the ignored local `.local/` directory. It mounts them as files and never writes values to Compose configuration or Git. PostgreSQL initializes host and local authentication with `scram-sha-256`; the database port remains unexposed.
+The Compose wrapper generates random PostgreSQL passwords and a separate relay token in the ignored local `.local/` directory. It mounts them as files and never writes values to Compose configuration or Git. PostgreSQL initializes host and local authentication with `scram-sha-256`; the database port remains unexposed.
 
 Two opt-in containers use the `data` profile:
 
@@ -36,7 +36,9 @@ Run the verified local lifecycle with:
 pnpm docker:smoke
 ```
 
-The smoke script uses its own uniquely named Compose project. It builds the four application images, waits for all seven default containers, verifies the exact service, network, and loopback-port sets, checks that the service network is internal, calls the documented routes from the host, validates API/Auth readiness responses against their published OpenAPI schemas, tests correlation IDs, and inspects production runtime contents and build provenance. Its cleanup cannot address a developer project's volume.
+The smoke script uses its own uniquely named Compose project. It builds the four application images, waits for all eight default containers, verifies the exact service, network, and loopback-port sets, checks that the service network is internal, calls the documented routes from the host, validates API/Auth readiness responses against their published OpenAPI schemas, tests correlation IDs, and inspects production runtime contents and build provenance. Its cleanup cannot address a developer project's volume.
+
+`pnpm realtime:smoke` runs a separate test-only Compose override. The guarded identity stub remains available only with `NODE_ENV=test`; production-shaped API images stay fail-closed. The check proves sticky polling, cross-instance fanout, reconnect history, Redis failure/recovery through the PostgreSQL outbox, and one-API failover. Application and Socket.IO streams use distinct names and responsibilities; Redis never becomes the only copy of messages, rights, or history.
 
 The data core keeps authorization facts in PostgreSQL: platform-role assignments, chat audience and posting policies, chat administrators, role-based posting allowlists, service labels, and immutable membership periods. Runtime reads these facts through least-privilege tables and SECURITY DEFINER predicates; it does not infer rights from chat names or application memory.
 

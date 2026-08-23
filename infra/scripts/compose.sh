@@ -31,12 +31,14 @@ create_secret "$secret_directory/auth"
 create_secret "$secret_directory/migration"
 create_secret "$secret_directory/runtime"
 create_secret "$secret_directory/superuser"
+create_secret "$secret_directory/realtime-relay"
 
 export KOVCHEG_POSTGRES_AUDIT_PASSWORD_FILE="$secret_directory/audit"
 export KOVCHEG_POSTGRES_AUTH_PASSWORD_FILE="$secret_directory/auth"
 export KOVCHEG_POSTGRES_MIGRATION_PASSWORD_FILE="$secret_directory/migration"
 export KOVCHEG_POSTGRES_RUNTIME_PASSWORD_FILE="$secret_directory/runtime"
 export KOVCHEG_POSTGRES_SUPERUSER_PASSWORD_FILE="$secret_directory/superuser"
+export KOVCHEG_REALTIME_RELAY_TOKEN_FILE="$secret_directory/realtime-relay"
 
 if docker compose version >/dev/null 2>&1; then
   exec docker compose "$@"
