@@ -117,6 +117,20 @@ const [rootResponse, apiOpenApiResponse, authOpenApiResponse, apiDocs, authDocs]
   ]);
 
 assert.equal(rootResponse.status, 200);
+assert.equal(
+  rootResponse.headers.get('content-security-policy'),
+  "default-src 'self'; base-uri 'self'; connect-src 'self' ws: wss:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+);
+assert.equal(rootResponse.headers.get('cross-origin-embedder-policy'), 'require-corp');
+assert.equal(rootResponse.headers.get('cross-origin-opener-policy'), 'same-origin');
+assert.equal(rootResponse.headers.get('cross-origin-resource-policy'), 'same-origin');
+assert.equal(
+  rootResponse.headers.get('permissions-policy'),
+  'camera=(), geolocation=(), microphone=(), payment=(), usb=()',
+);
+assert.equal(rootResponse.headers.get('x-content-type-options'), 'nosniff');
+assert.equal(rootResponse.headers.get('x-frame-options'), 'DENY');
+assert.equal(rootResponse.headers.get('x-powered-by'), null);
 assert.equal(apiOpenApiResponse.status, 200);
 assert.equal(authOpenApiResponse.status, 200);
 assert.equal(apiDocs.status, 404, 'API Swagger UI must be disabled in production');

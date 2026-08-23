@@ -8,6 +8,20 @@ http:
       stripPrefix:
         prefixes:
           - /auth
+    web-security-headers:
+      headers:
+        contentSecurityPolicy: >-
+          default-src 'self'; base-uri 'self'; connect-src 'self' ws: wss:;
+          font-src 'self'; form-action 'self'; frame-ancestors 'none';
+          img-src 'self' data: blob:; object-src 'none';
+          script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'
+        contentTypeNosniff: true
+        customResponseHeaders:
+          Cross-Origin-Embedder-Policy: require-corp
+          Cross-Origin-Opener-Policy: same-origin
+          Cross-Origin-Resource-Policy: same-origin
+        frameDeny: true
+        permissionsPolicy: camera=(), geolocation=(), microphone=(), payment=(), usb=()
 
   routers:
     api:
@@ -41,6 +55,8 @@ http:
     web:
       entryPoints:
         - local
+      middlewares:
+        - web-security-headers
       priority: 1
       rule: PathPrefix(`/`)
       service: web

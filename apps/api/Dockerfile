@@ -78,6 +78,10 @@ WORKDIR /app
 
 COPY --from=build --chown=node:node /runtime/ ./
 
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  && rm -f /usr/local/bin/corepack /usr/local/bin/npm /usr/local/bin/npx \
+    /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
+
 USER node
 
 EXPOSE 3001

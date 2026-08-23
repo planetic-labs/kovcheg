@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 const nextConfig: NextConfig = {
   output: 'standalone',
   outputFileTracingRoot: fileURLToPath(new URL('../..', import.meta.url)),
+  poweredByHeader: false,
   productionBrowserSourceMaps: false,
   reactStrictMode: true,
 };

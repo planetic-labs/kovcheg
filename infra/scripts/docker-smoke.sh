@@ -174,6 +174,10 @@ fi
 test ! -e /app/node_modules/typescript
 test ! -e /app/node_modules/eslint
 test ! -e /app/node_modules/vitest
+test ! -e /usr/local/lib/node_modules/npm
+test ! -e /usr/local/lib/node_modules/corepack
+test ! -e /usr/local/bin/npm
+test ! -e /usr/local/bin/corepack
 if find /app -path '*/@kovcheg/contracts/dist/testing' -type d | grep -q .; then
   echo 'runtime image contains synthetic identity fixtures' >&2
   exit 1
