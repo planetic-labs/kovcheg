@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Ковчег">
+  <rect width="512" height="512" rx="112" fill="#1b443b"/>
+  <path d="M112 224h288l-32 128c-8 32-36 56-70 56h-84c-34 0-62-24-70-56z" fill="#f2efe8"/>
+  <path d="M168 208c12-60 48-104 88-104s76 44 88 104" fill="none" stroke="#d08a5b" stroke-width="32" stroke-linecap="round"/>
+  <circle cx="256" cy="272" r="28" fill="#d08a5b"/>
+</svg>
