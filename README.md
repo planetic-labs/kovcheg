@@ -2,7 +2,7 @@
 
 Kovcheg is a greenfield web/PWA messenger platform. This repository contains only public application code and the technical files required to build and verify it.
 
-The Alpha-0 foundation contains the monorepo, local-only container topology, versioned technical contracts, guarded synthetic identity fixtures, typed non-secret configuration, health/readiness endpoints, and an OpenAPI surface. The A3 data layer adds reproducible PostgreSQL migrations, partitioned message storage, database roles, transactional outbox, append-only audit primitives, and the durable storage contract required by the separate A2 auth runtime. A4 adds a local message API for creating text messages and reading deterministic history pages through the non-production identity stub. A5 adds PostgreSQL-outbox publication, a separate application Redis Stream and relay, Socket.IO Redis Streams fanout, and two API instances behind local Traefik. The existing A2 auth runtime remains intact; A5 does not wire it into the message API and adds no production email delivery, functional PWA interface, Web Push, internet deployment, AI integration, or private product material.
+The Alpha-0 foundation contains the monorepo, local-only container topology, versioned technical contracts, guarded synthetic identity fixtures, typed non-secret configuration, health/readiness endpoints, and an OpenAPI surface. The A3 data layer adds reproducible PostgreSQL migrations, partitioned message storage, database roles, transactional outbox, append-only audit primitives, and durable auth persistence. A2 provides email-code/OIDC application sessions and protected administration. A4 provides the message API, and A5 adds PostgreSQL-outbox publication, separate application and Socket.IO Redis Streams, realtime relay, and two API instances behind local Traefik. Production-shaped REST and Socket.IO resolve their principal only through the A2 application session; synthetic identity remains test-only. The repository adds no functional PWA interface, Web Push, internet deployment, AI integration, or private product material.
 
 ## Toolchain
 
@@ -79,7 +79,7 @@ Chat sequences are decimal strings in JSON so the full PostgreSQL `bigint` range
 
 The create endpoint computes a SHA-256 content fingerprint. Repeating the same `(chat, sender, clientMessageId)` and content returns the original message with `200` and `outcome: "replayed"`; reusing the key with different content returns `409 message-flow.idempotency-key-reused`. New messages return `201` and `outcome: "created"`. Every error is machine-readable and carries the request correlation ID.
 
-A4 accepts the `x-kovcheg-identity-stub-user-id` header only when a caller explicitly injects the guarded synthetic identity provider. The production-shaped application does not inject or package that test identity seam. Real authentication and sessions belong to a separate later stage.
+A4 accepts the `x-kovcheg-identity-stub-user-id` header only when a caller explicitly injects the guarded synthetic identity provider. The production-shaped application does not inject or package that test identity seam. It forwards only the expected host-only application-session cookie to A2 and uses the returned server principal for chat listing, message creation, and history authorization.
 
 ## A5 realtime
 
@@ -101,7 +101,7 @@ Socket.IO uses its own `kovcheg:socket.io:v1` Redis Stream, distinct from the ap
 
 Swagger UI is available only in a non-production application process; production images retain OpenAPI JSON but do not publish the interactive UI.
 
-`pnpm docker:smoke` uses a dedicated Compose project, builds the four application images, verifies all eight default containers and host-side same-origin endpoints, checks the exact port and network sets, validates health responses against OpenAPI, and removes only its own temporary volume. The migration and database-test containers are opt-in tools under the `data` profile and never publish a port. Runtime images contain production dependencies and the files required by their application, not the monorepo build workspace.
+`pnpm docker:up` applies migrations, registers the synthetic local OIDC client through the migration login, and starts the eight-container local contour. `pnpm docker:smoke` performs the same setup in a dedicated Compose project, builds the four application images, verifies all eight default containers and host-side same-origin endpoints, checks the exact port and network sets, validates health responses against OpenAPI, and proves a real synthetic A2 session across REST, Socket.IO, and logout. The migration and database-test containers are opt-in tools under the `data` profile and never publish a port. Runtime images contain production dependencies and the files required by their application, not the monorepo build workspace.
 
 Official base-image tags are pinned to verified multi-architecture digests. The smoke build records the tested Git commit in image labels and health metadata. The database records checksummed migration versions itself. Application health keeps migration version `null` until a later stage connects runtime services to PostgreSQL; it does not invent a value before that integration exists.
 

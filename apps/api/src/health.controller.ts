@@ -8,11 +8,15 @@ import type { RealtimeTransportReadiness } from './realtime/realtime.module.js';
 import { realtimeTransportReadinessToken } from './realtime/realtime.module.js';
 import type { RealtimeRepository } from './realtime/realtime.repository.js';
 import { realtimeRepositoryToken } from './realtime/realtime.repository.js';
+import type { ApplicationSessionAuthenticator } from './session/application-session.js';
+import { applicationSessionAuthenticatorToken } from './session/application-session.js';
 
 @ApiTags('health')
 @Controller('health')
 export class HealthController {
   constructor(
+    @Inject(applicationSessionAuthenticatorToken)
+    private readonly sessions: ApplicationSessionAuthenticator,
     @Inject(realtimeRepositoryToken) private readonly repository: RealtimeRepository,
     @Inject(realtimeTransportReadinessToken)
     private readonly transport: RealtimeTransportReadiness,
@@ -33,7 +37,11 @@ export class HealthController {
   })
   @Get('ready')
   async ready(): Promise<ServiceHealth> {
-    if (!this.transport.isReady() || !(await this.repository.isReady())) {
+    if (
+      !this.transport.isReady() ||
+      !(await this.repository.isReady()) ||
+      !(await this.sessions.isReady())
+    ) {
       throw new ServiceUnavailableException('API dependencies are unavailable');
     }
     return createServiceHealth('api', 'ready', { build: loadServiceConfig('api').build });

@@ -37,6 +37,10 @@ if [ "$actual_services" != "$expected_services" ]; then
   exit 1
 fi
 
+compose up --detach --wait postgres redis
+compose --profile data run --rm migrate
+compose --profile data run --rm \
+  --entrypoint sh migrate /workspace/infra/postgres/configure-local-auth.sh
 compose up --build --detach --wait
 
 actual_bindings=$(
@@ -83,6 +87,11 @@ assert.deepEqual(actual, expected, process.env.SERVICE + ' is attached to an une
 done
 
 node infra/scripts/docker-smoke.mjs http://127.0.0.1:3000
+
+smoke_session_token=$(compose exec -T auth node --input-type=module <infra/scripts/create-smoke-session.mjs)
+KOVCHEG_SMOKE_SESSION_TOKEN="$smoke_session_token" \
+  node infra/scripts/session-contract-smoke.mjs http://127.0.0.1:3000
+unset smoke_session_token
 
 compose exec -T worker node --input-type=module -e "
 import { readFile } from 'node:fs/promises';
@@ -169,7 +178,7 @@ if find /app -path '*/@kovcheg/contracts/dist/testing' -type d | grep -q .; then
   echo 'runtime image contains synthetic identity fixtures' >&2
   exit 1
 fi
-if grep -R -E -q 'identity-stub|KOVCHEG_IDENTITY_STUB_ENABLED|test-api-main' /app/dist; then
+if [ -d /app/dist ] && grep -R -E -q 'identity-stub|KOVCHEG_IDENTITY_STUB_ENABLED|test-api-main' /app/dist; then
   echo 'runtime image contains an isolated identity-stub entrypoint' >&2
   exit 1
 fi

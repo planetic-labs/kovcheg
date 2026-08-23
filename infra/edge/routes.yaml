@@ -24,7 +24,7 @@ http:
       middlewares:
         - strip-auth-prefix
       priority: 100
-      rule: PathPrefix(`/auth`)
+      rule: PathPrefix(`/auth`) && !PathPrefix(`/auth/internal`)
       service: auth
     realtime:
       entryPoints:

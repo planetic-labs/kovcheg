@@ -701,4 +701,18 @@ describe('A2 rate limiting and session expiry', () => {
       fixture.service.authenticateSession(absoluteSession.sessionToken),
     ).rejects.toMatchObject({ code: 'auth.invalid-session' });
   });
+
+  it('does not convert background validation into user activity', async () => {
+    const fixture = createFixture();
+    await bootstrap(fixture);
+    const session = await login(fixture, 'administrator@example.invalid', 'non-touch');
+    fixture.clock.advance(fixture.dependencies.policy.session.idleLifetimeMs - 1);
+    await expect(fixture.service.validateSession(session.sessionToken)).resolves.toMatchObject({
+      userId: administratorId,
+    });
+    fixture.clock.advance(1);
+    await expect(fixture.service.validateSession(session.sessionToken)).rejects.toMatchObject({
+      code: 'auth.invalid-session',
+    });
+  });
 });

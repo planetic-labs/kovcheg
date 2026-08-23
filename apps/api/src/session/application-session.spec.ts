@@ -22,7 +22,7 @@ describe('application session boundary', () => {
     );
     const authenticator = createApplicationSessionAuthenticator(
       'production',
-      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/session' },
+      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/internal/session' },
       fetchImplementation,
     );
 
@@ -56,7 +56,7 @@ describe('application session boundary', () => {
   ])('rejects a server-declined %s session', async (_label, status) => {
     const authenticator = createApplicationSessionAuthenticator(
       'test',
-      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/session' },
+      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/internal/session' },
       vi.fn().mockResolvedValue(new Response(null, { status })),
     );
     await expect(
@@ -70,7 +70,7 @@ describe('application session boundary', () => {
     const fetchImplementation = vi.fn();
     const authenticator = createApplicationSessionAuthenticator(
       'production',
-      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/session' },
+      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/internal/session' },
       fetchImplementation,
     );
     await expect(authenticator.authenticate(undefined, correlationId)).rejects.toMatchObject({
@@ -84,16 +84,50 @@ describe('application session boundary', () => {
 
   it.each([
     undefined,
-    'https://auth:3002/session?token=unsafe',
-    'https://user:password@auth:3002/session',
-    'https://auth:3002/not-session',
-  ])('fails closed for an unavailable or unsafe validation URL', async (url) => {
-    const authenticator = createApplicationSessionAuthenticator('production', {
-      AUTH_SESSION_VALIDATION_URL: url,
-    });
+    'https://auth:3002/internal/session?token=unsafe',
+    'https://user:password@auth:3002/internal/session',
+    'https://example.invalid/internal/session',
+    'http://auth:3002/not-session',
+  ])('fails startup closed for an unavailable or unsafe production validation URL', (url) => {
+    expect(() =>
+      createApplicationSessionAuthenticator('production', {
+        AUTH_SESSION_VALIDATION_URL: url,
+      }),
+    ).toThrow('Application session validation configuration is unavailable');
+  });
+
+  it('uses non-touch validation for background delivery and includes auth readiness', async () => {
+    const fetchImplementation = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(activePrincipal), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ service: 'auth', state: 'ready', status: 'ok' }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      );
+    const authenticator = createApplicationSessionAuthenticator(
+      'production',
+      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/internal/session' },
+      fetchImplementation,
+    );
+
     await expect(
-      authenticator.authenticate(`__Host-kovcheg_session=${sessionToken}`, correlationId),
-    ).rejects.toMatchObject({ failure: 'unavailable' });
+      authenticator.validate(`__Host-kovcheg_session=${sessionToken}`, correlationId),
+    ).resolves.toEqual({
+      sessionId: activePrincipal.sessionId,
+      userId: activePrincipal.userId,
+    });
+    await expect(authenticator.isReady()).resolves.toBe(true);
+    expect(fetchImplementation.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://auth:3002/internal/session',
+      'http://auth:3002/health/ready',
+    ]);
   });
 
   it('sanitizes upstream failures and malformed principals as unavailable', async () => {
@@ -103,7 +137,7 @@ describe('application session boundary', () => {
     ]) {
       const authenticator = createApplicationSessionAuthenticator(
         'test',
-        { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/session' },
+        { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/internal/session' },
         vi.fn().mockResolvedValue(response),
       );
       await expect(

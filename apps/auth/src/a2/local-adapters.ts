@@ -122,6 +122,28 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
+  validateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null> {
+    return this.queue.run(() => {
+      const session = this.sessionsByVerifier.get(tokenVerifier);
+      if (session === undefined || session.revokedAt !== null) return null;
+      const account = this.accountsById.get(session.accountId);
+      if (
+        account === undefined ||
+        account.status !== 'active' ||
+        now < session.issuedAt ||
+        now >= session.absoluteExpiresAt ||
+        now >= session.idleExpiresAt
+      ) {
+        return null;
+      }
+      return Object.freeze({
+        roles: Object.freeze([...account.roles]),
+        sessionId: session.sessionId,
+        userId: session.accountId,
+      });
+    });
+  }
+
   bootstrapAdministrator(
     input: BootstrapAdministratorInput,
   ): Promise<BootstrapAdministratorResult> {

@@ -194,6 +194,22 @@ export class PostgresAuthRepository implements AuthRepository {
     });
   }
 
+  async validateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null> {
+    const rows = await query<SessionRow>(
+      this.client,
+      `SELECT account_id, session_id, auth_roles
+       FROM kovcheg.validate_auth_session($1, $2)`,
+      [tokenVerifier, new Date(now)],
+    );
+    const row = rows[0];
+    if (row === undefined) return null;
+    return Object.freeze({
+      roles: roles(row.auth_roles),
+      sessionId: identifier<SessionId>(row.session_id),
+      userId: identifier<UserId>(row.account_id),
+    });
+  }
+
   async bootstrapAdministrator(
     input: Parameters<AuthRepository['bootstrapAdministrator']>[0],
   ): Promise<BootstrapAdministratorResult> {

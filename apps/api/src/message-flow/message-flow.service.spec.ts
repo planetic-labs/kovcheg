@@ -25,18 +25,20 @@ const message: TextMessage = Object.freeze({
 function createSessionAuthenticator(
   failureByCookie: Readonly<Record<string, 'unauthenticated' | 'unavailable'>> = {},
 ): ApplicationSessionAuthenticator {
+  const authenticate: ApplicationSessionAuthenticator['authenticate'] = (cookieHeader) => {
+    const failure = cookieHeader === undefined ? 'unauthenticated' : failureByCookie[cookieHeader];
+    if (failure !== undefined) {
+      return Promise.reject(new ApplicationSessionError(failure));
+    }
+    return Promise.resolve({
+      sessionId: '00000000-0000-4000-8000-000000006101',
+      userId: syntheticUserIds.activePrimary,
+    });
+  };
   return {
-    authenticate(cookieHeader) {
-      const failure =
-        cookieHeader === undefined ? 'unauthenticated' : failureByCookie[cookieHeader];
-      if (failure !== undefined) {
-        return Promise.reject(new ApplicationSessionError(failure));
-      }
-      return Promise.resolve({
-        sessionId: '00000000-0000-4000-8000-000000006101',
-        userId: syntheticUserIds.activePrimary,
-      });
-    },
+    authenticate,
+    isReady: () => Promise.resolve(true),
+    validate: authenticate,
   };
 }
 

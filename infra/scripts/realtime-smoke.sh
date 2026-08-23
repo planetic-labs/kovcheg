@@ -19,7 +19,7 @@ cleanup() {
   exit_code=$?
   if [ "$exit_code" -ne 0 ]; then
     compose ps
-    compose logs --no-color --tail 100 api-1 api-2 worker redis edge
+    compose logs --no-color --tail 100 api-1 api-2 auth worker redis edge
   fi
   compose down --volumes --remove-orphans
   find "$realtime_secret_directory" -type f -delete
@@ -36,6 +36,8 @@ export COMPOSE_PARALLEL_LIMIT=1
 compose config --quiet
 compose up --detach --wait postgres redis
 compose --profile data run --rm migrate
+compose --profile data run --rm \
+  --entrypoint sh migrate /workspace/infra/postgres/configure-local-auth.sh
 compose --profile data run --rm message-flow-test
 compose up --build --detach --wait
 

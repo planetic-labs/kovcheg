@@ -9,6 +9,23 @@ import { ApplicationSessionError } from './session/application-session.js';
 
 const openApplications: Awaited<ReturnType<typeof createApiApplication>>[] = [];
 
+function readySessionAuthenticator(allowedCookie?: string) {
+  const authenticate = (cookieHeader: string | undefined) => {
+    if (allowedCookie !== undefined && cookieHeader !== allowedCookie) {
+      return Promise.reject(new ApplicationSessionError('unauthenticated'));
+    }
+    return Promise.resolve({
+      sessionId: '00000000-0000-4000-8000-000000006101' as const,
+      userId: syntheticUserIds.activePrimary,
+    });
+  };
+  return Object.freeze({
+    authenticate,
+    isReady: () => Promise.resolve(true),
+    validate: authenticate,
+  });
+}
+
 afterEach(async () => {
   await Promise.all(openApplications.splice(0).map(async (app) => app.close()));
 });
@@ -21,6 +38,7 @@ describe('API HTTP foundation', () => {
         isReady: () => Promise.resolve(true),
         subscribe: () => Promise.resolve({ history: Object.freeze([]) }),
       },
+      sessionAuthenticator: readySessionAuthenticator(),
     });
     openApplications.push(app);
     await app.listen(0, '127.0.0.1');
@@ -87,17 +105,7 @@ describe('API HTTP foundation', () => {
     const activeCookie = 'kovcheg_session=active-session-token-0000000000000001';
     const deactivatedCookie = 'kovcheg_session=deactivated-session-token-0000000000';
     const app = await createApiApplication(undefined, {
-      sessionAuthenticator: {
-        authenticate(cookieHeader) {
-          if (cookieHeader !== activeCookie) {
-            return Promise.reject(new ApplicationSessionError('unauthenticated'));
-          }
-          return Promise.resolve({
-            sessionId: '00000000-0000-4000-8000-000000006101',
-            userId: syntheticUserIds.activePrimary,
-          });
-        },
-      },
+      sessionAuthenticator: readySessionAuthenticator(activeCookie),
     });
     openApplications.push(app);
     await app.listen(0, '127.0.0.1');
@@ -151,6 +159,22 @@ describe('API HTTP foundation', () => {
       correlationId: 'http-message-unavailable',
       httpStatus: 503,
     });
+  });
+
+  it('reports unready when the A2 identity dependency is unavailable', async () => {
+    const authenticator = readySessionAuthenticator();
+    const app = await createApiApplication(undefined, {
+      repository: {
+        canReadChat: () => Promise.resolve(true),
+        isReady: () => Promise.resolve(true),
+        subscribe: () => Promise.resolve({ history: Object.freeze([]) }),
+      },
+      sessionAuthenticator: { ...authenticator, isReady: () => Promise.resolve(false) },
+    });
+    openApplications.push(app);
+    await app.listen(0, '127.0.0.1');
+
+    expect(await fetch(`${await app.getUrl()}/health/ready`)).toMatchObject({ status: 503 });
   });
 
   it('keeps OpenAPI JSON but disables Swagger UI in production', async () => {

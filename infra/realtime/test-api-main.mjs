@@ -12,16 +12,19 @@ function testSessionAuthenticator() {
     throw new Error('The isolated test session adapter is unavailable');
   }
   const identities = createSyntheticIdentityStub({ NODE_ENV: 'test' });
+  const authenticate = async (cookieHeader) => {
+    const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
+    const userId = match?.[1];
+    const identity = userId === undefined ? null : await identities.findById(userId);
+    if (identity === null || identity.status !== 'active') {
+      throw new ApplicationSessionError('unauthenticated');
+    }
+    return Object.freeze({ sessionId: userId, userId });
+  };
   return Object.freeze({
-    async authenticate(cookieHeader) {
-      const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
-      const userId = match?.[1];
-      const identity = userId === undefined ? null : await identities.findById(userId);
-      if (identity === null || identity.status !== 'active') {
-        throw new ApplicationSessionError('unauthenticated');
-      }
-      return Object.freeze({ sessionId: userId, userId });
-    },
+    authenticate,
+    isReady: () => Promise.resolve(true),
+    validate: authenticate,
   });
 }
 

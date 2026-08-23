@@ -12,6 +12,11 @@ export interface ApplicationSessionAuthenticator {
     cookieHeader: string | undefined,
     correlationId: CorrelationId,
   ): Promise<ApplicationPrincipal>;
+  isReady(): Promise<boolean>;
+  validate(
+    cookieHeader: string | undefined,
+    correlationId: CorrelationId,
+  ): Promise<ApplicationPrincipal>;
 }
 
 export type ApplicationSessionFailure = 'unauthenticated' | 'unavailable';
@@ -74,10 +79,11 @@ function parsePrincipal(value: unknown): SessionValidationResponse | null {
   });
 }
 
-function parseValidationUrl(value: string | undefined): URL | null {
-  if (value === undefined || value.trim().length === 0) {
-    return null;
-  }
+function parseValidationUrl(
+  value: string | undefined,
+  environment: RuntimeEnvironment,
+): URL | null {
+  if (value === undefined || value.trim().length === 0) return null;
   try {
     const url = new URL(value);
     if (
@@ -86,7 +92,13 @@ function parseValidationUrl(value: string | undefined): URL | null {
       url.password !== '' ||
       url.search !== '' ||
       url.hash !== '' ||
-      url.pathname !== '/session'
+      url.pathname !== '/internal/session'
+    ) {
+      return null;
+    }
+    if (
+      environment === 'production' &&
+      (url.protocol !== 'http:' || url.hostname !== 'auth' || url.port !== '3002')
     ) {
       return null;
     }
@@ -100,16 +112,68 @@ export class UnavailableApplicationSessionAuthenticator implements ApplicationSe
   authenticate(): Promise<ApplicationPrincipal> {
     return Promise.reject(new ApplicationSessionError('unavailable'));
   }
+
+  isReady(): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
+  validate(): Promise<ApplicationPrincipal> {
+    return Promise.reject(new ApplicationSessionError('unavailable'));
+  }
 }
 
 export class HttpApplicationSessionAuthenticator implements ApplicationSessionAuthenticator {
+  private readonly authenticationUrl: URL;
+  private readonly readinessUrl: URL;
+
   constructor(
     private readonly environment: RuntimeEnvironment,
     private readonly validationUrl: URL,
     private readonly fetchImplementation: Fetch = fetch,
-  ) {}
+  ) {
+    this.authenticationUrl = new URL('/session', validationUrl);
+    this.readinessUrl = new URL('/health/ready', validationUrl);
+  }
 
   async authenticate(
+    cookieHeader: string | undefined,
+    correlationId: CorrelationId,
+  ): Promise<ApplicationPrincipal> {
+    return this.requestPrincipal(this.authenticationUrl, cookieHeader, correlationId);
+  }
+
+  async isReady(): Promise<boolean> {
+    try {
+      const response = await this.fetchImplementation(this.readinessUrl, {
+        cache: 'no-store',
+        method: 'GET',
+        redirect: 'error',
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (response.status !== 200) return false;
+      const body = (await response.json()) as unknown;
+      return (
+        body !== null &&
+        typeof body === 'object' &&
+        !Array.isArray(body) &&
+        (body as Readonly<Record<string, unknown>>).service === 'auth' &&
+        (body as Readonly<Record<string, unknown>>).state === 'ready' &&
+        (body as Readonly<Record<string, unknown>>).status === 'ok'
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async validate(
+    cookieHeader: string | undefined,
+    correlationId: CorrelationId,
+  ): Promise<ApplicationPrincipal> {
+    return this.requestPrincipal(this.validationUrl, cookieHeader, correlationId);
+  }
+
+  private async requestPrincipal(
+    url: URL,
     cookieHeader: string | undefined,
     correlationId: CorrelationId,
   ): Promise<ApplicationPrincipal> {
@@ -120,7 +184,7 @@ export class HttpApplicationSessionAuthenticator implements ApplicationSessionAu
 
     let response: Response;
     try {
-      response = await this.fetchImplementation(this.validationUrl, {
+      response = await this.fetchImplementation(url, {
         cache: 'no-store',
         headers: {
           cookie: sessionCookie,
@@ -161,8 +225,12 @@ export function createApplicationSessionAuthenticator(
   source: ApplicationSessionEnvironment = process.env,
   fetchImplementation: Fetch = fetch,
 ): ApplicationSessionAuthenticator {
-  const validationUrl = parseValidationUrl(source.AUTH_SESSION_VALIDATION_URL);
-  return validationUrl === null
-    ? new UnavailableApplicationSessionAuthenticator()
-    : new HttpApplicationSessionAuthenticator(environment, validationUrl, fetchImplementation);
+  const validationUrl = parseValidationUrl(source.AUTH_SESSION_VALIDATION_URL, environment);
+  if (validationUrl === null) {
+    if (environment === 'production') {
+      throw new Error('Application session validation configuration is unavailable');
+    }
+    return new UnavailableApplicationSessionAuthenticator();
+  }
+  return new HttpApplicationSessionAuthenticator(environment, validationUrl, fetchImplementation);
 }

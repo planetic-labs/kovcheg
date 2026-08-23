@@ -72,4 +72,54 @@ describe('A2 runtime configuration', () => {
       }),
     ).toThrow('AUTH_REDIS_URL must use redis or rediss');
   });
+
+  it('loads secret material from container secret files without inline duplication', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kovcheg-auth-config-'));
+    try {
+      const paths = {
+        challenge: join(directory, 'challenge'),
+        cookies: join(directory, 'cookies'),
+        jwks: join(directory, 'jwks'),
+        rate: join(directory, 'rate'),
+        session: join(directory, 'session'),
+      };
+      writeFileSync(paths.challenge, 'c'.repeat(64));
+      writeFileSync(paths.cookies, JSON.stringify(['k'.repeat(64), 'l'.repeat(64)]));
+      writeFileSync(
+        paths.jwks,
+        JSON.stringify({
+          keys: [{ alg: 'ES256', crv: 'P-256', d: 'synthetic', kty: 'EC', x: 'x', y: 'y' }],
+        }),
+      );
+      writeFileSync(paths.rate, 'r'.repeat(64));
+      writeFileSync(paths.session, 's'.repeat(64));
+
+      const config = loadAuthRuntimeConfig('test', {
+        ...enabledSource(),
+        AUTH_CHALLENGE_PEPPER: undefined,
+        AUTH_CHALLENGE_PEPPER_FILE: paths.challenge,
+        AUTH_OIDC_COOKIE_KEYS_JSON: undefined,
+        AUTH_OIDC_COOKIE_KEYS_JSON_FILE: paths.cookies,
+        AUTH_OIDC_JWKS_JSON: undefined,
+        AUTH_OIDC_JWKS_JSON_FILE: paths.jwks,
+        AUTH_RATE_LIMIT_PEPPER: undefined,
+        AUTH_RATE_LIMIT_PEPPER_FILE: paths.rate,
+        AUTH_SESSION_PEPPER: undefined,
+        AUTH_SESSION_PEPPER_FILE: paths.session,
+      });
+      expect(config).toMatchObject({
+        authSecrets: {
+          challengePepper: 'c'.repeat(64),
+          rateLimitPepper: 'r'.repeat(64),
+          sessionPepper: 's'.repeat(64),
+        },
+        enabled: true,
+      });
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
 });
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';

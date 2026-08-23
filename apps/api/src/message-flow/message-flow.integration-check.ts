@@ -67,6 +67,18 @@ async function main(): Promise<void> {
         }
         return Promise.resolve({ sessionId: userId as SessionId, userId });
       },
+      isReady: () => Promise.resolve(true),
+      validate(cookieHeader) {
+        const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
+        const userId = match?.[1] as UserId | undefined;
+        if (
+          userId !== syntheticUserIds.activePrimary &&
+          userId !== syntheticUserIds.activeSecondary
+        ) {
+          return Promise.reject(new ApplicationSessionError('unauthenticated'));
+        }
+        return Promise.resolve({ sessionId: userId as SessionId, userId });
+      },
     },
   });
   await app.listen(0, '127.0.0.1');

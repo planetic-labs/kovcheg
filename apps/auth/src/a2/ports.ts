@@ -31,6 +31,7 @@ export type ConsumeChallengeResult =
 export interface AuthRepository {
   readonly productionSafe?: true;
   authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null>;
+  validateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null>;
   bootstrapAdministrator(input: BootstrapAdministratorInput): Promise<BootstrapAdministratorResult>;
   consumeChallengeAndCreateSession(input: {
     readonly candidateCodeVerifier: string;

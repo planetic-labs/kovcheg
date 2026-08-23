@@ -44,15 +44,18 @@ function sessionCookie(userId: UserId): string {
 function sessionAuthenticator(
   isAllowed: (userId: UserId) => boolean = () => true,
 ): ApplicationSessionAuthenticator {
+  const authenticate: ApplicationSessionAuthenticator['authenticate'] = (cookieHeader) => {
+    const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
+    const userId = match?.[1] as UserId | undefined;
+    if (userId === undefined || !isAllowed(userId)) {
+      return Promise.reject(new ApplicationSessionError('unauthenticated'));
+    }
+    return Promise.resolve({ sessionId: userId as SessionId, userId });
+  };
   return {
-    authenticate(cookieHeader) {
-      const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
-      const userId = match?.[1] as UserId | undefined;
-      if (userId === undefined || !isAllowed(userId)) {
-        return Promise.reject(new ApplicationSessionError('unauthenticated'));
-      }
-      return Promise.resolve({ sessionId: userId as SessionId, userId });
-    },
+    authenticate,
+    isReady: () => Promise.resolve(true),
+    validate: authenticate,
   };
 }
 
@@ -332,6 +335,75 @@ describe('realtime gateway', () => {
           chatId,
           chatSequence: '1',
           messageId: '00000000-0000-4000-8000-000000005503',
+        },
+      }),
+      headers: {
+        authorization: 'Bearer realtime-test-token-0000000000000001',
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    expect(response.status).toBe(202);
+    await expect(disconnected).resolves.toBe('io server disconnect');
+    expect(delivered).toBe(false);
+  });
+
+  it('uses non-touch validation and rejects a principal change before delivery', async () => {
+    const chatId = '00000000-0000-4000-8000-000000005601';
+    let validatedUserId: UserId = syntheticUserIds.activePrimary;
+    const app = await createApiApplication(undefined, {
+      relayToken: 'realtime-test-token-0000000000000001',
+      sessionAuthenticator: {
+        authenticate: () =>
+          Promise.resolve({
+            sessionId: syntheticUserIds.activePrimary as SessionId,
+            userId: syntheticUserIds.activePrimary,
+          }),
+        isReady: () => Promise.resolve(true),
+        validate: () =>
+          Promise.resolve({
+            sessionId: validatedUserId as SessionId,
+            userId: validatedUserId,
+          }),
+      },
+      repository: {
+        canReadChat: () => Promise.resolve(true),
+        isReady: () => Promise.resolve(true),
+        subscribe: () => Promise.resolve({ history: Object.freeze([]) }),
+      },
+    });
+    openApplications.push(app);
+    await app.listen(0, '127.0.0.1');
+    const socket = io(await app.getUrl(), {
+      extraHeaders: { cookie: sessionCookie(syntheticUserIds.activePrimary) },
+      path: realtimeSocketPath,
+      reconnection: false,
+      transports: ['websocket'],
+    });
+    openSockets.push(socket);
+    await nextEvent(socket, realtimeSocketEvents.ready);
+    const subscription = await new Promise((resolve) => {
+      socket.emit(realtimeSocketEvents.subscribe, { afterSequence: '0', chatId }, resolve);
+    });
+    expect(subscription).toMatchObject({ joined: true });
+
+    validatedUserId = syntheticUserIds.activeSecondary;
+    let delivered = false;
+    socket.once(realtimeSocketEvents.messageCreated, () => {
+      delivered = true;
+    });
+    const disconnected = nextEvent<string>(socket, 'disconnect');
+    const response = await fetch(`${await app.getUrl()}/internal/realtime/events`, {
+      body: JSON.stringify({
+        contractVersion: realtimeContractVersion,
+        correlationId: 'realtime-principal-change',
+        eventId: '00000000-0000-4000-8000-000000005602',
+        eventName: 'message.created',
+        occurredAt: '2026-01-01T00:00:01.000Z',
+        payload: {
+          chatId,
+          chatSequence: '1',
+          messageId: '00000000-0000-4000-8000-000000005603',
         },
       }),
       headers: {

@@ -105,13 +105,7 @@ async function readHealth(path, service, correlationId, expectedState = 'ready')
 
 const webHealth = await readHealth('/health/ready', 'web', null);
 const apiHealth = await readHealth('/api/health/ready', 'api', 'api-smoke-001');
-const authHealth = await readHealth('/auth/health/live', 'auth', 'auth-smoke-001', 'live');
-const disabledAuthReadiness = await fetchWithRetry(`${baseUrl}/auth/health/ready`);
-assert.equal(
-  disabledAuthReadiness.status,
-  503,
-  'Auth readiness must fail while its production runtime is intentionally disabled',
-);
+const authHealth = await readHealth('/auth/health/ready', 'auth', 'auth-smoke-001');
 
 const [rootResponse, apiOpenApiResponse, authOpenApiResponse, apiDocs, authDocs] =
   await Promise.all([
@@ -129,9 +123,14 @@ assert.equal(apiDocs.status, 404, 'API Swagger UI must be disabled in production
 assert.equal(authDocs.status, 404, 'Auth Swagger UI must be disabled in production');
 
 const apiDocument = await apiOpenApiResponse.json();
-await authOpenApiResponse.json();
+const authDocument = await authOpenApiResponse.json();
 assertAgainstSchema(apiHealth, readinessSchema(apiDocument));
-assert.equal(authHealth.state, 'live');
+assertAgainstSchema(authHealth, readinessSchema(authDocument));
+assert.equal(
+  authDocument.paths?.['/internal/session'],
+  undefined,
+  'The internal non-touch session endpoint must be excluded from public OpenAPI',
+);
 assert.equal(webHealth.contractVersion, 1);
 
 const invalidCorrelationResponse = await fetchWithRetry(`${baseUrl}/api/health/live`, {

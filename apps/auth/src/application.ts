@@ -15,6 +15,7 @@ function isNestOwnedPath(url: string | undefined): boolean {
   return (
     path === '/openapi.json' ||
     path === '/session' ||
+    path === '/internal/session' ||
     path === '/session/challenges' ||
     path.startsWith('/session/challenges/') ||
     path === '/admin/accounts' ||

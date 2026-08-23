@@ -437,6 +437,24 @@ describe('A2 auth HTTP runtime', () => {
     ).toMatchObject({ status: 200 });
   });
 
+  it('keeps internal service validation non-touch while browser session reads remain active', async () => {
+    const fixture = await createFixture();
+    const session = await loginThroughHttp(fixture, 'active-http@example.invalid');
+    fixture.clock.advance(15 * 60_000 - 1);
+
+    const valid = await fetch(`${fixture.baseUrl}/internal/session`, {
+      headers: { cookie: session.cookie },
+    });
+    expect(valid.status).toBe(200);
+    await expect(valid.json()).resolves.toMatchObject({ userId: fixture.activeAccount.userId });
+
+    fixture.clock.advance(1);
+    const expired = await fetch(`${fixture.baseUrl}/internal/session`, {
+      headers: { cookie: session.cookie },
+    });
+    expect(expired.status).toBe(401);
+  });
+
   it('exposes protected create, update, status, and scoped session revocation over HTTP', async () => {
     const fixture = await createFixture();
     const administratorCookie = issuedCookie(

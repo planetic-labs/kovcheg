@@ -23,7 +23,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import type { OnGatewayConnection } from '@nestjs/websockets';
+import type { OnGatewayConnection, OnGatewayInit } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 
 import type { ApplicationSessionAuthenticator } from '../session/application-session.js';
@@ -32,6 +32,7 @@ import type { RealtimeRepository } from './realtime.repository.js';
 import { RealtimeRepositoryError, realtimeRepositoryToken } from './realtime.repository.js';
 
 export const realtimeInstanceIdToken = Symbol('realtimeInstanceId');
+const clusterMessageCreatedEvent = 'kovcheg.realtime.message-created';
 
 interface RealtimeSocketData {
   sessionId?: SessionId;
@@ -49,7 +50,7 @@ interface SessionSocket {
   path: realtimeSocketPath,
   transports: ['polling', 'websocket'],
 })
-export class RealtimeGateway implements OnGatewayConnection {
+export class RealtimeGateway implements OnGatewayConnection, OnGatewayInit {
   @WebSocketServer()
   private server!: Server;
 
@@ -63,6 +64,14 @@ export class RealtimeGateway implements OnGatewayConnection {
     @Inject(realtimeInstanceIdToken)
     private readonly instanceId: string,
   ) {}
+
+  afterInit(server: Server): void {
+    server.on(clusterMessageCreatedEvent, (value: unknown) => {
+      void this.deliverLocal(value).then((delivered) => {
+        if (!delivered) this.logger.error('Cluster realtime delivery failed');
+      });
+    });
+  }
 
   async handleConnection(socket: Socket): Promise<void> {
     const principal = await this.authenticateSocket(socket);
@@ -124,14 +133,24 @@ export class RealtimeGateway implements OnGatewayConnection {
 
   async emitMessageCreated(value: unknown): Promise<boolean> {
     const event = parseMessageCreatedRealtimeEvent(value);
-    if (event === null) {
+    if (event === null) return false;
+    try {
+      if (!(await this.deliverLocal(event))) return false;
+      this.server.serverSideEmit(clusterMessageCreatedEvent, event);
+      return true;
+    } catch {
       return false;
     }
+  }
+
+  private async deliverLocal(value: unknown): Promise<boolean> {
+    const event = parseMessageCreatedRealtimeEvent(value);
+    if (event === null) return false;
     try {
       const room = `chat:${event.payload.chatId}`;
-      const sockets = await this.server.in(room).fetchSockets();
+      const sockets = await this.server.local.in(room).fetchSockets();
       for (const socket of sockets) {
-        const principal = await this.authenticateSocket(socket, event.correlationId);
+        const principal = await this.authenticateSocket(socket, event.correlationId, false);
         const authorized =
           principal !== null &&
           (await this.repository.canReadChat(principal.userId, event.payload.chatId));
@@ -140,7 +159,7 @@ export class RealtimeGateway implements OnGatewayConnection {
           socket.disconnect(true);
           continue;
         }
-        this.server.to(socket.id).emit(realtimeSocketEvents.messageCreated, event);
+        socket.emit(realtimeSocketEvents.messageCreated, event);
       }
       return true;
     } catch {
@@ -153,7 +172,11 @@ export class RealtimeGateway implements OnGatewayConnection {
     socket.disconnect(true);
   }
 
-  private async authenticateSocket(socket: SessionSocket, correlationId?: CorrelationId) {
+  private async authenticateSocket(
+    socket: SessionSocket,
+    correlationId?: CorrelationId,
+    recordActivity = true,
+  ) {
     const headerValue = socket.handshake.headers[correlationIdHeaderName];
     const requestCorrelationId =
       correlationId ??
@@ -163,7 +186,9 @@ export class RealtimeGateway implements OnGatewayConnection {
     const cookieHeader =
       typeof cookieValue === 'string' ? cookieValue : (cookieValue?.[0] ?? undefined);
     try {
-      const principal = await this.sessions.authenticate(cookieHeader, requestCorrelationId);
+      const principal = recordActivity
+        ? await this.sessions.authenticate(cookieHeader, requestCorrelationId)
+        : await this.sessions.validate(cookieHeader, requestCorrelationId);
       const current = socket.data;
       if (
         (current.sessionId !== undefined && current.sessionId !== principal.sessionId) ||
