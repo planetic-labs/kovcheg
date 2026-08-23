@@ -29,7 +29,7 @@ SELECT pg_temp.assert_true(
 );
 SELECT pg_temp.assert_true(
   (
-    SELECT count(*) = 6
+    SELECT count(*) = 8
     FROM pg_catalog.pg_roles
     WHERE rolname IN (
       'kovcheg_migration',
@@ -37,10 +37,12 @@ SELECT pg_temp.assert_true(
       'kovcheg_audit',
       'kovcheg_migrator',
       'kovcheg_app',
-      'kovcheg_audit_writer'
+      'kovcheg_audit_writer',
+      'kovcheg_auth_runtime',
+      'kovcheg_auth_app'
     )
   ),
-  'all migration, runtime, and audit roles must exist'
+  'all migration, runtime, audit, and auth roles must exist'
 );
 SELECT pg_temp.assert_true(
   NOT EXISTS (
@@ -55,7 +57,12 @@ SELECT pg_temp.assert_true(
   (
     SELECT bool_and(rolpassword LIKE 'SCRAM-SHA-256$%')
     FROM pg_catalog.pg_authid
-    WHERE rolname IN ('kovcheg_migrator', 'kovcheg_app', 'kovcheg_audit_writer')
+    WHERE rolname IN (
+      'kovcheg_migrator',
+      'kovcheg_app',
+      'kovcheg_audit_writer',
+      'kovcheg_auth_app'
+    )
   ),
   'every login role password must be stored as a SCRAM verifier'
 );
@@ -69,6 +76,16 @@ SELECT pg_temp.assert_true(
   AND NOT pg_has_role('kovcheg_app', 'kovcheg_audit', 'MEMBER')
   AND NOT pg_has_role('kovcheg_audit_writer', 'kovcheg_migration', 'MEMBER')
   AND NOT pg_has_role('kovcheg_audit_writer', 'kovcheg_runtime', 'MEMBER'),
+  'login roles must inherit only their explicit group role'
+);
+SELECT pg_temp.assert_true(
+  pg_has_role('kovcheg_auth_app', 'kovcheg_auth_runtime', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_auth_app', 'kovcheg_migration', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_auth_app', 'kovcheg_runtime', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_auth_app', 'kovcheg_audit', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_app', 'kovcheg_auth_runtime', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_audit_writer', 'kovcheg_auth_runtime', 'MEMBER')
+  AND NOT pg_has_role('kovcheg_migrator', 'kovcheg_auth_runtime', 'MEMBER'),
   'login roles must inherit only their explicit group role'
 );
 SELECT pg_temp.assert_true(

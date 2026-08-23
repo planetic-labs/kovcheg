@@ -21,9 +21,19 @@ SELECT pg_temp.assert_true(
   'the A4 message-flow entrypoint must not exist before migration v4'
 );
 SELECT pg_temp.assert_true(
+  to_regclass('kovcheg.account_auth_profiles') IS NULL
+  AND to_regclass('kovcheg.auth_email_challenges') IS NULL
+  AND to_regclass('kovcheg.auth_sessions') IS NULL,
+  'the v3 boundary must remain valid before additive auth persistence'
+);
+SELECT pg_temp.assert_true(
   EXISTS (
     SELECT 1 FROM kovcheg.messages
     WHERE sender_account_id = '00000000-0000-4000-8000-000000002001'
+  )
+  AND EXISTS (
+    SELECT 1 FROM kovcheg.outbox_events
+    WHERE idempotency_key = 'outbox-message-001'
   ),
-  'pre-v3 message data must remain readable at the v3 boundary'
+  'pre-v3 message and outbox data must remain readable at the v3 boundary'
 );

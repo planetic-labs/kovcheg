@@ -69,9 +69,11 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'kovcheg' AND column_name IN ('email', 'name', 'phone')
+    WHERE table_schema = 'kovcheg'
+      AND table_name IN ('accounts', 'starter_chat_blueprints', 'chats', 'chat_memberships')
+      AND column_name IN ('email', 'name', 'phone')
   ),
-  'A3 fixtures must contain no identity or contact fields'
+  'synthetic foundation fixtures must contain no identity or contact fields'
 );
 
 BEGIN;
