@@ -37,7 +37,8 @@
     "infra/scripts/database-test.sh",
     "infra/scripts/docker-smoke.sh",
     "infra/scripts/docker-up.sh",
-    "infra/scripts/realtime-smoke.sh"
+    "infra/scripts/realtime-smoke.sh",
+    "verification/container-security.sh"
   ],
   "testOnlyEntrypoints": [
     {
