@@ -19,6 +19,7 @@ export interface RealtimeSubscriptionData {
 }
 
 export interface RealtimeRepository {
+  canReadChat(userId: UserId, chatId: Uuid): Promise<boolean>;
   isReady(): Promise<boolean>;
   subscribe(command: RealtimeSubscriptionCommand): Promise<RealtimeSubscriptionData>;
 }
@@ -65,6 +66,10 @@ function mapMessage(row: MessageRow): TextMessage {
 }
 
 export class UnavailableRealtimeRepository implements RealtimeRepository {
+  canReadChat(): Promise<boolean> {
+    return Promise.reject(new RealtimeRepositoryError('unavailable'));
+  }
+
   isReady(): Promise<boolean> {
     return Promise.resolve(false);
   }
@@ -87,6 +92,18 @@ export class PostgresRealtimeRepository implements RealtimeRepository, OnModuleD
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async canReadChat(userId: UserId, chatId: Uuid): Promise<boolean> {
+    try {
+      const authorization = await this.pool.query<AuthorizationRow>(
+        'SELECT kovcheg.can_account_read_chat($1, $2) AS allowed',
+        [userId, chatId],
+      );
+      return authorization.rows[0]?.allowed === true;
+    } catch {
+      throw new RealtimeRepositoryError('unavailable');
     }
   }
 

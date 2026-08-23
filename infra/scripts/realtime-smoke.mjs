@@ -5,7 +5,6 @@ import { execFileSync } from 'node:child_process';
 
 import {
   createRealtimeEventDeduplicator,
-  identityStubHeaderName,
   realtimeSocketEvents,
   realtimeSocketPath,
 } from '../../packages/contracts/dist/index.js';
@@ -63,7 +62,7 @@ function createClient(userId) {
     socket: null,
   };
   const socket = io(baseUrl, {
-    auth: { [identityStubHeaderName]: userId },
+    extraHeaders: { cookie: `kovcheg_session=${userId}` },
     forceNew: true,
     path: realtimeSocketPath,
     reconnection: true,
@@ -131,8 +130,8 @@ async function sendMessage(userId, label) {
       text: `Synthetic realtime check ${clientMessageCounter}`,
     }),
     headers: {
+      cookie: `kovcheg_session=${userId}`,
       'content-type': 'application/json',
-      [identityStubHeaderName]: userId,
       'x-correlation-id': `realtime-${transport}-${label}-${clientMessageCounter}`,
     },
     method: 'POST',

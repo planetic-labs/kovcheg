@@ -1,13 +1,14 @@
 import type {
+  AvailableChatList,
   CorrelationId,
   CorrelationRequest,
   CreateTextMessageResponse,
   MessageHistoryPage,
 } from '@kovcheg/contracts';
 import {
+  availableChatListJsonSchema,
   createTextMessageRequestJsonSchema,
   createTextMessageResponseJsonSchema,
-  identityStubHeaderName,
   machineErrorJsonSchema,
   messageHistoryPageJsonSchema,
 } from '@kovcheg/contracts';
@@ -29,8 +30,8 @@ import {
   ApiBody,
   ApiConflictResponse,
   ApiCreatedResponse,
+  ApiCookieAuth,
   ApiForbiddenResponse,
-  ApiHeader,
   ApiOkResponse,
   ApiParam,
   ApiQuery,
@@ -48,12 +49,7 @@ interface StatusResponse {
 const errorResponse = Object.freeze({ schema: machineErrorJsonSchema });
 
 @ApiTags('messages')
-@ApiHeader({
-  description: 'Synthetic A4 identity. The stub is unavailable in production.',
-  name: identityStubHeaderName,
-  required: true,
-  schema: { format: 'uuid', type: 'string' },
-})
+@ApiCookieAuth('applicationSession')
 @ApiParam({ format: 'uuid', name: 'chatId', type: 'string' })
 @ApiBadRequestResponse(errorResponse)
 @ApiUnauthorizedResponse(errorResponse)
@@ -73,14 +69,14 @@ export class MessageFlowController {
   @Post()
   async createTextMessage(
     @Param('chatId') chatId: string,
-    @Headers(identityStubHeaderName) identityStubUserId: string | undefined,
+    @Headers('cookie') cookieHeader: string | undefined,
     @Body() body: unknown,
     @Req() request: CorrelationRequest,
     @Res({ passthrough: true }) response: StatusResponse,
   ): Promise<CreateTextMessageResponse> {
     const result = await this.messageFlow.createTextMessage(
       chatId,
-      identityStubUserId,
+      cookieHeader,
       body,
       request.correlationId as CorrelationId,
     );
@@ -104,16 +100,37 @@ export class MessageFlowController {
   @Get()
   readMessageHistory(
     @Param('chatId') chatId: string,
-    @Headers(identityStubHeaderName) identityStubUserId: string | undefined,
+    @Headers('cookie') cookieHeader: string | undefined,
     @Query('afterSequence') afterSequence: string | undefined,
     @Query('limit') limit: string | undefined,
     @Req() request: CorrelationRequest,
   ): Promise<MessageHistoryPage> {
     return this.messageFlow.readMessageHistory(
       chatId,
-      identityStubUserId,
+      cookieHeader,
       afterSequence,
       limit,
+      request.correlationId as CorrelationId,
+    );
+  }
+}
+
+@ApiTags('chats')
+@ApiCookieAuth('applicationSession')
+@ApiUnauthorizedResponse(errorResponse)
+@ApiServiceUnavailableResponse(errorResponse)
+@Controller('chats')
+export class ChatListController {
+  constructor(@Inject(MessageFlowService) private readonly messageFlow: MessageFlowService) {}
+
+  @ApiOkResponse({ schema: availableChatListJsonSchema })
+  @Get()
+  listAvailableChats(
+    @Headers('cookie') cookieHeader: string | undefined,
+    @Req() request: CorrelationRequest,
+  ): Promise<AvailableChatList> {
+    return this.messageFlow.listAvailableChats(
+      cookieHeader,
       request.correlationId as CorrelationId,
     );
   }

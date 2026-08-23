@@ -1,14 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { loadServiceConfig } from '@kovcheg/config';
-import {
-  correlationIdHeaderName,
-  identityStubHeaderName,
-  parseCorrelationId,
-} from '@kovcheg/contracts';
-import { createSyntheticIdentityStub, syntheticUserIds } from '@kovcheg/contracts/testing';
+import { correlationIdHeaderName, parseCorrelationId } from '@kovcheg/contracts';
+import { syntheticUserIds } from '@kovcheg/contracts/testing';
 
 import { createApiApplication } from './application.js';
+import { ApplicationSessionError } from './session/application-session.js';
 
 const openApplications: Awaited<ReturnType<typeof createApiApplication>>[] = [];
 
@@ -20,6 +17,7 @@ describe('API HTTP foundation', () => {
   it('serves liveness, readiness, and a local OpenAPI document', async () => {
     const app = await createApiApplication(undefined, {
       repository: {
+        canReadChat: () => Promise.resolve(true),
         isReady: () => Promise.resolve(true),
         subscribe: () => Promise.resolve({ history: Object.freeze([]) }),
       },
@@ -59,22 +57,24 @@ describe('API HTTP foundation', () => {
         '/chats/{chatId}/messages': {
           get: {
             parameters: expect.arrayContaining([
-              expect.objectContaining({ in: 'header', name: identityStubHeaderName }),
               expect.objectContaining({ in: 'query', name: 'afterSequence' }),
               expect.objectContaining({ in: 'query', name: 'limit' }),
             ]),
             responses: { 200: expect.any(Object), 403: expect.any(Object) },
           },
           post: {
-            parameters: expect.arrayContaining([
-              expect.objectContaining({ in: 'header', name: identityStubHeaderName }),
-            ]),
             requestBody: expect.any(Object),
             responses: {
               200: expect.any(Object),
               201: expect.any(Object),
               409: expect.any(Object),
             },
+          },
+        },
+        '/chats': {
+          get: {
+            responses: { 200: expect.any(Object), 401: expect.any(Object) },
+            security: [{ applicationSession: [] }],
           },
         },
         '/health/live': expect.any(Object),
@@ -84,11 +84,19 @@ describe('API HTTP foundation', () => {
   });
 
   it('returns correlation-bound machine errors at the identity and database boundaries', async () => {
-    const identityStub = createSyntheticIdentityStub({ NODE_ENV: 'test' });
+    const activeCookie = 'kovcheg_session=active-session-token-0000000000000001';
+    const deactivatedCookie = 'kovcheg_session=deactivated-session-token-0000000000';
     const app = await createApiApplication(undefined, {
-      identityProvider: {
-        available: true,
-        findById: (userId) => identityStub.findById(userId),
+      sessionAuthenticator: {
+        authenticate(cookieHeader) {
+          if (cookieHeader !== activeCookie) {
+            return Promise.reject(new ApplicationSessionError('unauthenticated'));
+          }
+          return Promise.resolve({
+            sessionId: '00000000-0000-4000-8000-000000006101',
+            userId: syntheticUserIds.activePrimary,
+          });
+        },
       },
     });
     openApplications.push(app);
@@ -118,14 +126,14 @@ describe('API HTTP foundation', () => {
     const deactivatedResponse = await fetch(`${baseUrl}/chats/${chatId}/messages`, {
       headers: {
         [correlationIdHeaderName]: 'http-history-deactivated',
-        [identityStubHeaderName]: syntheticUserIds.deactivated,
+        cookie: deactivatedCookie,
       },
     });
-    expect(deactivatedResponse.status).toBe(403);
+    expect(deactivatedResponse.status).toBe(401);
     await expect(deactivatedResponse.json()).resolves.toMatchObject({
-      code: 'message-flow.forbidden',
+      code: 'message-flow.unauthenticated',
       correlationId: 'http-history-deactivated',
-      httpStatus: 403,
+      httpStatus: 401,
     });
 
     const unavailableResponse = await fetch(`${baseUrl}/chats/${chatId}/messages`, {
@@ -133,7 +141,7 @@ describe('API HTTP foundation', () => {
       headers: {
         'content-type': 'application/json',
         [correlationIdHeaderName]: 'http-message-unavailable',
-        [identityStubHeaderName]: syntheticUserIds.activePrimary,
+        cookie: activeCookie,
       },
       method: 'POST',
     });

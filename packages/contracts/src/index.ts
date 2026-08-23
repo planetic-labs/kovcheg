@@ -306,15 +306,20 @@ export const serviceHealthJsonSchema = {
 };
 
 export {
+  availableChatJsonSchema,
+  availableChatListJsonSchema,
+  chatListContractVersion,
   createTextMessageRequestJsonSchema,
   createTextMessageResponseJsonSchema,
-  identityStubHeaderName,
   messageFlowContractVersion,
   messageFlowErrorCodes,
   messageHistoryPageJsonSchema,
   textMessageJsonSchema,
 } from './message-flow.js';
 export type {
+  AvailableChat,
+  AvailableChatList,
+  ChatKind,
   ChatSequence,
   CreateTextMessageRequest,
   CreateTextMessageResponse,

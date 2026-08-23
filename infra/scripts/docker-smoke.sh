@@ -169,6 +169,11 @@ if find /app -path '*/@kovcheg/contracts/dist/testing' -type d | grep -q .; then
   echo 'runtime image contains synthetic identity fixtures' >&2
   exit 1
 fi
+if grep -R -E -q 'identity-stub|KOVCHEG_IDENTITY_STUB_ENABLED|test-api-main' /app/dist; then
+  echo 'runtime image contains an isolated identity-stub entrypoint' >&2
+  exit 1
+fi
+test ! -e /app/test-api-main.mjs
 test ! -d /app/apps/api
 test ! -d /app/apps/auth
 test ! -d /app/apps/worker

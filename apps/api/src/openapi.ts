@@ -11,6 +11,15 @@ export function configureOpenApi(app: INestApplication, enableUi: boolean): Open
     .setTitle('Kovcheg API')
     .setDescription('Local Alpha-0 technical API surface')
     .setVersion('0.1.0')
+    .addCookieAuth(
+      '__Host-kovcheg_session',
+      {
+        description: 'Opaque HttpOnly host-only application session.',
+        in: 'cookie',
+        type: 'apiKey',
+      },
+      'applicationSession',
+    )
     .build();
   const document = SwaggerModule.createDocument(app, options);
 

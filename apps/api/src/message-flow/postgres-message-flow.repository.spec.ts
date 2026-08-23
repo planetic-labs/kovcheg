@@ -96,6 +96,25 @@ describe('PostgresMessageFlowRepository', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it('lists only PostgreSQL-selected active memberships in stable order', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [
+        { id: command.chatId, kind: 'direct' },
+        { id: '00000000-0000-4000-8000-000000004002', kind: 'group' },
+      ],
+    });
+    const repository = new PostgresMessageFlowRepository({ query } as unknown as Pool);
+
+    await expect(repository.listAvailableChats(command.senderUserId)).resolves.toEqual([
+      { id: command.chatId, kind: 'direct' },
+      { id: '00000000-0000-4000-8000-000000004002', kind: 'group' },
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("membership.status = 'active'"), [
+      command.senderUserId,
+    ]);
+    expect(query.mock.calls[0]?.[0]).toContain('ORDER BY chat.created_at ASC, chat.id ASC');
+  });
+
   it('fails closed when PostgreSQL configuration is incomplete', async () => {
     const repository = createMessageFlowRepository({});
     await expect(repository.createTextMessage(command)).rejects.toBeInstanceOf(

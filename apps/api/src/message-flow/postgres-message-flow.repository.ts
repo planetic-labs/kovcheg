@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import type { TextMessage, UserId, Uuid } from '@kovcheg/contracts';
+import type { AvailableChat, ChatKind, TextMessage, UserId, Uuid } from '@kovcheg/contracts';
 import type { OnModuleDestroy } from '@nestjs/common';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { Pool } from 'pg';
@@ -38,6 +38,18 @@ interface MessageRow extends QueryResultRow {
 
 interface AuthorizationRow extends QueryResultRow {
   readonly allowed: boolean;
+}
+
+interface ChatRow extends QueryResultRow {
+  readonly id: string;
+  readonly kind: string;
+}
+
+function mapChat(row: ChatRow): AvailableChat {
+  if (row.kind !== 'direct' && row.kind !== 'group') {
+    throw new MessageFlowRepositoryError('internal');
+  }
+  return Object.freeze({ id: row.id as Uuid, kind: row.kind as ChatKind });
 }
 
 function mapMessage(row: MessageRow): TextMessage {
@@ -126,6 +138,25 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
         throw new MessageFlowRepositoryError('unavailable');
       }
       return Object.freeze({ message: mapMessage(row), wasCreated: row.was_created === true });
+    } catch (error) {
+      throw mapPostgresError(error);
+    }
+  }
+
+  async listAvailableChats(userId: UserId): Promise<readonly AvailableChat[]> {
+    try {
+      const result = await this.pool.query<ChatRow>(
+        `SELECT chat.id, chat.kind
+         FROM kovcheg.chat_memberships AS membership
+         JOIN kovcheg.chats AS chat ON chat.id = membership.chat_id
+         JOIN kovcheg.accounts AS account ON account.id = membership.account_id
+         WHERE membership.account_id = $1
+           AND membership.status = 'active'
+           AND account.status = 'active'
+         ORDER BY chat.created_at ASC, chat.id ASC`,
+        [userId],
+      );
+      return Object.freeze(result.rows.map(mapChat));
     } catch (error) {
       throw mapPostgresError(error);
     }

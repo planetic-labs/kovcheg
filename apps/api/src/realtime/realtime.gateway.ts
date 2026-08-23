@@ -1,7 +1,15 @@
-import type { RealtimeReadyEvent, RealtimeSubscribeResult, UserId } from '@kovcheg/contracts';
+import type {
+  CorrelationId,
+  RealtimeReadyEvent,
+  RealtimeSubscribeResult,
+  SessionId,
+  UserId,
+} from '@kovcheg/contracts';
 import {
-  identityStubHeaderName,
+  correlationIdHeaderName,
+  createCorrelationId,
   parseMessageCreatedRealtimeEvent,
+  parseCorrelationId,
   parseRealtimeSubscribeRequest,
   realtimeContractVersion,
   realtimeSocketEvents,
@@ -18,15 +26,23 @@ import {
 import type { OnGatewayConnection } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 
-import type { MessageFlowIdentityProvider } from '../message-flow/message-flow.repository.js';
-import { messageFlowIdentityProviderToken } from '../message-flow/message-flow.repository.js';
+import type { ApplicationSessionAuthenticator } from '../session/application-session.js';
+import { applicationSessionAuthenticatorToken } from '../session/application-session.js';
 import type { RealtimeRepository } from './realtime.repository.js';
 import { RealtimeRepositoryError, realtimeRepositoryToken } from './realtime.repository.js';
 
 export const realtimeInstanceIdToken = Symbol('realtimeInstanceId');
 
 interface RealtimeSocketData {
+  sessionId?: SessionId;
   userId?: UserId;
+}
+
+interface SessionSocket {
+  readonly data: RealtimeSocketData;
+  readonly handshake: {
+    readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>;
+  };
 }
 
 @WebSocketGateway({
@@ -40,8 +56,8 @@ export class RealtimeGateway implements OnGatewayConnection {
   private readonly logger = new Logger(RealtimeGateway.name);
 
   constructor(
-    @Inject(messageFlowIdentityProviderToken)
-    private readonly identities: MessageFlowIdentityProvider,
+    @Inject(applicationSessionAuthenticatorToken)
+    private readonly sessions: ApplicationSessionAuthenticator,
     @Inject(realtimeRepositoryToken)
     private readonly repository: RealtimeRepository,
     @Inject(realtimeInstanceIdToken)
@@ -49,17 +65,13 @@ export class RealtimeGateway implements OnGatewayConnection {
   ) {}
 
   async handleConnection(socket: Socket): Promise<void> {
-    const identityValue = socket.handshake.auth[identityStubHeaderName];
-    if (!this.identities.available || typeof identityValue !== 'string') {
+    const principal = await this.authenticateSocket(socket);
+    if (principal === null) {
       this.reject(socket);
       return;
     }
-    const identity = await this.identities.findById(identityValue as UserId);
-    if (identity === null || identity.status !== 'active') {
-      this.reject(socket);
-      return;
-    }
-    (socket.data as RealtimeSocketData).userId = identityValue as UserId;
+    (socket.data as RealtimeSocketData).sessionId = principal.sessionId;
+    (socket.data as RealtimeSocketData).userId = principal.userId;
     const ready: RealtimeReadyEvent = Object.freeze({
       contractVersion: realtimeContractVersion,
       instanceId: this.instanceId,
@@ -73,9 +85,13 @@ export class RealtimeGateway implements OnGatewayConnection {
     @MessageBody() value: unknown,
   ): Promise<RealtimeSubscribeResult> {
     const request = parseRealtimeSubscribeRequest(value);
-    const userId = (socket.data as RealtimeSocketData).userId;
-    if (request === null || userId === undefined) {
+    if (request === null) {
       return this.rejectedSubscription('0');
+    }
+    const principal = await this.authenticateSocket(socket);
+    if (principal === null) {
+      this.reject(socket);
+      return this.rejectedSubscription(request.afterSequence);
     }
     const room = `chat:${request.chatId}`;
     try {
@@ -84,8 +100,13 @@ export class RealtimeGateway implements OnGatewayConnection {
         afterSequence: request.afterSequence,
         chatId: request.chatId,
         limit: 100,
-        userId,
+        userId: principal.userId,
       });
+      if ((await this.authenticateSocket(socket)) === null) {
+        await Promise.resolve(socket.leave(room)).catch(() => undefined);
+        this.reject(socket);
+        return this.rejectedSubscription(request.afterSequence);
+      }
       return Object.freeze({
         contractVersion: realtimeContractVersion,
         history: subscription.history,
@@ -107,10 +128,20 @@ export class RealtimeGateway implements OnGatewayConnection {
       return false;
     }
     try {
-      await this.server.of('/').adapter.serverCount();
-      this.server
-        .to(`chat:${event.payload.chatId}`)
-        .emit(realtimeSocketEvents.messageCreated, event);
+      const room = `chat:${event.payload.chatId}`;
+      const sockets = await this.server.in(room).fetchSockets();
+      for (const socket of sockets) {
+        const principal = await this.authenticateSocket(socket, event.correlationId);
+        const authorized =
+          principal !== null &&
+          (await this.repository.canReadChat(principal.userId, event.payload.chatId));
+        if (!authorized) {
+          await Promise.resolve(socket.leave(room)).catch(() => undefined);
+          socket.disconnect(true);
+          continue;
+        }
+        this.server.to(socket.id).emit(realtimeSocketEvents.messageCreated, event);
+      }
       return true;
     } catch {
       return false;
@@ -120,6 +151,30 @@ export class RealtimeGateway implements OnGatewayConnection {
   private reject(socket: Socket): void {
     socket.emit(realtimeSocketEvents.error, Object.freeze({ code: 'realtime.unauthenticated' }));
     socket.disconnect(true);
+  }
+
+  private async authenticateSocket(socket: SessionSocket, correlationId?: CorrelationId) {
+    const headerValue = socket.handshake.headers[correlationIdHeaderName];
+    const requestCorrelationId =
+      correlationId ??
+      parseCorrelationId(typeof headerValue === 'string' ? headerValue : headerValue?.[0]) ??
+      createCorrelationId();
+    const cookieValue = socket.handshake.headers.cookie;
+    const cookieHeader =
+      typeof cookieValue === 'string' ? cookieValue : (cookieValue?.[0] ?? undefined);
+    try {
+      const principal = await this.sessions.authenticate(cookieHeader, requestCorrelationId);
+      const current = socket.data;
+      if (
+        (current.sessionId !== undefined && current.sessionId !== principal.sessionId) ||
+        (current.userId !== undefined && current.userId !== principal.userId)
+      ) {
+        return null;
+      }
+      return principal;
+    } catch {
+      return null;
+    }
   }
 
   private rejectedSubscription(afterSequence: string): RealtimeSubscribeResult {

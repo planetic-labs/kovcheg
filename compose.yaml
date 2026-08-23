@@ -7,6 +7,8 @@ x-api-common: &api-common
     args:
       BUILD_COMMIT_SHA: ${BUILD_COMMIT_SHA:-}
   depends_on:
+    auth:
+      condition: service_healthy
     postgres:
       condition: service_healthy
     redis:
@@ -33,6 +35,7 @@ x-api-common: &api-common
   stop_grace_period: 10s
 
 x-api-environment: &api-environment
+  AUTH_SESSION_VALIDATION_URL: http://auth:3002/session
   BUILD_IMAGE_DIGEST: ${BUILD_IMAGE_DIGEST:-}
   HOST: 0.0.0.0
   LOG_LEVEL: info
