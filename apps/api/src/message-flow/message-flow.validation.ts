@@ -1,4 +1,4 @@
-import type { CreateTextMessageRequest, UserId, Uuid } from '@kovcheg/contracts';
+import type { CreateTextMessageRequest, Uuid } from '@kovcheg/contracts';
 
 const uuidExpression = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const clientMessageIdExpression = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -9,10 +9,6 @@ export function parseUuid(value: unknown): Uuid | null {
   return typeof value === 'string' && uuidExpression.test(value)
     ? (value.toLowerCase() as Uuid)
     : null;
-}
-
-export function parseIdentityHeader(value: unknown): UserId | null {
-  return parseUuid(value) as UserId | null;
 }
 
 export function parseCreateTextMessageRequest(value: unknown): CreateTextMessageRequest | null {

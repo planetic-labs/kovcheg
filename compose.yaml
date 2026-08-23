@@ -7,6 +7,8 @@ x-api-common: &api-common
     args:
       BUILD_COMMIT_SHA: ${BUILD_COMMIT_SHA:-}
   depends_on:
+    auth:
+      condition: service_healthy
     postgres:
       condition: service_healthy
     redis:
@@ -33,6 +35,7 @@ x-api-common: &api-common
   stop_grace_period: 10s
 
 x-api-environment: &api-environment
+  AUTH_SESSION_VALIDATION_URL: http://auth:3002/internal/session
   BUILD_IMAGE_DIGEST: ${BUILD_IMAGE_DIGEST:-}
   HOST: 0.0.0.0
   LOG_LEVEL: info
@@ -197,6 +200,18 @@ services:
       args:
         BUILD_COMMIT_SHA: ${BUILD_COMMIT_SHA:-}
     environment:
+      AUTH_ADMIN_BOOTSTRAP_JSON: '{"bootstrapId":"local-bootstrap-administrator","displayName":"Synthetic Local Administrator","email":"synthetic-local-administrator@auth.invalid","userId":"00000000-0000-4000-8000-000000009801"}'
+      AUTH_CHALLENGE_PEPPER_FILE: /run/secrets/auth_challenge_pepper
+      AUTH_EMAIL_DELIVERY_ADAPTER: resend
+      AUTH_EMAIL_FROM_ADDRESS: sender@auth.invalid
+      AUTH_EMAIL_FROM_NAME: Synthetic Local Sender
+      AUTH_OIDC_CLIENTS_JSON: '[{"clientId":"kovcheg-local","redirectUris":["https://client.invalid/auth/callback"],"scopes":["openid"],"tokenEndpointAuthMethod":"none"}]'
+      AUTH_OIDC_COOKIE_KEYS_JSON_FILE: /run/secrets/auth_oidc_cookie_keys
+      AUTH_OIDC_ISSUER: https://auth.invalid
+      AUTH_OIDC_JWKS_JSON_FILE: /run/secrets/auth_oidc_jwks
+      AUTH_RATE_LIMIT_PEPPER_FILE: /run/secrets/auth_rate_limit_pepper
+      AUTH_RUNTIME_ENABLED: 'true'
+      AUTH_SESSION_PEPPER_FILE: /run/secrets/auth_session_pepper
       BUILD_IMAGE_DIGEST: ${BUILD_IMAGE_DIGEST:-}
       HOST: 0.0.0.0
       LOG_LEVEL: info
@@ -207,6 +222,7 @@ services:
       PGUSER: kovcheg_auth_app
       PORT: '3002'
       AUTH_REDIS_URL: redis://redis:6379
+      RESEND_API_KEY_FILE: /run/secrets/resend_api_key
     depends_on:
       postgres:
         condition: service_healthy
@@ -220,7 +236,7 @@ services:
           'CMD',
           'node',
           '-e',
-          "const p=process.env.AUTH_RUNTIME_ENABLED==='true'?'/health/ready':'/health/live';fetch('http://127.0.0.1:3002'+p).then(async r=>{const b=await r.json();if(!r.ok||b.status!=='ok')process.exit(1)}).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:3002/health/ready').then(async r=>{const b=await r.json();if(!r.ok||b.status!=='ok')process.exit(1)}).catch(()=>process.exit(1))",
         ]
       interval: 5s
       timeout: 3s
@@ -229,7 +245,13 @@ services:
     networks:
       - local
     secrets:
+      - auth_challenge_pepper
+      - auth_oidc_cookie_keys
+      - auth_oidc_jwks
+      - auth_rate_limit_pepper
+      - auth_session_pepper
       - postgres_auth_password
+      - resend_api_key
     stop_grace_period: 10s
 
   worker:
@@ -357,6 +379,16 @@ networks:
     internal: true
 
 secrets:
+  auth_challenge_pepper:
+    file: ${KOVCHEG_AUTH_CHALLENGE_PEPPER_FILE:?local auth challenge pepper file is required}
+  auth_oidc_cookie_keys:
+    file: ${KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE:?local auth OIDC cookie keys file is required}
+  auth_oidc_jwks:
+    file: ${KOVCHEG_AUTH_OIDC_JWKS_FILE:?local auth OIDC JWKS file is required}
+  auth_rate_limit_pepper:
+    file: ${KOVCHEG_AUTH_RATE_LIMIT_PEPPER_FILE:?local auth rate-limit pepper file is required}
+  auth_session_pepper:
+    file: ${KOVCHEG_AUTH_SESSION_PEPPER_FILE:?local auth session pepper file is required}
   postgres_audit_password:
     file: ${KOVCHEG_POSTGRES_AUDIT_PASSWORD_FILE:?local audit password file is required}
   postgres_auth_password:
@@ -369,6 +401,8 @@ secrets:
     file: ${KOVCHEG_POSTGRES_SUPERUSER_PASSWORD_FILE:?local superuser password file is required}
   realtime_relay_token:
     file: ${KOVCHEG_REALTIME_RELAY_TOKEN_FILE:?local realtime relay token file is required}
+  resend_api_key:
+    file: ${KOVCHEG_RESEND_API_KEY_FILE:?local Resend API key file is required}
 
 volumes:
   postgres-data:

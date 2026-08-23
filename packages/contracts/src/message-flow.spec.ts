@@ -1,17 +1,29 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  availableChatListJsonSchema,
+  chatListContractVersion,
   createTextMessageRequestJsonSchema,
-  identityStubHeaderName,
   messageFlowContractVersion,
   messageFlowErrorCodes,
   messageHistoryPageJsonSchema,
 } from './message-flow.js';
 
 describe('message-flow contracts', () => {
-  it('publishes a versioned synthetic identity and error boundary', () => {
+  it('publishes a stable chat-list contract that permits an empty result', () => {
+    expect(chatListContractVersion).toBe(1);
+    expect(availableChatListJsonSchema).toMatchObject({
+      additionalProperties: false,
+      properties: {
+        contractVersion: { enum: [1], type: 'integer' },
+        items: { type: 'array' },
+      },
+      required: ['contractVersion', 'items'],
+    });
+  });
+
+  it('publishes a versioned error boundary without a browser identity header', () => {
     expect(messageFlowContractVersion).toBe(1);
-    expect(identityStubHeaderName).toBe('x-kovcheg-identity-stub-user-id');
     expect(messageFlowErrorCodes).toContain('message-flow.idempotency-key-reused');
   });
 

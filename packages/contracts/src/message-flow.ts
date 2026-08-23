@@ -1,7 +1,7 @@
 import type { CorrelationId, UserId, Uuid } from './index.js';
 
 export const messageFlowContractVersion = 1 as const;
-export const identityStubHeaderName = 'x-kovcheg-identity-stub-user-id' as const;
+export const chatListContractVersion = 1 as const;
 
 export const messageFlowErrorCodes = Object.freeze([
   'message-flow.invalid-request',
@@ -15,6 +15,17 @@ export const messageFlowErrorCodes = Object.freeze([
 
 export type MessageFlowErrorCode = (typeof messageFlowErrorCodes)[number];
 export type ChatSequence = string;
+export type ChatKind = 'direct' | 'group';
+
+export interface AvailableChat {
+  readonly id: Uuid;
+  readonly kind: ChatKind;
+}
+
+export interface AvailableChatList {
+  readonly contractVersion: typeof chatListContractVersion;
+  readonly items: readonly AvailableChat[];
+}
 
 export interface TextMessage {
   readonly body: string;
@@ -51,6 +62,26 @@ export interface MessageFlowRequestContext {
 
 const uuidSchema = Object.freeze({ format: 'uuid', type: 'string' });
 const chatSequenceSchema = Object.freeze({ pattern: '^(0|[1-9][0-9]*)$', type: 'string' });
+
+export const availableChatJsonSchema = Object.freeze({
+  additionalProperties: false,
+  properties: {
+    id: uuidSchema,
+    kind: { enum: ['direct', 'group'], type: 'string' },
+  },
+  required: ['id', 'kind'],
+  type: 'object',
+});
+
+export const availableChatListJsonSchema = Object.freeze({
+  additionalProperties: false,
+  properties: {
+    contractVersion: { enum: [chatListContractVersion], type: 'integer' },
+    items: { items: availableChatJsonSchema, type: 'array' },
+  },
+  required: ['contractVersion', 'items'],
+  type: 'object',
+});
 
 export const textMessageJsonSchema = Object.freeze({
   additionalProperties: false,

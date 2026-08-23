@@ -8,6 +8,15 @@ http:
       stripPrefix:
         prefixes:
           - /auth
+    web-security-headers:
+      headers:
+        contentTypeNosniff: true
+        customResponseHeaders:
+          Cross-Origin-Embedder-Policy: require-corp
+          Cross-Origin-Opener-Policy: same-origin
+          Cross-Origin-Resource-Policy: same-origin
+        frameDeny: true
+        permissionsPolicy: camera=(), geolocation=(), microphone=(), payment=(), usb=()
 
   routers:
     api:
@@ -24,7 +33,7 @@ http:
       middlewares:
         - strip-auth-prefix
       priority: 100
-      rule: PathPrefix(`/auth`)
+      rule: PathPrefix(`/auth`) && !PathPrefix(`/auth/internal`)
       service: auth
     realtime:
       entryPoints:
@@ -41,6 +50,8 @@ http:
     web:
       entryPoints:
         - local
+      middlewares:
+        - web-security-headers
       priority: 1
       rule: PathPrefix(`/`)
       service: web
@@ -51,7 +62,7 @@ http:
         healthCheck:
           interval: 2s
           path: /health/ready
-          timeout: 1s
+          timeout: 3s
         servers:
           - url: http://api-1:3001
           - url: http://api-2:3001

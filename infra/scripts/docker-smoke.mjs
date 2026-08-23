@@ -1,9 +1,18 @@
 /* global fetch, process, setTimeout */
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { URL } from 'node:url';
 
 const baseUrl = process.argv[2];
 assert.ok(baseUrl, 'A loopback base URL is required');
+
+const edgeRoutes = await readFile(new URL('../edge/routes.yaml', import.meta.url), 'utf8');
+assert.match(
+  edgeRoutes,
+  /healthCheck:\n\s+interval: 2s\n\s+path: \/health\/ready\n\s+timeout: 3s/u,
+  'The edge health timeout must exceed the two-second A2 readiness budget',
+);
 
 const expectedCommitSha = process.env.BUILD_COMMIT_SHA || null;
 if (expectedCommitSha !== null) {
@@ -105,13 +114,7 @@ async function readHealth(path, service, correlationId, expectedState = 'ready')
 
 const webHealth = await readHealth('/health/ready', 'web', null);
 const apiHealth = await readHealth('/api/health/ready', 'api', 'api-smoke-001');
-const authHealth = await readHealth('/auth/health/live', 'auth', 'auth-smoke-001', 'live');
-const disabledAuthReadiness = await fetchWithRetry(`${baseUrl}/auth/health/ready`);
-assert.equal(
-  disabledAuthReadiness.status,
-  503,
-  'Auth readiness must fail while its production runtime is intentionally disabled',
-);
+const authHealth = await readHealth('/auth/health/ready', 'auth', 'auth-smoke-001');
 
 const [rootResponse, apiOpenApiResponse, authOpenApiResponse, apiDocs, authDocs] =
   await Promise.all([
@@ -123,15 +126,57 @@ const [rootResponse, apiOpenApiResponse, authOpenApiResponse, apiDocs, authDocs]
   ]);
 
 assert.equal(rootResponse.status, 200);
+const contentSecurityPolicy = rootResponse.headers.get('content-security-policy');
+assert.ok(contentSecurityPolicy, 'The web response must include a content security policy');
+const nonceMatch = contentSecurityPolicy.match(
+  /script-src 'self' 'nonce-([^']+)' 'strict-dynamic'/,
+);
+assert.ok(nonceMatch, 'The production script policy must contain a per-request nonce');
+const nonce = nonceMatch[1];
+assert.equal(
+  contentSecurityPolicy,
+  `default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self' 'nonce-${nonce}' 'strict-dynamic'; style-src 'self' 'nonce-${nonce}'`,
+);
+assert.doesNotMatch(contentSecurityPolicy, /'unsafe-inline'|'unsafe-eval'|(?:^|\s)wss?:/);
+assert.equal(rootResponse.headers.get('x-nonce'), null, 'The internal nonce header must not leak');
+assert.equal(rootResponse.headers.get('cross-origin-embedder-policy'), 'require-corp');
+assert.equal(rootResponse.headers.get('cross-origin-opener-policy'), 'same-origin');
+assert.equal(rootResponse.headers.get('cross-origin-resource-policy'), 'same-origin');
+assert.equal(
+  rootResponse.headers.get('permissions-policy'),
+  'camera=(), geolocation=(), microphone=(), payment=(), usb=()',
+);
+assert.equal(rootResponse.headers.get('x-content-type-options'), 'nosniff');
+assert.equal(rootResponse.headers.get('x-frame-options'), 'DENY');
+assert.equal(rootResponse.headers.get('x-powered-by'), null);
+const rootHtml = await rootResponse.text();
+const scriptTags = rootHtml.match(/<script\b[^>]*>/g) ?? [];
+assert.ok(scriptTags.length > 0, 'The rendered Next.js page must contain framework scripts');
+for (const scriptTag of scriptTags) {
+  assert.match(scriptTag, new RegExp(`\\bnonce=["']${nonce}["']`));
+}
+for (const styleTag of rootHtml.match(/<style\b[^>]*>/g) ?? []) {
+  assert.match(styleTag, new RegExp(`\\bnonce=["']${nonce}["']`));
+}
+const secondRootResponse = await fetchWithRetry(`${baseUrl}/`);
+const secondPolicy = secondRootResponse.headers.get('content-security-policy');
+const secondNonce = secondPolicy?.match(/script-src 'self' 'nonce-([^']+)' 'strict-dynamic'/)?.[1];
+assert.ok(secondNonce, 'Every rendered response must contain a nonce');
+assert.notEqual(secondNonce, nonce, 'The CSP nonce must be unique per request');
 assert.equal(apiOpenApiResponse.status, 200);
 assert.equal(authOpenApiResponse.status, 200);
 assert.equal(apiDocs.status, 404, 'API Swagger UI must be disabled in production');
 assert.equal(authDocs.status, 404, 'Auth Swagger UI must be disabled in production');
 
 const apiDocument = await apiOpenApiResponse.json();
-await authOpenApiResponse.json();
+const authDocument = await authOpenApiResponse.json();
 assertAgainstSchema(apiHealth, readinessSchema(apiDocument));
-assert.equal(authHealth.state, 'live');
+assertAgainstSchema(authHealth, readinessSchema(authDocument));
+assert.equal(
+  authDocument.paths?.['/internal/session'],
+  undefined,
+  'The internal non-touch session endpoint must be excluded from public OpenAPI',
+);
 assert.equal(webHealth.contractVersion, 1);
 
 const invalidCorrelationResponse = await fetchWithRetry(`${baseUrl}/api/health/live`, {

@@ -1,16 +1,30 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { loadServiceConfig } from '@kovcheg/config';
-import {
-  correlationIdHeaderName,
-  identityStubHeaderName,
-  parseCorrelationId,
-} from '@kovcheg/contracts';
-import { createSyntheticIdentityStub, syntheticUserIds } from '@kovcheg/contracts/testing';
+import { correlationIdHeaderName, parseCorrelationId } from '@kovcheg/contracts';
+import { syntheticUserIds } from '@kovcheg/contracts/testing';
 
 import { createApiApplication } from './application.js';
+import { ApplicationSessionError } from './session/application-session.js';
 
 const openApplications: Awaited<ReturnType<typeof createApiApplication>>[] = [];
+
+function readySessionAuthenticator(allowedCookie?: string) {
+  const authenticate = (cookieHeader: string | undefined) => {
+    if (allowedCookie !== undefined && cookieHeader !== allowedCookie) {
+      return Promise.reject(new ApplicationSessionError('unauthenticated'));
+    }
+    return Promise.resolve({
+      sessionId: '00000000-0000-4000-8000-000000006101' as const,
+      userId: syntheticUserIds.activePrimary,
+    });
+  };
+  return Object.freeze({
+    authenticate,
+    isReady: () => Promise.resolve(true),
+    validate: authenticate,
+  });
+}
 
 afterEach(async () => {
   await Promise.all(openApplications.splice(0).map(async (app) => app.close()));
@@ -20,9 +34,11 @@ describe('API HTTP foundation', () => {
   it('serves liveness, readiness, and a local OpenAPI document', async () => {
     const app = await createApiApplication(undefined, {
       repository: {
+        canReadChat: () => Promise.resolve(true),
         isReady: () => Promise.resolve(true),
         subscribe: () => Promise.resolve({ history: Object.freeze([]) }),
       },
+      sessionAuthenticator: readySessionAuthenticator(),
     });
     openApplications.push(app);
     await app.listen(0, '127.0.0.1');
@@ -59,22 +75,24 @@ describe('API HTTP foundation', () => {
         '/chats/{chatId}/messages': {
           get: {
             parameters: expect.arrayContaining([
-              expect.objectContaining({ in: 'header', name: identityStubHeaderName }),
               expect.objectContaining({ in: 'query', name: 'afterSequence' }),
               expect.objectContaining({ in: 'query', name: 'limit' }),
             ]),
             responses: { 200: expect.any(Object), 403: expect.any(Object) },
           },
           post: {
-            parameters: expect.arrayContaining([
-              expect.objectContaining({ in: 'header', name: identityStubHeaderName }),
-            ]),
             requestBody: expect.any(Object),
             responses: {
               200: expect.any(Object),
               201: expect.any(Object),
               409: expect.any(Object),
             },
+          },
+        },
+        '/chats': {
+          get: {
+            responses: { 200: expect.any(Object), 401: expect.any(Object) },
+            security: [{ applicationSession: [] }],
           },
         },
         '/health/live': expect.any(Object),
@@ -84,12 +102,10 @@ describe('API HTTP foundation', () => {
   });
 
   it('returns correlation-bound machine errors at the identity and database boundaries', async () => {
-    const identityStub = createSyntheticIdentityStub({ NODE_ENV: 'test' });
+    const activeCookie = 'kovcheg_session=active-session-token-0000000000000001';
+    const deactivatedCookie = 'kovcheg_session=deactivated-session-token-0000000000';
     const app = await createApiApplication(undefined, {
-      identityProvider: {
-        available: true,
-        findById: (userId) => identityStub.findById(userId),
-      },
+      sessionAuthenticator: readySessionAuthenticator(activeCookie),
     });
     openApplications.push(app);
     await app.listen(0, '127.0.0.1');
@@ -118,14 +134,14 @@ describe('API HTTP foundation', () => {
     const deactivatedResponse = await fetch(`${baseUrl}/chats/${chatId}/messages`, {
       headers: {
         [correlationIdHeaderName]: 'http-history-deactivated',
-        [identityStubHeaderName]: syntheticUserIds.deactivated,
+        cookie: deactivatedCookie,
       },
     });
-    expect(deactivatedResponse.status).toBe(403);
+    expect(deactivatedResponse.status).toBe(401);
     await expect(deactivatedResponse.json()).resolves.toMatchObject({
-      code: 'message-flow.forbidden',
+      code: 'message-flow.unauthenticated',
       correlationId: 'http-history-deactivated',
-      httpStatus: 403,
+      httpStatus: 401,
     });
 
     const unavailableResponse = await fetch(`${baseUrl}/chats/${chatId}/messages`, {
@@ -133,7 +149,7 @@ describe('API HTTP foundation', () => {
       headers: {
         'content-type': 'application/json',
         [correlationIdHeaderName]: 'http-message-unavailable',
-        [identityStubHeaderName]: syntheticUserIds.activePrimary,
+        cookie: activeCookie,
       },
       method: 'POST',
     });
@@ -143,6 +159,22 @@ describe('API HTTP foundation', () => {
       correlationId: 'http-message-unavailable',
       httpStatus: 503,
     });
+  });
+
+  it('reports unready when the A2 identity dependency is unavailable', async () => {
+    const authenticator = readySessionAuthenticator();
+    const app = await createApiApplication(undefined, {
+      repository: {
+        canReadChat: () => Promise.resolve(true),
+        isReady: () => Promise.resolve(true),
+        subscribe: () => Promise.resolve({ history: Object.freeze([]) }),
+      },
+      sessionAuthenticator: { ...authenticator, isReady: () => Promise.resolve(false) },
+    });
+    openApplications.push(app);
+    await app.listen(0, '127.0.0.1');
+
+    expect(await fetch(`${await app.getUrl()}/health/ready`)).toMatchObject({ status: 503 });
   });
 
   it('keeps OpenAPI JSON but disables Swagger UI in production', async () => {

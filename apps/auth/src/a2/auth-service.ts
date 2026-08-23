@@ -110,6 +110,18 @@ export class AuthService {
     return principal;
   }
 
+  async validateSession(sessionToken: string): Promise<SessionPrincipal> {
+    const tokenVerifier = this.dependencies.crypto.sessionTokenVerifier(sessionToken);
+    const principal = await this.dependencies.repository.validateSession(
+      tokenVerifier,
+      this.dependencies.clock.now(),
+    );
+    if (principal === null) {
+      throw new AuthError('auth.invalid-session', 'The session is invalid or expired');
+    }
+    return principal;
+  }
+
   async bootstrapAdministrator(input: BootstrapAdministratorInput): Promise<{
     readonly account: AccountRecord;
     readonly created: boolean;

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { Resend } from 'resend';
 
 import { AuthError, normalizeEmail } from './contracts.js';
@@ -27,6 +29,7 @@ export interface ResendDeliveryEnvironmentSource {
   readonly AUTH_EMAIL_FROM_ADDRESS?: string | undefined;
   readonly AUTH_EMAIL_FROM_NAME?: string | undefined;
   readonly RESEND_API_KEY?: string | undefined;
+  readonly RESEND_API_KEY_FILE?: string | undefined;
 }
 
 function unavailable(): AuthError {
@@ -47,6 +50,27 @@ function apiKey(value: string | undefined): string {
     throw unavailable();
   }
   return normalized;
+}
+
+function configuredApiKey(source: ResendDeliveryEnvironmentSource): string {
+  const inlineValue = source.RESEND_API_KEY?.trim();
+  const filePath = source.RESEND_API_KEY_FILE?.trim();
+  if (
+    inlineValue !== undefined &&
+    inlineValue.length > 0 &&
+    filePath !== undefined &&
+    filePath.length > 0
+  ) {
+    throw unavailable();
+  }
+  if (filePath !== undefined && filePath.length > 0) {
+    try {
+      return apiKey(readFileSync(filePath, 'utf8'));
+    } catch {
+      throw unavailable();
+    }
+  }
+  return apiKey(inlineValue);
 }
 
 function senderName(value: string | undefined): string {
@@ -134,7 +158,7 @@ export function createResendEmailChallengeDelivery(
   source: ResendDeliveryEnvironmentSource = process.env,
   clientFactory: ResendEmailClientFactory = officialResendClient,
 ): ResendEmailChallengeDelivery {
-  const client = clientFactory(apiKey(source.RESEND_API_KEY));
+  const client = clientFactory(configuredApiKey(source));
   return new ResendEmailChallengeDelivery(client, {
     address: senderAddress(source.AUTH_EMAIL_FROM_ADDRESS),
     name: senderName(source.AUTH_EMAIL_FROM_NAME),

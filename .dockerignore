@@ -5,7 +5,10 @@ AGENTS.md
 README.md
 SECURITY.md
 compose.yaml
-infra
+infra/*
+!infra/realtime/
+infra/realtime/*
+!infra/realtime/test-api-main.mjs
 .next
 **/.next
 **/dist

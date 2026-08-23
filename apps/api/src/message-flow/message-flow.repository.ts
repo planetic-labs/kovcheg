@@ -1,13 +1,6 @@
-import type { CorrelationId, TextMessage, UserId, Uuid } from '@kovcheg/contracts';
+import type { AvailableChat, CorrelationId, TextMessage, UserId, Uuid } from '@kovcheg/contracts';
 
 export const messageFlowRepositoryToken = Symbol('messageFlowRepository');
-export const messageFlowIdentityProviderToken = Symbol('messageFlowIdentityProvider');
-
-export interface MessageFlowIdentityProvider {
-  readonly available: boolean;
-  findById(userId: UserId): Promise<{ readonly status: 'active' | 'deactivated' } | null>;
-}
-
 export interface CreateTextMessageCommand {
   readonly body: string;
   readonly chatId: Uuid;
@@ -36,6 +29,7 @@ export interface ReadMessageHistoryResult {
 
 export interface MessageFlowRepository {
   createTextMessage(command: CreateTextMessageCommand): Promise<CreateTextMessageResult>;
+  listAvailableChats(userId: UserId): Promise<readonly AvailableChat[]>;
   readMessageHistory(command: ReadMessageHistoryCommand): Promise<ReadMessageHistoryResult>;
 }
 
@@ -51,6 +45,10 @@ export class MessageFlowRepositoryError extends Error {
 
 export class UnavailableMessageFlowRepository implements MessageFlowRepository {
   createTextMessage(): Promise<CreateTextMessageResult> {
+    return Promise.reject(new MessageFlowRepositoryError('unavailable'));
+  }
+
+  listAvailableChats(): Promise<readonly AvailableChat[]> {
     return Promise.reject(new MessageFlowRepositoryError('unavailable'));
   }
 

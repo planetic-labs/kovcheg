@@ -62,6 +62,28 @@ describe('A2 Resend email challenge delivery', () => {
     expect(factory).toHaveBeenCalledWith('synthetic-test-key-material');
   });
 
+  it('loads the provider credential from a container secret file', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kovcheg-resend-config-'));
+    try {
+      const secretPath = join(directory, 'api-key');
+      writeFileSync(secretPath, 'synthetic-file-key-material');
+      const fixture = successfulClient();
+      const factory = vi.fn<ResendEmailClientFactory>(() => fixture.client);
+
+      createResendEmailChallengeDelivery(
+        {
+          AUTH_EMAIL_FROM_ADDRESS: 'sender@auth.invalid',
+          AUTH_EMAIL_FROM_NAME: 'Synthetic Auth Sender',
+          RESEND_API_KEY_FILE: secretPath,
+        },
+        factory,
+      );
+      expect(factory).toHaveBeenCalledWith('synthetic-file-key-material');
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('fails closed without configuration and sanitizes provider failures', async () => {
     expect(() => createResendEmailChallengeDelivery({})).toThrow(
       'Email challenge delivery is unavailable',
@@ -96,3 +118,6 @@ describe('A2 Resend email challenge delivery', () => {
     });
   });
 });
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';

@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs';
 
-import { correlationIdHeaderName, identityStubHeaderName } from '@kovcheg/contracts';
-import { createSyntheticIdentityStub, syntheticUserIds } from '@kovcheg/contracts/testing';
+import type { SessionId, UserId } from '@kovcheg/contracts';
+import { correlationIdHeaderName } from '@kovcheg/contracts';
+import { syntheticUserIds } from '@kovcheg/contracts/testing';
 import { Pool } from 'pg';
 
 import { createApiApplication } from '../application.js';
+import { ApplicationSessionError } from '../session/application-session.js';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -52,21 +54,39 @@ async function main(): Promise<void> {
   const chatId = chat.rows[0]?.id;
   assert(chatId !== undefined, 'A synthetic direct chat is required');
 
-  const identityStub = createSyntheticIdentityStub({
-    NODE_ENV: 'test',
-  });
   const app = await createApiApplication(undefined, {
-    identityProvider: {
-      available: true,
-      findById: (userId) => identityStub.findById(userId),
+    sessionAuthenticator: {
+      authenticate(cookieHeader) {
+        const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
+        const userId = match?.[1] as UserId | undefined;
+        if (
+          userId !== syntheticUserIds.activePrimary &&
+          userId !== syntheticUserIds.activeSecondary
+        ) {
+          return Promise.reject(new ApplicationSessionError('unauthenticated'));
+        }
+        return Promise.resolve({ sessionId: userId as SessionId, userId });
+      },
+      isReady: () => Promise.resolve(true),
+      validate(cookieHeader) {
+        const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
+        const userId = match?.[1] as UserId | undefined;
+        if (
+          userId !== syntheticUserIds.activePrimary &&
+          userId !== syntheticUserIds.activeSecondary
+        ) {
+          return Promise.reject(new ApplicationSessionError('unauthenticated'));
+        }
+        return Promise.resolve({ sessionId: userId as SessionId, userId });
+      },
     },
   });
   await app.listen(0, '127.0.0.1');
   const baseUrl = await app.getUrl();
   const endpoint = `${baseUrl}/chats/${chatId}/messages`;
   const headers = {
+    cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
     'content-type': 'application/json',
-    [identityStubHeaderName]: syntheticUserIds.activePrimary,
   };
 
   try {
@@ -115,21 +135,36 @@ async function main(): Promise<void> {
 
     const forbidden = await fetch(endpoint, {
       headers: {
+        cookie: `kovcheg_session=${syntheticUserIds.activeSecondary}`,
         [correlationIdHeaderName]: 'integration-history-forbidden',
-        [identityStubHeaderName]: syntheticUserIds.activeSecondary,
       },
     });
     assert(forbidden.status === 403, 'A non-member must not read another direct chat');
 
     const history = await fetch(`${endpoint}?afterSequence=0&limit=1`, {
       headers: {
+        cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
         [correlationIdHeaderName]: 'integration-history-page',
-        [identityStubHeaderName]: syntheticUserIds.activePrimary,
       },
     });
     assert(history.status === 200, 'An active member must read message history');
     const historyPayload = await readJson(history);
     assert(Array.isArray(historyPayload.items), 'History must return an item array');
+
+    const chatList = await fetch(`${baseUrl}/chats`, {
+      headers: {
+        cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+        [correlationIdHeaderName]: 'integration-chat-list',
+      },
+    });
+    assert(chatList.status === 200, 'An active session must list its chats');
+    const chatListPayload = await readJson(chatList);
+    assert(chatListPayload.contractVersion === 1, 'The chat list must be versioned');
+    assert(
+      Array.isArray(chatListPayload.items) &&
+        chatListPayload.items.some((item) => (item as Record<string, unknown>).id === chatId),
+      'The chat list must contain the active membership',
+    );
 
     const raceBody = JSON.stringify({
       clientMessageId: 'integration-message-race-001',

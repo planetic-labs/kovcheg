@@ -1,48 +1,48 @@
 import { createHash } from 'node:crypto';
 
 import type {
+  AvailableChatList,
   CorrelationId,
   CreateTextMessageResponse,
   MessageHistoryPage,
-  UserId,
 } from '@kovcheg/contracts';
-import { messageFlowContractVersion } from '@kovcheg/contracts';
+import { chatListContractVersion, messageFlowContractVersion } from '@kovcheg/contracts';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 
 import { MessageFlowHttpError } from './message-flow.error.js';
-import type {
-  MessageFlowIdentityProvider,
-  MessageFlowRepository,
-} from './message-flow.repository.js';
+import type { MessageFlowRepository } from './message-flow.repository.js';
 import {
   MessageFlowRepositoryError,
-  messageFlowIdentityProviderToken,
   messageFlowRepositoryToken,
 } from './message-flow.repository.js';
 import {
   parseAfterSequence,
   parseCreateTextMessageRequest,
   parseHistoryLimit,
-  parseIdentityHeader,
   parseUuid,
 } from './message-flow.validation.js';
+import type { ApplicationSessionAuthenticator } from '../session/application-session.js';
+import {
+  ApplicationSessionError,
+  applicationSessionAuthenticatorToken,
+} from '../session/application-session.js';
 
 @Injectable()
 export class MessageFlowService {
   constructor(
-    @Inject(messageFlowIdentityProviderToken)
-    private readonly identities: MessageFlowIdentityProvider,
+    @Inject(applicationSessionAuthenticatorToken)
+    private readonly sessions: ApplicationSessionAuthenticator,
     @Inject(messageFlowRepositoryToken)
     private readonly repository: MessageFlowRepository,
   ) {}
 
   async createTextMessage(
     chatIdValue: unknown,
-    identityHeaderValue: unknown,
+    cookieHeader: string | undefined,
     bodyValue: unknown,
     correlationId: CorrelationId,
   ): Promise<CreateTextMessageResponse> {
-    const identity = await this.requireActiveIdentity(identityHeaderValue, correlationId);
+    const principal = await this.requirePrincipal(cookieHeader, correlationId);
     const chatId = parseUuid(chatIdValue);
     const body = parseCreateTextMessageRequest(bodyValue);
     if (chatId === null || body === null) {
@@ -61,7 +61,7 @@ export class MessageFlowService {
         clientMessageId: body.clientMessageId,
         contentFingerprint: createHash('sha256').update(body.text, 'utf8').digest('hex'),
         correlationId,
-        senderUserId: identity,
+        senderUserId: principal.userId,
       });
       return Object.freeze({
         contractVersion: messageFlowContractVersion,
@@ -75,12 +75,12 @@ export class MessageFlowService {
 
   async readMessageHistory(
     chatIdValue: unknown,
-    identityHeaderValue: unknown,
+    cookieHeader: string | undefined,
     afterSequenceValue: unknown,
     limitValue: unknown,
     correlationId: CorrelationId,
   ): Promise<MessageHistoryPage> {
-    const identity = await this.requireActiveIdentity(identityHeaderValue, correlationId);
+    const principal = await this.requirePrincipal(cookieHeader, correlationId);
     const chatId = parseUuid(chatIdValue);
     const afterSequence = parseAfterSequence(afterSequenceValue);
     const limit = parseHistoryLimit(limitValue);
@@ -98,7 +98,7 @@ export class MessageFlowService {
         afterSequence,
         chatId,
         limit,
-        userId: identity,
+        userId: principal.userId,
       });
       const lastMessage = result.items.at(-1);
       return Object.freeze({
@@ -113,46 +113,36 @@ export class MessageFlowService {
     }
   }
 
-  private async requireActiveIdentity(
-    identityHeaderValue: unknown,
+  async listAvailableChats(
+    cookieHeader: string | undefined,
     correlationId: CorrelationId,
-  ): Promise<UserId> {
-    if (!this.identities.available) {
-      throw new MessageFlowHttpError(
-        'message-flow.identity-unavailable',
-        correlationId,
-        HttpStatus.SERVICE_UNAVAILABLE,
-        'The identity provider is unavailable.',
-      );
+  ): Promise<AvailableChatList> {
+    const principal = await this.requirePrincipal(cookieHeader, correlationId);
+    try {
+      return Object.freeze({
+        contractVersion: chatListContractVersion,
+        items: await this.repository.listAvailableChats(principal.userId),
+      });
+    } catch (error) {
+      throw this.mapRepositoryError(error, correlationId);
     }
+  }
 
-    const userId = parseIdentityHeader(identityHeaderValue);
-    if (userId === null) {
+  private async requirePrincipal(cookieHeader: string | undefined, correlationId: CorrelationId) {
+    try {
+      return await this.sessions.authenticate(cookieHeader, correlationId);
+    } catch (error) {
+      const unavailable =
+        error instanceof ApplicationSessionError && error.failure === 'unavailable';
       throw new MessageFlowHttpError(
-        'message-flow.unauthenticated',
+        unavailable ? 'message-flow.identity-unavailable' : 'message-flow.unauthenticated',
         correlationId,
-        HttpStatus.UNAUTHORIZED,
-        'An active synthetic identity is required.',
+        unavailable ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.UNAUTHORIZED,
+        unavailable
+          ? 'The application session service is unavailable.'
+          : 'A valid application session is required.',
       );
     }
-    const identity = await this.identities.findById(userId);
-    if (identity === null) {
-      throw new MessageFlowHttpError(
-        'message-flow.unauthenticated',
-        correlationId,
-        HttpStatus.UNAUTHORIZED,
-        'An active synthetic identity is required.',
-      );
-    }
-    if (identity.status !== 'active') {
-      throw new MessageFlowHttpError(
-        'message-flow.forbidden',
-        correlationId,
-        HttpStatus.FORBIDDEN,
-        'The identity is not active.',
-      );
-    }
-    return userId;
   }
 
   private mapRepositoryError(error: unknown, correlationId: CorrelationId): MessageFlowHttpError {

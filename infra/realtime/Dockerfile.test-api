@@ -19,32 +19,27 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-RUN pnpm --filter @kovcheg/worker... build
-RUN pnpm --filter @kovcheg/worker deploy --prod --legacy /runtime
-RUN find /runtime -type f \( -name '*.map' -o -name '*.ts' -o -name '*.md' -o -name '*.spec.js' -o -name '*.test.js' \) -delete
+RUN pnpm --filter @kovcheg/api... build
+RUN pnpm --filter @kovcheg/api deploy --prod --legacy /runtime
+RUN contract_dist="$(find /runtime/node_modules/.pnpm -path '*/node_modules/@kovcheg/contracts/dist' -type d -print -quit)" \
+  && test -n "$contract_dist" \
+  && mkdir -p "$contract_dist/testing" \
+  && cp /workspace/packages/contracts/dist/testing/*.js "$contract_dist/testing/"
 
-FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
+FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 
-ARG BUILD_COMMIT_SHA=""
-
-LABEL org.opencontainers.image.revision=$BUILD_COMMIT_SHA
-
-ENV BUILD_COMMIT_SHA=$BUILD_COMMIT_SHA
 ENV HOST=0.0.0.0
-ENV LOG_LEVEL=info
-ENV NODE_ENV=production
-ENV PORT=3003
+ENV LOG_LEVEL=error
+ENV NODE_ENV=test
+ENV PORT=3001
 
 WORKDIR /app
 
 COPY --from=build --chown=node:node /runtime/ ./
-
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
-  && rm -f /usr/local/bin/corepack /usr/local/bin/npm /usr/local/bin/npx \
-    /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
+COPY --from=build --chown=node:node /workspace/infra/realtime/test-api-main.mjs ./
 
 USER node
 
-EXPOSE 3003
+EXPOSE 3001
 
-CMD ["node", "dist/main.js"]
+CMD ["node", "test-api-main.mjs"]

@@ -15,7 +15,7 @@
     "docker:config": "sh infra/scripts/compose.sh config --quiet",
     "docker:down": "sh infra/scripts/compose.sh down --volumes --remove-orphans",
     "docker:smoke": "sh infra/scripts/docker-smoke.sh",
-    "docker:up": "sh infra/scripts/compose.sh up --build --detach --wait",
+    "docker:up": "sh infra/scripts/docker-up.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "prettier --check . && eslint . --max-warnings=0",

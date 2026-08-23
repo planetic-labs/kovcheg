@@ -56,6 +56,26 @@ describe('A2 PostgreSQL auth repository', () => {
     });
   });
 
+  it('uses the non-touch database function for background session validation', async () => {
+    const client = new QueryFixture([
+      [
+        {
+          account_id: '00000000-0000-4000-8000-000000000050',
+          auth_roles: '{administrator}',
+          session_id: '00000000-0000-4000-8000-000000000054',
+        },
+      ],
+    ]);
+    const repository = new PostgresAuthRepository(client);
+
+    await expect(repository.validateSession('v'.repeat(43), Date.now())).resolves.toMatchObject({
+      sessionId: '00000000-0000-4000-8000-000000000054',
+      userId: '00000000-0000-4000-8000-000000000050',
+    });
+    expect(client.calls[0]?.text).toContain('kovcheg.validate_auth_session');
+    expect(client.calls[0]?.text).not.toContain('kovcheg.authenticate_auth_session');
+  });
+
   it('maps durable neutral and active-account challenge outcomes without direct table access', async () => {
     const client = new QueryFixture([
       [{ account_id: null, challenge_id: null, outcome: 'neutral', recipient: null }],

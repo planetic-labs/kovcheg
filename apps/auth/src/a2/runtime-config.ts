@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import type { JWKS } from 'oidc-provider';
 import type { UserId } from '@kovcheg/contracts';
 
@@ -34,14 +36,19 @@ export type AuthRuntimeConfig = DisabledAuthRuntimeConfig | EnabledAuthRuntimeCo
 export interface AuthRuntimeEnvironmentSource {
   readonly AUTH_ADMIN_BOOTSTRAP_JSON?: string | undefined;
   readonly AUTH_CHALLENGE_PEPPER?: string | undefined;
+  readonly AUTH_CHALLENGE_PEPPER_FILE?: string | undefined;
   readonly AUTH_OIDC_CLIENTS_JSON?: string | undefined;
   readonly AUTH_OIDC_COOKIE_KEYS_JSON?: string | undefined;
+  readonly AUTH_OIDC_COOKIE_KEYS_JSON_FILE?: string | undefined;
   readonly AUTH_OIDC_ISSUER?: string | undefined;
   readonly AUTH_OIDC_JWKS_JSON?: string | undefined;
+  readonly AUTH_OIDC_JWKS_JSON_FILE?: string | undefined;
   readonly AUTH_RATE_LIMIT_PEPPER?: string | undefined;
+  readonly AUTH_RATE_LIMIT_PEPPER_FILE?: string | undefined;
   readonly AUTH_REDIS_URL?: string | undefined;
   readonly AUTH_RUNTIME_ENABLED?: string | undefined;
   readonly AUTH_SESSION_PEPPER?: string | undefined;
+  readonly AUTH_SESSION_PEPPER_FILE?: string | undefined;
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -67,6 +74,33 @@ function required(source: AuthRuntimeEnvironmentSource, key: keyof AuthRuntimeEn
     throw new AuthError('auth.unavailable', `${key} is required when auth runtime is enabled`);
   }
   return value;
+}
+
+function requiredSecret(
+  source: AuthRuntimeEnvironmentSource,
+  key: keyof AuthRuntimeEnvironmentSource,
+  fileKey: keyof AuthRuntimeEnvironmentSource,
+): string {
+  const inlineValue = source[key]?.trim();
+  const filePath = source[fileKey]?.trim();
+  if (
+    inlineValue !== undefined &&
+    inlineValue.length > 0 &&
+    filePath !== undefined &&
+    filePath.length > 0
+  ) {
+    throw new AuthError('auth.invalid-input', `${key} and ${fileKey} are mutually exclusive`);
+  }
+  if (filePath !== undefined && filePath.length > 0) {
+    try {
+      const value = readFileSync(filePath, 'utf8').trim();
+      if (value.length > 0) return value;
+    } catch {
+      throw new AuthError('auth.unavailable', `${fileKey} is unavailable`);
+    }
+  }
+  if (inlineValue !== undefined && inlineValue.length > 0) return inlineValue;
+  throw new AuthError('auth.unavailable', `${key} or ${fileKey} is required`);
 }
 
 function parseJson(value: string, name: string): unknown {
@@ -189,15 +223,31 @@ export function loadAuthRuntimeConfig(
     parseJson(required(source, 'AUTH_OIDC_CLIENTS_JSON'), 'AUTH_OIDC_CLIENTS_JSON'),
   );
   const cookieKeys = stringArray(
-    parseJson(required(source, 'AUTH_OIDC_COOKIE_KEYS_JSON'), 'AUTH_OIDC_COOKIE_KEYS_JSON'),
+    parseJson(
+      requiredSecret(source, 'AUTH_OIDC_COOKIE_KEYS_JSON', 'AUTH_OIDC_COOKIE_KEYS_JSON_FILE'),
+      'AUTH_OIDC_COOKIE_KEYS_JSON',
+    ),
     'AUTH_OIDC_COOKIE_KEYS_JSON',
   );
-  const jwks = parseJwks(parseJson(required(source, 'AUTH_OIDC_JWKS_JSON'), 'AUTH_OIDC_JWKS_JSON'));
+  const jwks = parseJwks(
+    parseJson(
+      requiredSecret(source, 'AUTH_OIDC_JWKS_JSON', 'AUTH_OIDC_JWKS_JSON_FILE'),
+      'AUTH_OIDC_JWKS_JSON',
+    ),
+  );
   return Object.freeze({
     authSecrets: Object.freeze({
-      challengePepper: required(source, 'AUTH_CHALLENGE_PEPPER'),
-      rateLimitPepper: required(source, 'AUTH_RATE_LIMIT_PEPPER'),
-      sessionPepper: required(source, 'AUTH_SESSION_PEPPER'),
+      challengePepper: requiredSecret(
+        source,
+        'AUTH_CHALLENGE_PEPPER',
+        'AUTH_CHALLENGE_PEPPER_FILE',
+      ),
+      rateLimitPepper: requiredSecret(
+        source,
+        'AUTH_RATE_LIMIT_PEPPER',
+        'AUTH_RATE_LIMIT_PEPPER_FILE',
+      ),
+      sessionPepper: requiredSecret(source, 'AUTH_SESSION_PEPPER', 'AUTH_SESSION_PEPPER_FILE'),
     }),
     bootstrapAdministrator: parseBootstrap(source.AUTH_ADMIN_BOOTSTRAP_JSON),
     enabled: true,

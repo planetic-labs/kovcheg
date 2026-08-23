@@ -1,4 +1,8 @@
-export default function FoundationPage() {
+import { connection } from 'next/server';
+
+export default async function FoundationPage() {
+  await connection();
+
   return (
     <main>
       <h1>Kovcheg</h1>

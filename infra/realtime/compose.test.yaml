@@ -1,14 +1,14 @@
 services:
   api-1:
     build:
-      target: realtime-test-runtime
+      dockerfile: infra/realtime/Dockerfile.test-api
     environment:
       KOVCHEG_IDENTITY_STUB_ENABLED: 'true'
       NODE_ENV: test
 
   api-2:
     build:
-      target: realtime-test-runtime
+      dockerfile: infra/realtime/Dockerfile.test-api
     environment:
       KOVCHEG_IDENTITY_STUB_ENABLED: 'true'
       NODE_ENV: test

@@ -64,6 +64,11 @@ SELECT pg_temp.assert_true(
     'kovcheg.admin_revoke_all_auth_sessions(text,uuid,timestamp with time zone,character varying)',
     'EXECUTE'
   )
+  AND has_function_privilege(
+    current_user,
+    'kovcheg.validate_auth_session(text,timestamp with time zone)',
+    'EXECUTE'
+  )
   AND NOT has_function_privilege(
     current_user,
     'kovcheg.create_auth_account(uuid,text,text)',
@@ -1147,6 +1152,74 @@ SELECT pg_temp.assert_true(
     )
   ),
   'grant revocation must make every matching OIDC adapter artifact unavailable'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'issued'
+    FROM kovcheg.issue_auth_challenge_for_active_account(
+      'synthetic-student@auth.invalid',
+      '00000000-0000-4000-8000-000000003126',
+      repeat('u', 43),
+      '2030-01-01 00:16:00+00',
+      '2030-01-01 00:26:00+00',
+      5,
+      interval '0 seconds'
+    )
+  )
+  AND (
+    SELECT outcome = 'authenticated'
+    FROM kovcheg.consume_auth_challenge_and_create_session(
+      '00000000-0000-4000-8000-000000003126',
+      repeat('u', 43),
+      '2030-01-01 00:16:01+00',
+      '00000000-0000-4000-8000-000000003226',
+      repeat('x', 43),
+      '2030-01-01 00:16:01+00',
+      60000,
+      '2030-01-01 00:26:01+00'
+    )
+  ),
+  'the non-touch session validation fixture must create one bounded session'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT account_id = '00000000-0000-4000-8000-000000003002'
+      AND session_id = '00000000-0000-4000-8000-000000003226'
+      AND auth_roles = ARRAY['student'::kovcheg.auth_account_role]
+    FROM kovcheg.validate_auth_session(
+      repeat('x', 43),
+      '2030-01-01 00:16:59+00'
+    )
+  ),
+  'non-touch validation must return the active session principal'
+);
+
+SELECT pg_temp.assert_true(
+  NOT EXISTS (
+    SELECT 1
+    FROM kovcheg.validate_auth_session(
+      repeat('x', 43),
+      '2030-01-01 00:17:01+00'
+    )
+  ),
+  'non-touch validation must not extend the original idle expiry'
+);
+
+SELECT pg_temp.assert_true(
+  kovcheg.revoke_auth_session_by_verifier(
+    repeat('x', 43),
+    '2030-01-01 00:17:02+00'
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM kovcheg.validate_auth_session(
+      repeat('x', 43),
+      '2030-01-01 00:17:03+00'
+    )
+  ),
+  'non-touch validation must reject a revoked session'
 );
 
 SELECT pg_temp.assert_true(

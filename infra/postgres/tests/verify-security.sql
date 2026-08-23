@@ -182,6 +182,33 @@ END;
 $$;
 
 DO $$
+BEGIN
+  IF to_regprocedure(
+    'kovcheg.validate_auth_session(text,timestamp with time zone)'
+  ) IS NOT NULL THEN
+    PERFORM pg_temp.assert_true(
+      has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.validate_auth_session(text,timestamp with time zone)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.validate_auth_session(text,timestamp with time zone)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_audit_writer',
+        'kovcheg.validate_auth_session(text,timestamp with time zone)',
+        'EXECUTE'
+      ),
+      'only the auth login may execute non-touch session validation'
+    );
+  END IF;
+END;
+$$;
+
+DO $$
 DECLARE
   expected_event_count integer;
 BEGIN

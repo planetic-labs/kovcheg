@@ -12,6 +12,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { ApiExcludeEndpoint } from '@nestjs/swagger';
 
 import type { CorrelationId, Uuid } from '@kovcheg/contracts';
 
@@ -120,6 +121,21 @@ export class AuthSessionController {
     }
     try {
       return await this.runtime.authService.authenticateSession(token);
+    } catch (error) {
+      toAuthHttpException(error, correlationId(request));
+    }
+  }
+
+  @Get('internal/session')
+  @Header('Cache-Control', 'no-store')
+  @ApiExcludeEndpoint()
+  async validateSession(@Req() request: AuthHttpRequest) {
+    const token = this.runtime.sessionCookie.read(cookieHeader(request));
+    if (token === null) {
+      throw authHttpException('auth.invalid-session', correlationId(request));
+    }
+    try {
+      return await this.runtime.authService.validateSession(token);
     } catch (error) {
       toAuthHttpException(error, correlationId(request));
     }
