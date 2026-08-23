@@ -20,11 +20,14 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 
 RUN pnpm --filter @kovcheg/api... build
+RUN pnpm --filter @kovcheg/api exec tsc -p tsconfig.integration-check.json
 RUN pnpm --filter @kovcheg/api deploy --prod --legacy /runtime
 RUN find /runtime -type f \( -name '*.map' -o -name '*.ts' -o -name '*.md' -o -name '*.spec.js' -o -name '*.test.js' \) -delete
 
 FROM build AS message-flow-test-build
 
+RUN cp /workspace/apps/api/dist-integration-check/message-flow/message-flow.integration-check.js \
+  /runtime/dist/message-flow/message-flow.integration-check.js
 RUN contract_dist="$(find /runtime/node_modules/.pnpm -path '*/node_modules/@kovcheg/contracts/dist' -type d -print -quit)" \
   && test -n "$contract_dist" \
   && mkdir -p "$contract_dist/testing" \

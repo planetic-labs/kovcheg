@@ -168,8 +168,8 @@ for service in api-1 api-2 auth worker web; do
 
   compose exec -T "$service" sh -c "
 set -e
-if find /app -type f \( -name '*.map' -o -name '*.ts' -o -name '*.spec.js' -o -name '*.test.js' \) | grep -q .; then
-  echo 'runtime image contains source, test, or sourcemap files' >&2
+if find /app -type f \( -name '*.map' -o -name '*.ts' -o -name '*.spec.js' -o -name '*.test.js' -o -name '*.integration-check.js' \) | grep -q .; then
+  echo 'runtime image contains source, test, integration-check, or sourcemap files' >&2
   exit 1
 fi
 for package_manager in corepack npm npx pnpm pnpx yarn yarnpkg; do
