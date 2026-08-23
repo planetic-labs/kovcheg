@@ -1,4 +1,4 @@
-import type { CorrelationId, UserId, Uuid } from './index.js';
+import type { CorrelationId, UserId, Uuid } from './foundation-types.js';
 
 export const messageFlowContractVersion = 1 as const;
 export const chatListContractVersion = 1 as const;

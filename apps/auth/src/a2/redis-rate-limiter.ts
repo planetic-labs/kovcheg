@@ -76,5 +76,3 @@ export class RedisRateLimiter implements RateLimiter {
     }
   }
 }
-
-export const redisRateLimitConsumeScript = consumeScript;

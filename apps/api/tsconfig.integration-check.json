@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-integration-check",
+    "sourceMap": false
+  },
+  "include": ["src/message-flow/message-flow.integration-check.ts"]
+}

@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "sourceMap": false },
-  "exclude": ["src/**/*.spec.ts"]
+  "exclude": ["src/**/*.integration-check.ts", "src/**/*.spec.ts"]
 }
