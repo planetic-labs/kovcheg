@@ -45,8 +45,8 @@ verify_latest_migration_state() {
       FROM kovcheg_meta.schema_migrations
     "
   )
-  if [ "$latest_state" != '0006:6' ]; then
-    echo 'The complete six-migration chain was not recorded.' >&2
+  if [ "$latest_state" != '0007:7' ]; then
+    echo 'The complete seven-migration chain was not recorded.' >&2
     exit 1
   fi
 }
@@ -304,6 +304,10 @@ case "$scenario" in
   upgrade-v5)
     run_message_flow_tests
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-latest.sql"
+    ;;
+  upgrade-v6)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v6.sql"
     ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
