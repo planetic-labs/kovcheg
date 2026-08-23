@@ -7,6 +7,8 @@
   "files": [
     "dist/index.d.ts",
     "dist/index.js",
+    "dist/foundation-types.d.ts",
+    "dist/foundation-types.js",
     "dist/message-flow.d.ts",
     "dist/message-flow.js",
     "dist/realtime.d.ts",

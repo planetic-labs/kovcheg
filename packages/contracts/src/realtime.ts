@@ -1,5 +1,5 @@
 import type { ChatSequence, TextMessage } from './message-flow.js';
-import type { CorrelationId, UserId, Uuid } from './index.js';
+import type { CorrelationId, UserId, Uuid } from './foundation-types.js';
 
 export const realtimeContractVersion = 1 as const;
 export const realtimeSocketPath = '/socket.io' as const;

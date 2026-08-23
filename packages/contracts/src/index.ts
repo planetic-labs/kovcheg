@@ -1,4 +1,7 @@
 import { messageFlowErrorCodes } from './message-flow.js';
+import type { CorrelationId, SessionId, UserId, Uuid } from './foundation-types.js';
+
+export type { CorrelationId, SessionId, UserId, Uuid } from './foundation-types.js';
 
 export const foundationContractVersion = 1 as const;
 export const buildMetadataContractVersion = foundationContractVersion;
@@ -14,13 +17,6 @@ export const serviceNames = Object.freeze([
   'web',
   'worker',
 ] satisfies readonly ServiceName[]);
-
-export type Uuid = `${string}-${string}-${string}-${string}-${string}`;
-export type UserId = Uuid;
-export type SessionId = Uuid;
-
-declare const correlationIdBrand: unique symbol;
-export type CorrelationId = string & { readonly [correlationIdBrand]: true };
 
 export const correlationIdHeaderName = 'x-correlation-id' as const;
 export const correlationIdPattern = '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' as const;
