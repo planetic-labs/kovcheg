@@ -88,6 +88,26 @@ try {
     'The session principal must access its active membership',
   );
 
+  const deliveredMessage = onceWithTimeout(socket, 'realtime.message-created', 20_000);
+  const createMessageResponse = await request(`/api/chats/${chatId}/messages`, {
+    body: JSON.stringify({
+      clientMessageId: 'session-contract-smoke-message-001',
+      text: 'Synthetic session contract smoke message',
+    }),
+    headers: { cookie, 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  assert.equal(createMessageResponse.status, 201, 'The authenticated message must be created');
+  const createdMessage = await createMessageResponse.json();
+  const realtimeMessage = await deliveredMessage;
+  assert.equal(
+    realtimeMessage.payload?.messageId,
+    createdMessage.message?.id,
+    'The live subscribed socket must receive the outbox-backed realtime event',
+  );
+  assert.equal(realtimeMessage.payload?.chatId, chatId);
+  assert.equal(realtimeMessage.payload?.chatSequence, createdMessage.message?.chatSequence);
+
   const logoutResponse = await request('/auth/session', {
     headers: { cookie },
     method: 'DELETE',

@@ -33,6 +33,9 @@ import { RealtimeRepositoryError, realtimeRepositoryToken } from './realtime.rep
 
 export const realtimeInstanceIdToken = Symbol('realtimeInstanceId');
 const clusterMessageCreatedEvent = 'kovcheg.realtime.message-created';
+const clusterDeliveryAckTimeoutMilliseconds = 3_000;
+
+type ClusterDeliveryAcknowledgement = (delivered: boolean) => void;
 
 interface RealtimeSocketData {
   sessionId?: SessionId;
@@ -66,11 +69,15 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayInit {
   ) {}
 
   afterInit(server: Server): void {
-    server.on(clusterMessageCreatedEvent, (value: unknown) => {
-      void this.deliverLocal(value).then((delivered) => {
-        if (!delivered) this.logger.error('Cluster realtime delivery failed');
-      });
-    });
+    server.on(
+      clusterMessageCreatedEvent,
+      (value: unknown, acknowledge?: ClusterDeliveryAcknowledgement) => {
+        void this.deliverLocal(value).then((delivered) => {
+          if (!delivered) this.logger.error('Cluster realtime delivery failed');
+          acknowledge?.(delivered);
+        });
+      },
+    );
   }
 
   async handleConnection(socket: Socket): Promise<void> {
@@ -136,11 +143,39 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayInit {
     if (event === null) return false;
     try {
       if (!(await this.deliverLocal(event))) return false;
-      this.server.serverSideEmit(clusterMessageCreatedEvent, event);
-      return true;
+      return await this.deliverToLivePeers(event);
     } catch {
       return false;
     }
+  }
+
+  private async deliverToLivePeers(value: unknown): Promise<boolean> {
+    const serverCount = await this.server.sockets.adapter.serverCount();
+    if (serverCount <= 1) return true;
+
+    const responses = await this.withClusterAckTimeout(
+      this.server.serverSideEmitWithAck(clusterMessageCreatedEvent, value),
+    );
+    return responses.length > 0 && responses.every((response) => response === true);
+  }
+
+  private withClusterAckTimeout<T>(operation: Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('Cluster realtime acknowledgement timed out')),
+        clusterDeliveryAckTimeoutMilliseconds,
+      );
+      void operation.then(
+        (value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timeout);
+          reject(error instanceof Error ? error : new Error('Cluster realtime delivery failed'));
+        },
+      );
+    });
   }
 
   private async deliverLocal(value: unknown): Promise<boolean> {

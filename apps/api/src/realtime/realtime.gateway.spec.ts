@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   realtimeContractVersion,
@@ -13,6 +13,7 @@ import type { Socket } from 'socket.io-client';
 import { createApiApplication } from '../application.js';
 import type { ApplicationSessionAuthenticator } from '../session/application-session.js';
 import { ApplicationSessionError } from '../session/application-session.js';
+import { RealtimeGateway } from './realtime.gateway.js';
 import { RealtimeRepositoryError } from './realtime.repository.js';
 
 const openApplications: Awaited<ReturnType<typeof createApiApplication>>[] = [];
@@ -60,6 +61,51 @@ function sessionAuthenticator(
 }
 
 describe('realtime gateway', () => {
+  it('requires acknowledgement from every live peer without blocking a single surviving API', async () => {
+    const serverCount = vi.fn().mockResolvedValue(3);
+    const serverSideEmitWithAck = vi.fn().mockResolvedValue([true, false]);
+    const gateway = new RealtimeGateway(
+      sessionAuthenticator(),
+      {
+        canReadChat: () => Promise.resolve(true),
+        isReady: () => Promise.resolve(true),
+        subscribe: () => Promise.resolve({ history: Object.freeze([]) }),
+      },
+      'api-test-1',
+    );
+    Object.assign(gateway, {
+      server: {
+        local: { in: () => ({ fetchSockets: () => Promise.resolve([]) }) },
+        serverSideEmitWithAck,
+        sockets: { adapter: { serverCount } },
+      },
+    });
+    const event = Object.freeze({
+      contractVersion: realtimeContractVersion,
+      correlationId: 'realtime-cluster-ack-001',
+      eventId: '00000000-0000-4000-8000-000000005001',
+      eventName: 'message.created',
+      occurredAt: '2026-01-01T00:00:01.000Z',
+      payload: {
+        chatId: '00000000-0000-4000-8000-000000005002',
+        chatSequence: '1',
+        messageId: '00000000-0000-4000-8000-000000005003',
+      },
+    });
+
+    await expect(gateway.emitMessageCreated(event)).resolves.toBe(false);
+    expect(serverSideEmitWithAck).toHaveBeenCalledWith('kovcheg.realtime.message-created', event);
+
+    serverCount.mockResolvedValueOnce(1);
+    serverSideEmitWithAck.mockClear();
+    await expect(gateway.emitMessageCreated(event)).resolves.toBe(true);
+    expect(serverSideEmitWithAck).not.toHaveBeenCalled();
+
+    serverCount.mockResolvedValueOnce(2);
+    serverSideEmitWithAck.mockResolvedValueOnce([true]);
+    await expect(gateway.emitMessageCreated(event)).resolves.toBe(true);
+  });
+
   it('authenticates through the injected test identity boundary and catches up from PostgreSQL', async () => {
     const app = await createApiApplication(undefined, {
       sessionAuthenticator: sessionAuthenticator(

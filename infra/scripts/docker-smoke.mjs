@@ -1,9 +1,18 @@
 /* global fetch, process, setTimeout */
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { URL } from 'node:url';
 
 const baseUrl = process.argv[2];
 assert.ok(baseUrl, 'A loopback base URL is required');
+
+const edgeRoutes = await readFile(new URL('../edge/routes.yaml', import.meta.url), 'utf8');
+assert.match(
+  edgeRoutes,
+  /healthCheck:\n\s+interval: 2s\n\s+path: \/health\/ready\n\s+timeout: 3s/u,
+  'The edge health timeout must exceed the two-second A2 readiness budget',
+);
 
 const expectedCommitSha = process.env.BUILD_COMMIT_SHA || null;
 if (expectedCommitSha !== null) {

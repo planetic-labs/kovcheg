@@ -130,6 +130,29 @@ describe('application session boundary', () => {
     ]);
   });
 
+  it('accepts a slow readiness response within the two-second budget and fails closed', async () => {
+    const slowFetch = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      return new Response(JSON.stringify({ service: 'auth', state: 'ready', status: 'ok' }), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      });
+    });
+    const slowAuthenticator = createApplicationSessionAuthenticator(
+      'production',
+      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/internal/session' },
+      slowFetch,
+    );
+    await expect(slowAuthenticator.isReady()).resolves.toBe(true);
+
+    const failedAuthenticator = createApplicationSessionAuthenticator(
+      'production',
+      { AUTH_SESSION_VALIDATION_URL: 'http://auth:3002/internal/session' },
+      vi.fn().mockRejectedValue(new Error('synthetic upstream failure')),
+    );
+    await expect(failedAuthenticator.isReady()).resolves.toBe(false);
+  });
+
   it('sanitizes upstream failures and malformed principals as unavailable', async () => {
     for (const response of [
       new Response(null, { status: 503 }),

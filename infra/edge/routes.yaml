@@ -62,7 +62,7 @@ http:
         healthCheck:
           interval: 2s
           path: /health/ready
-          timeout: 1s
+          timeout: 3s
         servers:
           - url: http://api-1:3001
           - url: http://api-2:3001
