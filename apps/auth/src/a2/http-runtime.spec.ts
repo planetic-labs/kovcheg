@@ -249,6 +249,26 @@ describe('A2 auth HTTP runtime', () => {
       userId: fixture.activeAccount.userId,
     });
 
+    fixture.clock.advance(emailChallengePolicy.resendCooldownMs);
+    const secondChallengeResponse = await requestChallenge(
+      fixture.baseUrl,
+      'active-http@example.invalid',
+    );
+    const secondChallenge = (await secondChallengeResponse.json()) as { challengeId: string };
+    const secondMessage = fixture.delivery.messages.at(-1);
+    if (secondMessage === undefined) {
+      throw new Error('Expected second active-account delivery');
+    }
+    const secondVerification = await fetch(
+      `${fixture.baseUrl}/session/challenges/${secondChallenge.challengeId}/verify`,
+      {
+        body: JSON.stringify({ code: secondMessage.code }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      },
+    );
+    const secondCookie = responseCookie(secondVerification);
+
     const logout = await fetch(`${fixture.baseUrl}/session`, {
       headers: { cookie },
       method: 'DELETE',
@@ -258,6 +278,9 @@ describe('A2 auth HTTP runtime', () => {
     expect(await fetch(`${fixture.baseUrl}/session`, { headers: { cookie } })).toMatchObject({
       status: 401,
     });
+    expect(
+      await fetch(`${fixture.baseUrl}/session`, { headers: { cookie: secondCookie } }),
+    ).toMatchObject({ status: 200 });
   });
 
   it('rejects an existing session immediately after account deactivation', async () => {

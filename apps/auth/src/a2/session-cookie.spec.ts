@@ -5,7 +5,7 @@ import { SessionCookie } from './session-cookie.js';
 describe('A2 session cookie lifecycle', () => {
   it('uses a host-only secure cookie in production and clears it deterministically', () => {
     const cookie = new SessionCookie({
-      absoluteLifetimeMs: 60_000,
+      absoluteLifetimeMs: 30 * 24 * 60 * 60_000,
       environment: 'production',
       secure: true,
     });
@@ -18,6 +18,7 @@ describe('A2 session cookie lifecycle', () => {
     expect(issued).toContain('HttpOnly');
     expect(issued).toContain('SameSite=Lax');
     expect(issued).toContain('Secure');
+    expect(issued).toContain('Max-Age=2592000');
     expect(issued).not.toContain('Domain=');
     expect(cookie.read(`other=value; __Host-kovcheg_session=${token}`)).toBe(token);
     expect(cookie.clear()).toContain('Max-Age=0');

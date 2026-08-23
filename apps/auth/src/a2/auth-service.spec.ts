@@ -192,6 +192,44 @@ describe('A2 administrator and account use cases', () => {
       fixture.service.authenticateSession(administratorSession.sessionToken),
     ).rejects.toMatchObject({ code: 'auth.invalid-session' });
   });
+
+  it('keeps browser sessions independent, logs out only the current one, and deactivation revokes all', async () => {
+    const fixture = createFixture();
+    await bootstrap(fixture);
+    const administratorSession = await login(
+      fixture,
+      'administrator@example.invalid',
+      'session-policy-administrator',
+    );
+    const account = await fixture.service.createAccount(administratorSession.sessionToken, {
+      displayName: 'Multi Session Account',
+      email: 'multi-session@example.invalid',
+    });
+
+    const browserSession = await login(fixture, account.email, 'browser');
+    fixture.clock.advance(emailChallengePolicy.resendCooldownMs);
+    const pwaSession = await login(fixture, account.email, 'pwa');
+
+    expect(browserSession.sessionId).not.toBe(pwaSession.sessionId);
+    expect(browserSession.sessionToken).not.toBe(pwaSession.sessionToken);
+
+    await fixture.service.logout(browserSession.sessionToken);
+    await expect(
+      fixture.service.authenticateSession(browserSession.sessionToken),
+    ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+    await expect(
+      fixture.service.authenticateSession(pwaSession.sessionToken),
+    ).resolves.toMatchObject({ userId: account.userId });
+
+    await fixture.service.setAccountStatus(
+      administratorSession.sessionToken,
+      account.userId,
+      'deactivated',
+    );
+    await expect(
+      fixture.service.authenticateSession(pwaSession.sessionToken),
+    ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+  });
 });
 
 describe('A2 email challenge security', () => {

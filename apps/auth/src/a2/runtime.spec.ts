@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { emailChallengePolicy } from './contracts.js';
 import { LocalAuthRepository, LocalEmailChallengeDelivery } from './local-adapters.js';
+import { ResendEmailChallengeDelivery } from './resend-email-challenge-delivery.js';
 import { createAuthRuntime } from './runtime.js';
 import type { EnabledAuthRuntimeConfig } from './runtime-config.js';
 import { loadEmailChallengeDelivery } from './runtime-infrastructure.js';
@@ -10,10 +11,32 @@ describe('A2 production runtime boundary', () => {
   it('keeps local email delivery out of production composition', async () => {
     await expect(
       loadEmailChallengeDelivery('production', { AUTH_EMAIL_DELIVERY_ADAPTER: 'local' }),
-    ).rejects.toThrow('provider-neutral email challenge delivery adapter is required');
+    ).rejects.toThrow('Email challenge delivery configuration is unavailable');
     await expect(
       loadEmailChallengeDelivery('test', { AUTH_EMAIL_DELIVERY_ADAPTER: 'local' }),
     ).resolves.toBeInstanceOf(LocalEmailChallengeDelivery);
+  });
+
+  it('loads Resend only from complete server-side configuration and fails closed otherwise', async () => {
+    await expect(
+      loadEmailChallengeDelivery('production', { AUTH_EMAIL_DELIVERY_ADAPTER: 'resend' }),
+    ).rejects.toMatchObject({ code: 'auth.unavailable' });
+
+    const delivery = await loadEmailChallengeDelivery(
+      'production',
+      {
+        AUTH_EMAIL_DELIVERY_ADAPTER: 'resend',
+        AUTH_EMAIL_FROM_ADDRESS: 'sender@auth.invalid',
+        AUTH_EMAIL_FROM_NAME: 'Synthetic Auth Sender',
+        RESEND_API_KEY: 'synthetic-test-key-material',
+      },
+      () => ({
+        send: () => Promise.resolve({ data: { id: 'synthetic-email-id' }, error: null }),
+      }),
+    );
+
+    expect(delivery).toBeInstanceOf(ResendEmailChallengeDelivery);
+    expect(delivery.productionSafe).toBe(true);
   });
 
   it('rejects test repositories and delivery adapters even if they were constructed explicitly', async () => {

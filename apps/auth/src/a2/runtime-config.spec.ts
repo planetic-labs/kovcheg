@@ -48,6 +48,13 @@ describe('A2 runtime configuration', () => {
       oidc: {
         clients: [{ clientId: 'synthetic-client', tokenEndpointAuthMethod: 'none' }],
         issuer: 'http://127.0.0.1:4300',
+        sessionTtlSeconds: 12 * 60 * 60,
+      },
+      policy: {
+        session: {
+          absoluteLifetimeMs: 30 * 24 * 60 * 60_000,
+          idleLifetimeMs: 7 * 24 * 60 * 60_000,
+        },
       },
       redisUrl: 'redis://127.0.0.1:6379',
       secureCookies: false,

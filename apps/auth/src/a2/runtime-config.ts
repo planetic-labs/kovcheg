@@ -56,8 +56,8 @@ const defaultPolicy: AuthPolicy = Object.freeze({
     verifyByNetwork: Object.freeze({ limit: 40, windowMs: 15 * 60_000 }),
   }),
   session: Object.freeze({
-    absoluteLifetimeMs: 7 * 24 * 60 * 60_000,
-    idleLifetimeMs: 12 * 60 * 60_000,
+    absoluteLifetimeMs: 30 * 24 * 60 * 60_000,
+    idleLifetimeMs: 7 * 24 * 60 * 60_000,
   }),
 });
 

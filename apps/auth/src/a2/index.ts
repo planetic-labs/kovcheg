@@ -7,6 +7,7 @@ export * from './oidc.js';
 export * from './postgres.js';
 export * from './redis-client.js';
 export * from './redis-rate-limiter.js';
+export * from './resend-email-challenge-delivery.js';
 export * from './ports.js';
 export * from './runtime-config.js';
 export * from './runtime-infrastructure.js';

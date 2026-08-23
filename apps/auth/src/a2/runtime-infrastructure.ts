@@ -6,28 +6,34 @@ import {
   PostgresOidcClientRepository,
 } from './postgres.js';
 import { nodeRedisScriptClientFactory } from './redis-client.js';
+import { createResendEmailChallengeDelivery } from './resend-email-challenge-delivery.js';
+import type {
+  ResendDeliveryEnvironmentSource,
+  ResendEmailClientFactory,
+} from './resend-email-challenge-delivery.js';
 import { createAuthRuntime } from './runtime.js';
 import type { AuthRuntime } from './runtime.js';
 import type { EnabledAuthRuntimeConfig } from './runtime-config.js';
 import type { AuthPostgresEnvironment } from './postgres.js';
 import type { EmailChallengeDelivery } from './ports.js';
 
-export interface AuthDeliveryEnvironmentSource {
+export interface AuthDeliveryEnvironmentSource extends ResendDeliveryEnvironmentSource {
   readonly AUTH_EMAIL_DELIVERY_ADAPTER?: string | undefined;
 }
 
 export async function loadEmailChallengeDelivery(
   environment: EnabledAuthRuntimeConfig['environment'],
   source: AuthDeliveryEnvironmentSource = process.env,
+  resendClientFactory?: ResendEmailClientFactory,
 ): Promise<EmailChallengeDelivery> {
   if (environment !== 'production' && source.AUTH_EMAIL_DELIVERY_ADAPTER === 'local') {
     const { LocalEmailChallengeDelivery } = await import('./local-adapters.js');
     return new LocalEmailChallengeDelivery({ NODE_ENV: environment });
   }
-  throw new AuthError(
-    'auth.unavailable',
-    'A provider-neutral email challenge delivery adapter is required',
-  );
+  if (source.AUTH_EMAIL_DELIVERY_ADAPTER === 'resend') {
+    return createResendEmailChallengeDelivery(source, resendClientFactory);
+  }
+  throw new AuthError('auth.unavailable', 'Email challenge delivery configuration is unavailable');
 }
 
 export async function createDurableAuthRuntime(input: {

@@ -77,8 +77,8 @@ function runtimeConfig(): EnabledAuthRuntimeConfig {
         verifyByNetwork: rule,
       }),
       session: Object.freeze({
-        absoluteLifetimeMs: 60 * 60_000,
-        idleLifetimeMs: 15 * 60_000,
+        absoluteLifetimeMs: 30 * 24 * 60 * 60_000,
+        idleLifetimeMs: 7 * 24 * 60 * 60_000,
       }),
     }),
     redisUrl: process.env.AUTH_REDIS_URL ?? 'redis://redis:6379',
@@ -295,6 +295,27 @@ async function main(): Promise<void> {
         },
       );
       const logoutCookie = responseCookie(logoutVerification);
+      const firstLogoutSession = await readJson(logoutVerification);
+      clock.advance(emailChallengePolicy.resendCooldownMs);
+      const secondBrowserChallenge = await requestChallenge(baseUrl, activeEmail, 'second-browser');
+      const secondBrowserBody = await readJson(secondBrowserChallenge);
+      const secondBrowserMessage = delivery.messages.at(-1);
+      assert(secondBrowserMessage !== undefined, 'Second browser challenge must be delivered');
+      const secondBrowserIssuedAt = clock.now();
+      const secondBrowserVerification = await fetch(
+        `${baseUrl}/session/challenges/${String(secondBrowserBody.challengeId)}/verify`,
+        {
+          body: JSON.stringify({ code: secondBrowserMessage.code }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      const secondBrowserCookie = responseCookie(secondBrowserVerification);
+      const secondBrowserSession = await readJson(secondBrowserVerification);
+      assert(
+        firstLogoutSession.sessionId !== secondBrowserSession.sessionId,
+        'A separate browser login must create an independent server session',
+      );
       const logout = await fetch(`${baseUrl}/session`, {
         headers: { cookie: logoutCookie },
         method: 'DELETE',
@@ -303,6 +324,32 @@ async function main(): Promise<void> {
       assert(
         (await fetch(`${baseUrl}/session`, { headers: { cookie: logoutCookie } })).status === 401,
         'Logout must revoke the server-side session',
+      );
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: secondBrowserCookie } })).status ===
+          200,
+        'Logout must not revoke another browser session',
+      );
+
+      integrationStage = 'session-sliding-expiry';
+      assert(
+        secondBrowserSession.absoluteExpiresAt ===
+          secondBrowserIssuedAt + config.policy.session.absoluteLifetimeMs,
+        'A new session must use the configured 30-day absolute lifetime',
+      );
+      await runtime.authService.authenticateSession(administratorSession.sessionToken);
+      clock.advance(config.policy.session.idleLifetimeMs - 1);
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: secondBrowserCookie } })).status ===
+          200,
+        'Activity before seven idle days must keep the session valid',
+      );
+      await runtime.authService.authenticateSession(administratorSession.sessionToken);
+      clock.advance(2);
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: secondBrowserCookie } })).status ===
+          200,
+        'Activity must extend idle expiry beyond the original seven-day boundary',
       );
 
       integrationStage = 'deactivation';
@@ -350,6 +397,11 @@ async function main(): Promise<void> {
             'Deactivation must revoke every account session',
           );
         },
+      );
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: secondBrowserCookie } })).status ===
+          401,
+        'Deactivation must revoke every browser and PWA session for the account',
       );
 
       integrationStage = 'oidc-state';
@@ -446,6 +498,65 @@ async function main(): Promise<void> {
         method: 'POST',
       });
       assert(replayResponse.status === 400, 'A durable authorization code replay must be rejected');
+
+      integrationStage = 'oidc-session-expiry-with-valid-application-session';
+      const deliveriesBeforeOidcSessionExpiry = delivery.messages.length;
+      clock.advance((config.oidc.sessionTtlSeconds + 1) * 1000);
+      await runtime.authService.authenticateSession(administratorSession.sessionToken);
+      const renewedAuthorize = new URL(`${baseUrl}/auth`);
+      renewedAuthorize.search = new URLSearchParams({
+        client_id: 'synthetic-integration-client',
+        code_challenge: pkceChallenge(`${verifier}-renewed`),
+        code_challenge_method: 'S256',
+        nonce: `nonce-renewed-${suffix}`,
+        redirect_uri: 'http://127.0.0.1/callback',
+        response_type: 'code',
+        scope: 'openid',
+        state: `state-renewed-${suffix}`,
+      }).toString();
+      const renewedAuthorizeResponse = await fetch(renewedAuthorize, {
+        headers: { cookie: cookieHeader(oidcCookies) },
+        redirect: 'manual',
+      });
+      updateCookieJar(renewedAuthorizeResponse, oidcCookies);
+      assert(
+        renewedAuthorizeResponse.status === 303,
+        'An expired OIDC session must restart a bounded interaction',
+      );
+      const renewedInteractionLocation = renewedAuthorizeResponse.headers.get('location');
+      assert(
+        renewedInteractionLocation !== null && renewedInteractionLocation.includes('/interaction/'),
+        'An expired OIDC session must require the application-session interaction seam',
+      );
+      const renewedInteractionResponse = await fetch(new URL(renewedInteractionLocation, baseUrl), {
+        headers: { cookie: cookieHeader(oidcCookies) },
+        redirect: 'manual',
+      });
+      updateCookieJar(renewedInteractionResponse, oidcCookies);
+      assert(
+        renewedInteractionResponse.status === 303,
+        'A valid application session must complete the renewed OIDC interaction',
+      );
+      const renewedResumeLocation = renewedInteractionResponse.headers.get('location');
+      assert(renewedResumeLocation !== null, 'The renewed OIDC interaction must resume');
+      const renewedResumeResponse = await fetch(new URL(renewedResumeLocation, baseUrl), {
+        headers: { cookie: cookieHeader(oidcCookies) },
+        redirect: 'manual',
+      });
+      const renewedCallbackLocation = renewedResumeResponse.headers.get('location');
+      assert(
+        renewedResumeResponse.status === 303 && renewedCallbackLocation !== null,
+        'The renewed OIDC authorization must return to the registered redirect URI',
+      );
+      const renewedCallback = new URL(renewedCallbackLocation);
+      assert(
+        renewedCallback.searchParams.get('state') === `state-renewed-${suffix}`,
+        'The renewed OIDC authorization must preserve state',
+      );
+      assert(
+        delivery.messages.length === deliveriesBeforeOidcSessionExpiry,
+        'OIDC session expiry must not request a new email code while application-session is valid',
+      );
 
       integrationStage = 'redis-rate-limit';
       const redisClient = runtimeRedisClient;
