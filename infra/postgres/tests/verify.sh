@@ -38,6 +38,19 @@ query_as_migration() {
     --set=ON_ERROR_STOP=1 --username kovcheg_migrator --command "$1"
 }
 
+verify_latest_migration_state() {
+  latest_state=$(
+    query_as_migration "
+      SELECT kovcheg.current_migration_version() || ':' || count(*)
+      FROM kovcheg_meta.schema_migrations
+    "
+  )
+  if [ "$latest_state" != '0006:6' ]; then
+    echo 'The complete six-migration chain was not recorded.' >&2
+    exit 1
+  fi
+}
+
 run_parallel_sequence_test() {
   parallel_chat_id=$(
     query_as_runtime "SELECT id FROM kovcheg.chats WHERE provisioned_for_account_id = '00000000-0000-4000-8000-000000002001' ORDER BY id LIMIT 1"
@@ -217,12 +230,56 @@ run_auth_tests() {
     exit 1
   fi
   find /tmp -maxdepth 1 -name 'kovcheg-auth-result-*' -type f -delete
+
+  parallel_number=1
+  parallel_pids=''
+  while [ "$parallel_number" -le 12 ]; do
+    PGPASSWORD="$auth_password" psql --no-psqlrc --tuples-only --no-align --quiet \
+      --set=ON_ERROR_STOP=1 --username kovcheg_auth_app --command="
+        SELECT kovcheg.admin_revoke_all_auth_sessions(
+          repeat('m', 43),
+          '00000000-0000-4000-8000-000000003005',
+          '2030-01-01 00:20:30+00',
+          'auth-admin-revoke-all-race-$parallel_number'
+        )
+      " >"/tmp/kovcheg-auth-admin-result-$parallel_number" &
+    parallel_pids="$parallel_pids $!"
+    parallel_number=$((parallel_number + 1))
+  done
+
+  for parallel_pid in $parallel_pids; do
+    wait "$parallel_pid"
+  done
+
+  revoked_total=$(awk '{ total += $1 } END { print total + 0 }' /tmp/kovcheg-auth-admin-result-*)
+  effective_calls=$(awk '$1 > 0 { total += 1 } END { print total + 0 }' /tmp/kovcheg-auth-admin-result-*)
+  zero_calls=$(grep -h -c '^0$' /tmp/kovcheg-auth-admin-result-* | awk '{ total += $1 } END { print total + 0 }')
+  if [ "$revoked_total" -ne 12 ] || [ "$effective_calls" -ne 1 ] || [ "$zero_calls" -ne 11 ]; then
+    echo 'Concurrent revoke-all retries did not revoke the target sessions exactly once.' >&2
+    exit 1
+  fi
+  find /tmp -maxdepth 1 -name 'kovcheg-auth-admin-result-*' -type f -delete
+
+  remaining_target_sessions=$(
+    query_as_migration "
+      SELECT count(*)
+      FROM kovcheg.auth_sessions
+      WHERE account_id = '00000000-0000-4000-8000-000000003005'
+        AND revoked_at IS NULL
+    "
+  )
+  if [ "$remaining_target_sessions" -ne 0 ]; then
+    echo 'Concurrent revoke-all left an unrevoked target session.' >&2
+    exit 1
+  fi
+
+  run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
 }
 
 case "$scenario" in
   clean)
     run_message_flow_tests
-    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-latest.sql"
+    verify_latest_migration_state
     run_auth_tests
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     ;;
@@ -244,9 +301,13 @@ case "$scenario" in
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v4.sql"
     ;;
-  upgrade-latest)
+  upgrade-v5)
     run_message_flow_tests
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-latest.sql"
+    ;;
+  upgrade-latest)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    verify_latest_migration_state
     run_auth_tests
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     ;;

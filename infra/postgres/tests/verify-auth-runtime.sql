@@ -39,6 +39,46 @@ SELECT pg_temp.assert_true(
     'kovcheg.bootstrap_auth_administrator(text,uuid,text,text)',
     'EXECUTE'
   )
+  AND has_function_privilege(
+    current_user,
+    'kovcheg.admin_create_auth_account(text,uuid,text,text,timestamp with time zone,character varying)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    current_user,
+    'kovcheg.admin_update_auth_account(text,uuid,text,text,timestamp with time zone,character varying)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    current_user,
+    'kovcheg.admin_set_auth_account_status(text,uuid,kovcheg.account_status,timestamp with time zone,character varying)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    current_user,
+    'kovcheg.admin_revoke_auth_session(text,uuid,uuid,timestamp with time zone,character varying)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    current_user,
+    'kovcheg.admin_revoke_all_auth_sessions(text,uuid,timestamp with time zone,character varying)',
+    'EXECUTE'
+  )
+  AND NOT has_function_privilege(
+    current_user,
+    'kovcheg.create_auth_account(uuid,text,text)',
+    'EXECUTE'
+  )
+  AND NOT has_function_privilege(
+    current_user,
+    'kovcheg.set_auth_account_status_and_revoke(uuid,kovcheg.account_status,timestamp with time zone)',
+    'EXECUTE'
+  )
+  AND NOT has_function_privilege(
+    current_user,
+    'kovcheg.revoke_auth_session_by_id(uuid,timestamp with time zone)',
+    'EXECUTE'
+  )
   AND NOT has_function_privilege(
     current_user,
     'kovcheg.provision_account_with_starter_set(uuid,character varying)',
@@ -97,27 +137,68 @@ $$;
 
 SELECT pg_temp.assert_true(
   (
+    SELECT outcome = 'issued'
+    FROM kovcheg.issue_auth_challenge_for_active_account(
+      'synthetic-administrator@auth.invalid',
+      '00000000-0000-4000-8000-000000003090',
+      repeat('i', 43),
+      '2029-12-31 23:50:00+00',
+      '2030-01-02 00:00:00+00',
+      5,
+      interval '0 seconds'
+    )
+  ),
+  'the bootstrap administrator must receive a challenge for an acting session'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'authenticated'
+      AND account_id = '00000000-0000-4000-8000-000000003001'
+      AND auth_roles = ARRAY['administrator'::kovcheg.auth_account_role]
+    FROM kovcheg.consume_auth_challenge_and_create_session(
+      '00000000-0000-4000-8000-000000003090',
+      repeat('i', 43),
+      '2029-12-31 23:50:01+00',
+      '00000000-0000-4000-8000-000000003091',
+      repeat('m', 43),
+      '2029-12-31 23:50:01+00',
+      86400000,
+      '2030-01-02 00:00:00+00'
+    )
+  ),
+  'the administrator challenge must create one current acting session'
+);
+
+SELECT pg_temp.assert_true(
+  (
     SELECT account_id = '00000000-0000-4000-8000-000000003002'
       AND email = 'synthetic-student@auth.invalid'
       AND auth_role = 'student'
       AND account_status = 'active'
-    FROM kovcheg.create_auth_account(
+    FROM kovcheg.admin_create_auth_account(
+      repeat('m', 43),
       '00000000-0000-4000-8000-000000003002',
       'Synthetic-Student@Auth.Invalid',
-      'Synthetic Student'
+      'Synthetic Student',
+      '2030-01-01 00:00:00+00',
+      'auth-admin-create-001'
     )
   ),
-  'account creation must normalize email and provision one active student atomically'
+  'authorized account creation must normalize and provision one active student atomically'
 );
 
 DO $$
 BEGIN
   BEGIN
     PERFORM *
-    FROM kovcheg.create_auth_account(
+    FROM kovcheg.admin_create_auth_account(
+      repeat('m', 43),
       '00000000-0000-4000-8000-000000003098',
       repeat('x', 250) || '@auth.invalid',
-      'Synthetic Overlong Contact'
+      'Synthetic Overlong Contact',
+      '2030-01-01 00:00:01+00',
+      'auth-admin-failed-overlong'
     );
     RAISE EXCEPTION 'an overlong contact value was silently truncated';
   EXCEPTION WHEN string_data_right_truncation THEN
@@ -134,6 +215,97 @@ SELECT pg_temp.assert_true(
     )
   ),
   'failed auth profile creation must roll back the canonical account and starter set'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT email = 'synthetic-student@auth.invalid'
+      AND display_name = 'Synthetic Student Updated'
+    FROM kovcheg.admin_update_auth_account(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003002',
+      'Synthetic-Student@Auth.Invalid',
+      '  Synthetic Student Updated  ',
+      '2030-01-01 00:00:02+00',
+      'auth-admin-update-001'
+    )
+  ),
+  'authorized profile updates must normalize email and display name'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT account_id = '00000000-0000-4000-8000-000000003003'
+    FROM kovcheg.admin_create_auth_account(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003003',
+      'synthetic-secondary@auth.invalid',
+      'Synthetic Secondary',
+      '2030-01-01 00:00:03+00',
+      'auth-admin-create-secondary'
+    )
+  ),
+  'the administrator must be able to create a second isolated target account'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    PERFORM *
+    FROM kovcheg.admin_update_auth_account(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003003',
+      'synthetic-student@auth.invalid',
+      'Must Roll Back',
+      '2030-01-01 00:00:04+00',
+      'auth-admin-failed-update-conflict'
+    );
+    RAISE EXCEPTION 'a conflicting normalized email update was accepted';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
+END;
+$$;
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT email = 'synthetic-secondary@auth.invalid'
+      AND display_name = 'Synthetic Secondary'
+    FROM kovcheg.find_auth_account_by_id(
+      '00000000-0000-4000-8000-000000003003'
+    )
+  ),
+  'a conflicting profile update must roll back every field and its audit event'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    PERFORM *
+    FROM kovcheg.admin_update_auth_account(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003003',
+      'synthetic-rollback@auth.invalid',
+      'Must Also Roll Back',
+      '2030-01-01 00:00:05+00',
+      'invalid correlation id'
+    );
+    RAISE EXCEPTION 'an invalid audit correlation ID was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+END;
+$$;
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT email = 'synthetic-secondary@auth.invalid'
+      AND display_name = 'Synthetic Secondary'
+    FROM kovcheg.find_auth_account_by_id(
+      '00000000-0000-4000-8000-000000003003'
+    )
+  ),
+  'an audit insert failure must roll back the protected profile mutation'
 );
 
 SELECT pg_temp.assert_true(
@@ -290,15 +462,21 @@ SELECT pg_temp.assert_true(
 );
 
 SELECT pg_temp.assert_true(
-  kovcheg.revoke_auth_session_by_id(
+  kovcheg.admin_revoke_auth_session(
+    repeat('m', 43),
+    '00000000-0000-4000-8000-000000003002',
     '00000000-0000-4000-8000-000000003203',
-    '2030-01-01 00:01:32+00'
+    '2030-01-01 00:01:32+00',
+    'auth-admin-revoke-one-001'
   )
-  AND NOT kovcheg.revoke_auth_session_by_id(
+  AND NOT kovcheg.admin_revoke_auth_session(
+    repeat('m', 43),
+    '00000000-0000-4000-8000-000000003002',
     '00000000-0000-4000-8000-000000003203',
-    '2030-01-01 00:01:33+00'
+    '2030-01-01 00:01:33+00',
+    'auth-admin-revoke-one-retry'
   ),
-  'session revocation by ID must retain not-found and idempotent semantics'
+  'administrative session revocation must retain safe idempotent semantics'
 );
 
 SELECT pg_temp.assert_true(
@@ -401,10 +579,12 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT account_status = 'deactivated'
-    FROM kovcheg.set_auth_account_status_and_revoke(
+    FROM kovcheg.admin_set_auth_account_status(
+      repeat('m', 43),
       '00000000-0000-4000-8000-000000003002',
       'deactivated',
-      '2030-01-01 00:07:01+00'
+      '2030-01-01 00:07:01+00',
+      'auth-admin-status-deactivated'
     )
   ),
   'deactivation must update the canonical account state'
@@ -448,14 +628,437 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT account_status = 'active'
-    FROM kovcheg.set_auth_account_status_and_revoke(
+    FROM kovcheg.admin_set_auth_account_status(
+      repeat('m', 43),
       '00000000-0000-4000-8000-000000003002',
       'active',
-      '2030-01-01 00:09:00+00'
+      '2030-01-01 00:09:00+00',
+      'auth-admin-status-active'
     )
   ),
   'reactivation must preserve the auth profile without restoring revoked state'
 );
+
+SELECT pg_temp.assert_true(
+  NOT EXISTS (
+    SELECT 1 FROM kovcheg.authenticate_auth_session(
+      repeat('y', 43),
+      '2030-01-01 00:09:01+00'
+    )
+  ),
+  'activation must not restore or create an application session'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'issued'
+    FROM kovcheg.issue_auth_challenge_for_active_account(
+      'synthetic-secondary@auth.invalid',
+      '00000000-0000-4000-8000-000000003120',
+      repeat('l', 43),
+      '2030-01-01 00:09:10+00',
+      '2030-01-01 00:49:10+00',
+      5,
+      interval '0 seconds'
+    )
+  ),
+  'the second target account must receive a challenge'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'authenticated'
+    FROM kovcheg.consume_auth_challenge_and_create_session(
+      '00000000-0000-4000-8000-000000003120',
+      repeat('l', 43),
+      '2030-01-01 00:09:11+00',
+      '00000000-0000-4000-8000-000000003220',
+      repeat('n', 43),
+      '2030-01-01 00:09:11+00',
+      2400000,
+      '2030-01-01 00:49:11+00'
+    )
+  ),
+  'the second target account must have one isolated live session'
+);
+
+SELECT pg_temp.assert_true(
+  NOT kovcheg.admin_revoke_auth_session(
+    repeat('m', 43),
+    '00000000-0000-4000-8000-000000003002',
+    '00000000-0000-4000-8000-000000003220',
+    '2030-01-01 00:09:12+00',
+    'auth-admin-revoke-cross-owner'
+  )
+  AND (
+    SELECT session_id = '00000000-0000-4000-8000-000000003220'
+    FROM kovcheg.authenticate_auth_session(
+      repeat('n', 43),
+      '2030-01-01 00:09:13+00'
+    )
+  ),
+  'one-session revocation must not affect a session owned by another account'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'issued'
+    FROM kovcheg.issue_auth_challenge_for_active_account(
+      'synthetic-student@auth.invalid',
+      '00000000-0000-4000-8000-000000003121',
+      repeat('o', 43),
+      '2030-01-01 00:10:00+00',
+      '2030-01-01 00:40:00+00',
+      5,
+      interval '0 seconds'
+    )
+  )
+  AND (
+    SELECT outcome = 'authenticated'
+    FROM kovcheg.consume_auth_challenge_and_create_session(
+      '00000000-0000-4000-8000-000000003121',
+      repeat('o', 43),
+      '2030-01-01 00:10:01+00',
+      '00000000-0000-4000-8000-000000003221',
+      repeat('o', 43),
+      '2030-01-01 00:10:01+00',
+      1800000,
+      '2030-01-01 00:40:01+00'
+    )
+  ),
+  'the student authorization-negative fixture must have a current session'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    PERFORM *
+    FROM kovcheg.admin_update_auth_account(
+      repeat('o', 43),
+      '00000000-0000-4000-8000-000000003003',
+      'synthetic-secondary@auth.invalid',
+      'Unauthorized Student Update',
+      '2030-01-01 00:10:02+00',
+      'auth-admin-failed-student'
+    );
+    RAISE EXCEPTION 'a student session performed an administrative update';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT display_name = 'Synthetic Secondary'
+    FROM kovcheg.find_auth_account_by_id(
+      '00000000-0000-4000-8000-000000003003'
+    )
+  ),
+  'a student acting session must fail without mutating the target account'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'issued'
+    FROM kovcheg.issue_auth_challenge_for_active_account(
+      'synthetic-administrator@auth.invalid',
+      '00000000-0000-4000-8000-000000003122',
+      repeat('p', 43),
+      '2030-01-01 00:11:00+00',
+      '2030-01-01 00:11:10+00',
+      5,
+      interval '0 seconds'
+    )
+  )
+  AND (
+    SELECT outcome = 'authenticated'
+    FROM kovcheg.consume_auth_challenge_and_create_session(
+      '00000000-0000-4000-8000-000000003122',
+      repeat('p', 43),
+      '2030-01-01 00:11:01+00',
+      '00000000-0000-4000-8000-000000003222',
+      repeat('p', 43),
+      '2030-01-01 00:11:01+00',
+      1000,
+      '2030-01-01 00:11:02+00'
+    )
+  ),
+  'the expired administrator-session fixture must be created before expiry'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    PERFORM *
+    FROM kovcheg.admin_create_auth_account(
+      repeat('p', 43),
+      '00000000-0000-4000-8000-000000003096',
+      'synthetic-expired-actor@auth.invalid',
+      'Expired Actor Attempt',
+      '2030-01-01 00:11:03+00',
+      'auth-admin-failed-expired'
+    );
+    RAISE EXCEPTION 'an expired administrator session created an account';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+
+SELECT pg_temp.assert_true(
+  NOT EXISTS (
+    SELECT 1 FROM kovcheg.find_auth_account_by_id(
+      '00000000-0000-4000-8000-000000003096'
+    )
+  ),
+  'an expired acting session must fail without provisioning an account'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'issued'
+    FROM kovcheg.issue_auth_challenge_for_active_account(
+      'synthetic-administrator@auth.invalid',
+      '00000000-0000-4000-8000-000000003123',
+      repeat('q', 43),
+      '2030-01-01 00:12:00+00',
+      '2030-01-01 00:30:00+00',
+      5,
+      interval '0 seconds'
+    )
+  )
+  AND (
+    SELECT outcome = 'authenticated'
+    FROM kovcheg.consume_auth_challenge_and_create_session(
+      '00000000-0000-4000-8000-000000003123',
+      repeat('q', 43),
+      '2030-01-01 00:12:01+00',
+      '00000000-0000-4000-8000-000000003223',
+      repeat('r', 43),
+      '2030-01-01 00:12:01+00',
+      1080000,
+      '2030-01-01 00:30:01+00'
+    )
+  )
+  AND kovcheg.revoke_auth_session_by_verifier(
+    repeat('r', 43),
+    '2030-01-01 00:12:02+00'
+  ),
+  'the revoked administrator-session fixture must be explicitly revoked'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    PERFORM *
+    FROM kovcheg.admin_set_auth_account_status(
+      repeat('r', 43),
+      '00000000-0000-4000-8000-000000003003',
+      'deactivated',
+      '2030-01-01 00:12:03+00',
+      'auth-admin-failed-revoked'
+    );
+    RAISE EXCEPTION 'a revoked administrator session changed account status';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+
+  BEGIN
+    PERFORM kovcheg.admin_revoke_all_auth_sessions(
+      repeat('z', 43),
+      '00000000-0000-4000-8000-000000003003',
+      '2030-01-01 00:12:04+00',
+      'auth-admin-failed-missing'
+    );
+    RAISE EXCEPTION 'a missing administrator session revoked target sessions';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT account_status = 'active'
+    FROM kovcheg.find_auth_account_by_id(
+      '00000000-0000-4000-8000-000000003003'
+    )
+  )
+  AND (
+    SELECT session_id = '00000000-0000-4000-8000-000000003220'
+    FROM kovcheg.authenticate_auth_session(
+      repeat('n', 43),
+      '2030-01-01 00:12:05+00'
+    )
+  ),
+  'revoked and missing acting sessions must leave target status and sessions unchanged'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT created
+      AND auth_role = 'administrator'
+    FROM kovcheg.bootstrap_auth_administrator(
+      'synthetic-bootstrap-0002',
+      '00000000-0000-4000-8000-000000003004',
+      'synthetic-administrator-two@auth.invalid',
+      'Synthetic Administrator Two'
+    )
+  ),
+  'a second administrator fixture must be bootstrapped independently'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'issued'
+    FROM kovcheg.issue_auth_challenge_for_active_account(
+      'synthetic-administrator-two@auth.invalid',
+      '00000000-0000-4000-8000-000000003124',
+      repeat('s', 43),
+      '2030-01-01 00:13:00+00',
+      '2030-01-01 00:30:00+00',
+      5,
+      interval '0 seconds'
+    )
+  )
+  AND (
+    SELECT outcome = 'authenticated'
+    FROM kovcheg.consume_auth_challenge_and_create_session(
+      '00000000-0000-4000-8000-000000003124',
+      repeat('s', 43),
+      '2030-01-01 00:13:01+00',
+      '00000000-0000-4000-8000-000000003224',
+      repeat('s', 43),
+      '2030-01-01 00:13:01+00',
+      1020000,
+      '2030-01-01 00:30:01+00'
+    )
+  ),
+  'the second administrator must have one current acting session'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT account_status = 'deactivated'
+    FROM kovcheg.admin_set_auth_account_status(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003004',
+      'deactivated',
+      '2030-01-01 00:13:02+00',
+      'auth-admin-status-deactivate-actor'
+    )
+  ),
+  'an active administrator must be able to deactivate another administrator'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    PERFORM kovcheg.admin_revoke_auth_session(
+      repeat('s', 43),
+      '00000000-0000-4000-8000-000000003003',
+      '00000000-0000-4000-8000-000000003220',
+      '2030-01-01 00:13:03+00',
+      'auth-admin-failed-deactivated'
+    );
+    RAISE EXCEPTION 'a deactivated administrator session revoked a target session';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+
+  BEGIN
+    PERFORM *
+    FROM kovcheg.admin_update_auth_account(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003099',
+      'synthetic-missing@auth.invalid',
+      'Missing Target',
+      '2030-01-01 00:13:04+00',
+      'auth-admin-failed-missing-target'
+    );
+    RAISE EXCEPTION 'a missing target was not distinguished from authorization failure';
+  EXCEPTION WHEN no_data_found THEN
+    NULL;
+  END;
+END;
+$$;
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT session_id = '00000000-0000-4000-8000-000000003220'
+    FROM kovcheg.authenticate_auth_session(
+      repeat('n', 43),
+      '2030-01-01 00:13:05+00'
+    )
+  ),
+  'a deactivated acting administrator must fail without revoking the target session'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT account_id = '00000000-0000-4000-8000-000000003005'
+    FROM kovcheg.admin_create_auth_account(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003005',
+      'synthetic-revoke-all@auth.invalid',
+      'Synthetic Revoke All',
+      '2030-01-01 00:14:00+00',
+      'auth-admin-create-race-target'
+    )
+  ),
+  'the concurrent revoke-all fixture account must be created atomically'
+);
+
+DO $$
+DECLARE
+  fixture_number integer;
+  fixture_challenge_id uuid;
+  fixture_session_id uuid;
+  fixture_issued_at timestamptz;
+  fixture_outcome varchar;
+BEGIN
+  FOR fixture_number IN 1..12 LOOP
+    fixture_challenge_id := (
+      '00000000-0000-4000-8002-' || pg_catalog.lpad(fixture_number::text, 12, '0')
+    )::uuid;
+    fixture_session_id := (
+      '00000000-0000-4000-8003-' || pg_catalog.lpad(fixture_number::text, 12, '0')
+    )::uuid;
+    fixture_issued_at :=
+      '2030-01-01 00:14:00+00'::timestamptz + fixture_number * interval '1 second';
+
+    SELECT outcome INTO fixture_outcome
+    FROM kovcheg.issue_auth_challenge_for_active_account(
+      'synthetic-revoke-all@auth.invalid',
+      fixture_challenge_id,
+      pg_catalog.lpad(fixture_number::text, 43, 'c'),
+      fixture_issued_at,
+      fixture_issued_at + interval '1 hour',
+      5,
+      interval '0 seconds'
+    );
+    IF fixture_outcome <> 'issued' THEN
+      RAISE EXCEPTION 'concurrent revoke-all challenge fixture was not issued';
+    END IF;
+
+    SELECT outcome INTO fixture_outcome
+    FROM kovcheg.consume_auth_challenge_and_create_session(
+      fixture_challenge_id,
+      pg_catalog.lpad(fixture_number::text, 43, 'c'),
+      fixture_issued_at + interval '500 milliseconds',
+      fixture_session_id,
+      pg_catalog.lpad(fixture_number::text, 43, 'z'),
+      fixture_issued_at + interval '500 milliseconds',
+      3600000,
+      fixture_issued_at + interval '2 hours'
+    );
+    IF fixture_outcome <> 'authenticated' THEN
+      RAISE EXCEPTION 'concurrent revoke-all session fixture was not created';
+    END IF;
+  END LOOP;
+END;
+$$;
 
 SELECT kovcheg.upsert_oidc_provider_artifact(
   'AuthorizationCode',
