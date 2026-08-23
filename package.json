@@ -19,6 +19,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "prettier --check . && eslint . --max-warnings=0",
+    "realtime:smoke": "corepack pnpm --filter @kovcheg/contracts run build && sh infra/scripts/realtime-smoke.sh",
     "test": "corepack pnpm --filter @kovcheg/contracts --filter @kovcheg/config run build && corepack pnpm --recursive --if-present run test",
     "typecheck": "corepack pnpm --filter @kovcheg/contracts --filter @kovcheg/config run build && corepack pnpm --recursive --if-present run typecheck"
   },
@@ -27,6 +28,7 @@
     "@types/node": "24.13.3",
     "eslint": "10.9.0",
     "prettier": "3.9.6",
+    "socket.io-client": "4.8.3",
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
     "vitest": "4.1.11"

@@ -490,6 +490,36 @@ describe('A2 email challenge security', () => {
     expect(delivery.messages.at(-1)?.recipient).toBe('administrator@example.invalid');
   });
 
+  it('does not expose provider latency through the challenge response', async () => {
+    let resolveDeliveryStarted!: () => void;
+    let resolveDeliveryFinished!: () => void;
+    const deliveryStarted = new Promise<void>((resolve) => {
+      resolveDeliveryStarted = resolve;
+    });
+    const deliveryFinished = new Promise<void>((resolve) => {
+      resolveDeliveryFinished = resolve;
+    });
+    const fixture = createFixture({
+      delivery: {
+        send(): Promise<void> {
+          resolveDeliveryStarted();
+          return deliveryFinished;
+        },
+      },
+    });
+    await bootstrap(fixture);
+
+    await expect(
+      fixture.service.requestEmailChallenge({
+        email: 'administrator@example.invalid',
+        fingerprint: 'fingerprint-provider-latency',
+        networkAddress: 'network-provider-latency',
+      }),
+    ).resolves.toMatchObject({ status: 'accepted' });
+    await deliveryStarted;
+    resolveDeliveryFinished();
+  });
+
   it('enforces expiry, attempt limits, one-time use, and concurrent replay protection', async () => {
     const fixture = createFixture();
     await bootstrap(fixture);

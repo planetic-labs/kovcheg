@@ -2,7 +2,7 @@
 
 Kovcheg is a greenfield web/PWA messenger platform. This repository contains only public application code and the technical files required to build and verify it.
 
-The Alpha-0 foundation contains the monorepo, local-only container topology, versioned technical contracts, guarded synthetic identity fixtures, typed non-secret configuration, health/readiness endpoints, and an OpenAPI surface. The A3 data layer adds reproducible PostgreSQL migrations, partitioned message storage, database roles, transactional outbox, append-only audit primitives, and the durable storage contract required by the separate A2 auth runtime. A4 adds a local message API for creating text messages and reading deterministic history pages through the non-production identity stub. It deliberately contains no wired product-auth runtime, realtime integration, email delivery, functional PWA interface, internet deployment, AI integration, or private product material.
+The Alpha-0 foundation contains the monorepo, local-only container topology, versioned technical contracts, guarded synthetic identity fixtures, typed non-secret configuration, health/readiness endpoints, and an OpenAPI surface. The A3 data layer adds reproducible PostgreSQL migrations, partitioned message storage, database roles, transactional outbox, append-only audit primitives, and the durable storage contract required by the separate A2 auth runtime. A4 adds a local message API for creating text messages and reading deterministic history pages through the non-production identity stub. A5 adds PostgreSQL-outbox publication, a separate application Redis Stream and relay, Socket.IO Redis Streams fanout, and two API instances behind local Traefik. The existing A2 auth runtime remains intact; A5 does not wire it into the message API and adds no production email delivery, functional PWA interface, Web Push, internet deployment, AI integration, or private product material.
 
 ## Toolchain
 
@@ -21,6 +21,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm database:test
+pnpm realtime:smoke
 pnpm docker:smoke
 ```
 
@@ -40,7 +41,7 @@ infra/
   scripts/   Local lifecycle and verification scripts
 ```
 
-The A1 contracts define technical seams only: machine-readable errors and operational events, correlation IDs, nullable build provenance, health states, identity/session interfaces, and fail-closed authorization. The synthetic identity stub uses fixed non-personal UUIDs for future tests, is blocked in production, and does not authenticate users. Redis still has no application behavior.
+The A1 contracts define technical seams only: machine-readable errors and operational events, correlation IDs, nullable build provenance, health states, identity/session interfaces, and fail-closed authorization. The synthetic identity stub uses fixed non-personal UUIDs for tests, is blocked in production, and does not authenticate users. A5 uses Redis only for ephemeral application-event delivery and cross-instance Socket.IO fanout; PostgreSQL remains the durable message, authorization, history, and outbox source.
 
 ## PostgreSQL data core
 
@@ -63,7 +64,7 @@ sh infra/scripts/compose.sh --profile data run --rm migrate
 
 Migration `0004_message_flow.sql` adds one narrow `SECURITY DEFINER` entrypoint for text creation. It atomically writes the message, initial version, sanitized outbox event, and protected audit event. The runtime role can execute this entrypoint but cannot bypass it with direct message or outbox inserts.
 
-`pnpm database:test` verifies the latest schema from a clean volume and each compatible boundary in `0001 → 0002 → 0003 → 0004 → 0005 → 0006` on another clean volume, then reapplies the completed migration chain. It checks catalog shape, positive and negative role privileges, SCRAM rules, authorization functions, membership-period boundaries, partition pruning, planner-selected message/outbox indexes after representative loading and `ANALYZE`, real outbox claim/delivery operations, owner-level append-only triggers, partial-failure rollback, sanitized event metadata, message and auth idempotency, concurrent message retries, gap-free row-counter allocation, actor-verified auth administration, exact audit cardinality and sanitization, cross-account session isolation, concurrent revoke-all retries, auth revocation, and concurrent one-time challenge consumption. A test-only API container also verifies the actual HTTP-to-PostgreSQL create, replay, conflict, authorization, history, and concurrency paths without publishing a port.
+`pnpm database:test` verifies the latest schema from a clean volume and each compatible boundary in `0001 → 0002 → 0003 → 0004 → 0005 → 0006` on another clean volume, then reapplies the completed migration chain. It checks catalog shape, positive and negative role privileges, SCRAM rules, authorization functions, membership-period boundaries, partition pruning, planner-selected message/outbox indexes after representative loading and `ANALYZE`, real outbox claim/delivery operations, owner-level append-only triggers, partial-failure rollback, sanitized event metadata, message and auth idempotency, concurrent message retries, gap-free row-counter allocation, actor-verified auth administration, exact audit cardinality and sanitization, cross-account session isolation, concurrent revoke-all retries, auth revocation, and concurrent one-time challenge consumption. Test-only API and Auth containers also verify the actual HTTP-to-PostgreSQL paths without publishing a port.
 
 ## A4 message flow
 
@@ -78,19 +79,27 @@ The create endpoint computes a SHA-256 content fingerprint. Repeating the same `
 
 A4 accepts the `x-kovcheg-identity-stub-user-id` header only when a caller explicitly injects the guarded synthetic identity provider. The production-shaped application does not inject or package that test identity seam. Real authentication and sessions belong to a separate later stage.
 
+## A5 realtime
+
+The worker claims one pending `message.created` outbox row with `FOR UPDATE SKIP LOCKED`, publishes its immutable event ID to `kovcheg:application-events:v1`, and marks the row delivered only after Redis accepts it. A separate `realtime-relay` consumer group acknowledges an application-stream entry only after a bearer-protected API endpoint on the edge's unexposed internal entrypoint accepts it; the public `/api/internal` path is rejected. The API emits a sanitized event containing only technical IDs and the chat sequence; message bodies remain in PostgreSQL and reconnect catch-up reads authorized history by `afterSequence`.
+
+Socket.IO uses its own `kovcheg:socket.io:v1` Redis Stream, distinct from the application stream and consumer group. Delivery is at least once. The shared client contract provides bounded deduplication by `eventId` plus `messageId`; room subscription rechecks active identity and PostgreSQL membership. Redis loss disconnects realtime transports, while REST persistence remains available. After Redis returns, the worker resumes pending outbox publication and clients recover any gap from PostgreSQL history.
+
+`pnpm realtime:smoke` uses the existing guarded test identity seam and an isolated Compose project. It proves polling and WebSocket clients on different API instances, cross-instance fanout, reconnect catch-up, a message stored while Redis is down, outbox recovery after Redis returns, and continued delivery after one API stops. It publishes only the same loopback edge as the ordinary Docker smoke and removes its own volume and generated local secrets.
+
 ## Local container topology
 
-`compose.yaml` starts a neutral `edge`, `web`, `api`, `auth`, `worker`, PostgreSQL, and Redis on an isolated Docker service network. The edge also joins a dedicated host-loopback bridge and provides one same-origin entry at `127.0.0.1:3000`; every application and data-service port remains internal. Nothing creates external DNS, ingress, a tunnel, a preview, TLS, or deployment configuration.
+`compose.yaml` starts local Traefik `edge`, `web`, two stateless API instances, `auth`, `worker`, PostgreSQL, and Redis on an isolated Docker service network. The edge also joins a dedicated host-loopback bridge and provides one same-origin entry at `127.0.0.1:3000`; every application and data-service port remains internal. Traefik uses an HTTP-only local affinity cookie for Socket.IO polling and removes an unhealthy API from rotation. Nothing creates external DNS, ingress, a tunnel, a preview, TLS, or deployment configuration.
 
 - Web health: `http://127.0.0.1:3000/health/ready`
 - API health: `http://127.0.0.1:3000/api/health/ready`
 - API OpenAPI JSON: `http://127.0.0.1:3000/api/openapi.json`
-- Auth health: `http://127.0.0.1:3000/auth/health/ready`
+- Auth liveness: `http://127.0.0.1:3000/auth/health/live`; readiness returns success only when the production auth runtime and its PostgreSQL/Redis dependencies are enabled and available.
 - Auth OpenAPI JSON: `http://127.0.0.1:3000/auth/openapi.json`
 
 Swagger UI is available only in a non-production application process; production images retain OpenAPI JSON but do not publish the interactive UI.
 
-`pnpm docker:smoke` uses a dedicated Compose project, builds the four application images, verifies all seven default containers and host-side same-origin endpoints, checks the exact port and network sets, validates health responses against OpenAPI, and removes only its own temporary volume. The migration and database-test containers are opt-in tools under the `data` profile and never publish a port. Runtime images contain production dependencies and the files required by their application, not the monorepo build workspace.
+`pnpm docker:smoke` uses a dedicated Compose project, builds the four application images, verifies all eight default containers and host-side same-origin endpoints, checks the exact port and network sets, validates health responses against OpenAPI, and removes only its own temporary volume. The migration and database-test containers are opt-in tools under the `data` profile and never publish a port. Runtime images contain production dependencies and the files required by their application, not the monorepo build workspace.
 
 Official base-image tags are pinned to verified multi-architecture digests. The smoke build records the tested Git commit in image labels and health metadata. The database records checksummed migration versions itself. Application health keeps migration version `null` until a later stage connects runtime services to PostgreSQL; it does not invent a value before that integration exists.
 

@@ -23,9 +23,14 @@ const alwaysAllowRedis: RedisScriptClient = Object.freeze({
   eval(): Promise<unknown> {
     return Promise.resolve(1);
   },
+  isReady(): boolean {
+    return true;
+  },
 });
 
-async function testConfig(): Promise<EnabledAuthRuntimeConfig> {
+async function testConfig(
+  rateLimitOverrides: Partial<EnabledAuthRuntimeConfig['policy']['rateLimits']> = {},
+): Promise<EnabledAuthRuntimeConfig> {
   const { privateKey } = await generateKeyPair('ES256', { extractable: true });
   const privateJwk = await exportJWK(privateKey);
   const rule = Object.freeze({ limit: 100, windowMs: 15 * 60_000 });
@@ -68,6 +73,7 @@ async function testConfig(): Promise<EnabledAuthRuntimeConfig> {
         challengeByNetwork: rule,
         verifyByChallenge: rule,
         verifyByNetwork: rule,
+        ...rateLimitOverrides,
       }),
       session: Object.freeze({
         absoluteLifetimeMs: 60 * 60_000,
@@ -79,16 +85,19 @@ async function testConfig(): Promise<EnabledAuthRuntimeConfig> {
   });
 }
 
-async function createFixture() {
+async function createFixture(
+  rateLimitOverrides: Partial<EnabledAuthRuntimeConfig['policy']['rateLimits']> = {},
+  redisClient: RedisScriptClient = alwaysAllowRedis,
+) {
   const clock = new ManualClock(Date.UTC(2026, 0, 1));
   const repository = new LocalAuthRepository({ NODE_ENV: 'test' });
   const delivery = new LocalEmailChallengeDelivery({ NODE_ENV: 'test' });
   const runtime = await createAuthRuntime({
     clock,
-    config: await testConfig(),
+    config: await testConfig(rateLimitOverrides),
     delivery,
     redisClientFactory: {
-      connect: () => Promise.resolve(alwaysAllowRedis),
+      connect: () => Promise.resolve(redisClient),
     },
     repository,
   });
@@ -152,10 +161,18 @@ async function createFixture() {
   };
 }
 
-async function requestChallenge(baseUrl: string, email: string): Promise<Response> {
+async function requestChallenge(
+  baseUrl: string,
+  email: string,
+  forwardedFor?: string,
+): Promise<Response> {
   return fetch(`${baseUrl}/session/challenges`, {
     body: JSON.stringify({ email }),
-    headers: { 'content-type': 'application/json', 'user-agent': 'synthetic-http-test' },
+    headers: {
+      'content-type': 'application/json',
+      ...(forwardedFor === undefined ? {} : { 'x-forwarded-for': forwardedFor }),
+      'user-agent': 'synthetic-http-test',
+    },
     method: 'POST',
   });
 }
@@ -219,6 +236,18 @@ async function adminRequest(
 }
 
 describe('A2 auth HTTP runtime', () => {
+  it('reports ready only when the durable runtime dependencies are ready', async () => {
+    const fixture = await createFixture();
+    const response = await fetch(`${fixture.baseUrl}/health/ready`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      service: 'auth',
+      state: 'ready',
+      status: 'ok',
+    });
+  });
+
   it('returns the same neutral response shape for known, inactive, and unknown email', async () => {
     const fixture = await createFixture();
     const [known, inactive, unknown, unauthorized, oidcUnauthorized, discovery] = await Promise.all(
@@ -271,6 +300,73 @@ describe('A2 auth HTTP runtime', () => {
     expect(rejectedVerifications.every((response) => !response.headers.has('set-cookie'))).toBe(
       true,
     );
+  });
+
+  it('rate-limits distinct client networks independently behind the trusted local proxy', async () => {
+    const attempts = new Map<string, number>();
+    const redisClient: RedisScriptClient = {
+      eval(_script, options): Promise<unknown> {
+        const key = options.keys[0];
+        const limit = Number(options.arguments[2]);
+        if (key === undefined || !Number.isSafeInteger(limit)) {
+          return Promise.reject(new Error('Invalid synthetic rate-limit request'));
+        }
+        const count = attempts.get(key) ?? 0;
+        attempts.set(key, count + 1);
+        return Promise.resolve(count < limit ? 1 : 0);
+      },
+      isReady: () => true,
+    };
+    const fixture = await createFixture(
+      { challengeByNetwork: { limit: 1, windowMs: 15 * 60_000 } },
+      redisClient,
+    );
+    const [firstNetwork, secondNetwork] = await Promise.all([
+      requestChallenge(fixture.baseUrl, 'network-a@example.invalid', '192.0.2.10'),
+      requestChallenge(fixture.baseUrl, 'network-b@example.invalid', '192.0.2.11'),
+    ]);
+    const repeatedNetwork = await requestChallenge(
+      fixture.baseUrl,
+      'network-c@example.invalid',
+      '192.0.2.10',
+    );
+
+    expect([firstNetwork.status, secondNetwork.status]).toEqual([202, 202]);
+    expect(repeatedNetwork.status).toBe(429);
+  });
+
+  it('fails authentication closed during Redis loss and accepts login after recovery', async () => {
+    let redisReady = true;
+    const redisClient: RedisScriptClient = {
+      eval(): Promise<unknown> {
+        return redisReady
+          ? Promise.resolve(1)
+          : Promise.reject(new Error('Synthetic Redis outage'));
+      },
+      isReady: () => redisReady,
+    };
+    const fixture = await createFixture({}, redisClient);
+
+    redisReady = false;
+    const unavailableReadiness = await fetch(`${fixture.baseUrl}/health/ready`);
+    const unavailableChallenge = await requestChallenge(
+      fixture.baseUrl,
+      'active-http@example.invalid',
+    );
+    expect(unavailableReadiness.status).toBe(503);
+    expect(unavailableChallenge.status).toBe(503);
+    await expect(unavailableChallenge.json()).resolves.toMatchObject({
+      error: 'auth.unavailable',
+    });
+
+    redisReady = true;
+    expect(await fetch(`${fixture.baseUrl}/health/ready`)).toMatchObject({ status: 200 });
+    const recoveredSession = await loginThroughHttp(fixture, 'active-http@example.invalid');
+    expect(
+      await fetch(`${fixture.baseUrl}/session`, {
+        headers: { cookie: recoveredSession.cookie },
+      }),
+    ).toMatchObject({ status: 200 });
   });
 
   it('issues an HTTP-only server session cookie, logs out, and rejects the revoked token', async () => {

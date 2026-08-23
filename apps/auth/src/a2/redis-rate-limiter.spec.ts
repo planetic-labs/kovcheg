@@ -43,6 +43,10 @@ class SimulatedRedisClient implements RedisScriptClient {
     );
     return result;
   }
+
+  isReady(): boolean {
+    return true;
+  }
 }
 
 describe('A2 Redis rate limiter', () => {
@@ -72,11 +76,13 @@ describe('A2 Redis rate limiter', () => {
       eval(): Promise<unknown> {
         return Promise.reject(new Error('synthetic Redis failure'));
       },
+      isReady: () => false,
     });
     const malformed = new RedisRateLimiter({
       eval(): Promise<unknown> {
         return Promise.resolve(null);
       },
+      isReady: () => true,
     });
     const input = { key: 'synthetic-key', now: 1_000, rule: { limit: 1, windowMs: 1_000 } };
 

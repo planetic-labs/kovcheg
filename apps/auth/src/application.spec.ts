@@ -12,26 +12,23 @@ afterEach(async () => {
 });
 
 describe('auth HTTP foundation', () => {
-  it('serves health endpoints and an OpenAPI document without auth behavior', async () => {
+  it('serves liveness and OpenAPI but stays unready without the auth runtime', async () => {
     const app = await createAuthApplication();
     openApplications.push(app);
     await app.listen(0, '127.0.0.1');
     const baseUrl = await app.getUrl();
 
-    const [readyResponse, openApiResponse] = await Promise.all([
+    const [liveResponse, readyResponse, openApiResponse] = await Promise.all([
+      fetch(`${baseUrl}/health/live`),
       fetch(`${baseUrl}/health/ready`, {
         headers: { [correlationIdHeaderName]: 'auth-test-001' },
       }),
       fetch(`${baseUrl}/openapi.json`),
     ]);
 
-    expect(readyResponse.status).toBe(200);
+    expect(liveResponse.status).toBe(200);
+    expect(readyResponse.status).toBe(503);
     expect(readyResponse.headers.get(correlationIdHeaderName)).toBe('auth-test-001');
-    await expect(readyResponse.json()).resolves.toMatchObject({
-      service: 'auth',
-      state: 'ready',
-      status: 'ok',
-    });
     expect(openApiResponse.status).toBe(200);
     await expect(openApiResponse.json()).resolves.toMatchObject({
       info: { title: 'Kovcheg Auth' },
@@ -48,7 +45,7 @@ describe('auth HTTP foundation', () => {
     const baseUrl = await app.getUrl();
 
     const [healthResponse, openApiResponse, swaggerResponse] = await Promise.all([
-      fetch(`${baseUrl}/health/ready`, {
+      fetch(`${baseUrl}/health/live`, {
         headers: { [correlationIdHeaderName]: 'unsafe value' },
       }),
       fetch(`${baseUrl}/openapi.json`),

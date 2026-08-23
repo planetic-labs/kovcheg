@@ -248,6 +248,10 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
+  isReady(): Promise<boolean> {
+    return Promise.resolve(true);
+  }
+
   issueChallengeForActiveAccount(input: {
     readonly challenge: ChallengeRecordInput;
     readonly email: string;

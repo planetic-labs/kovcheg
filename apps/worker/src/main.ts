@@ -10,6 +10,7 @@ import {
 import { Logger } from '@nestjs/common';
 
 import { createWorkerApplication } from './application.js';
+import { loadRealtimeWorkerOptions } from './realtime/realtime.config.js';
 
 const logger = new Logger('Bootstrap');
 let buildMetadata: BuildMetadata = unknownBuildMetadata;
@@ -17,7 +18,7 @@ let buildMetadata: BuildMetadata = unknownBuildMetadata;
 async function bootstrap(): Promise<void> {
   const config = loadServiceConfig('worker');
   buildMetadata = config.build;
-  const app = await createWorkerApplication(config);
+  const app = await createWorkerApplication(config, loadRealtimeWorkerOptions());
 
   app.enableShutdownHooks();
   await app.listen(config.port, config.host);

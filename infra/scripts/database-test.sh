@@ -41,6 +41,7 @@ run_clean_scenario() {
   compose --profile data run --rm migrate
   compose --profile data run --rm -e TEST_SCENARIO=clean database-test
   compose --profile data run --rm message-flow-test
+  compose --profile data run --rm auth-integration-test
   compose --profile data run --rm migrate
   cleanup_project "$COMPOSE_PROJECT_NAME"
 }

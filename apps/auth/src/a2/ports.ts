@@ -48,6 +48,7 @@ export interface AuthRepository {
   }): Promise<AccountRecord>;
   findAccountById(userId: UserId): Promise<AccountRecord | null>;
   invalidateChallenge(challengeId: Uuid, now: number): Promise<void>;
+  isReady(): Promise<boolean>;
   issueChallengeForActiveAccount(input: {
     readonly challenge: ChallengeRecordInput;
     readonly email: string;

@@ -22,6 +22,7 @@ import { authRuntimeToken } from './runtime.js';
 interface AuthHttpRequest {
   readonly correlationId?: CorrelationId;
   readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>;
+  readonly ip?: string | undefined;
   readonly socket: { readonly remoteAddress?: string | undefined };
 }
 
@@ -42,7 +43,8 @@ function requestDimensions(request: AuthHttpRequest): {
   readonly fingerprint: string;
   readonly networkAddress: string;
 } {
-  const networkAddress = request.socket.remoteAddress?.slice(0, 128) || 'unavailable';
+  const networkAddress =
+    request.ip?.slice(0, 128) || request.socket.remoteAddress?.slice(0, 128) || 'unavailable';
   const userAgent = headerValue(request.headers, 'user-agent')?.slice(0, 120) || 'unavailable';
   return Object.freeze({
     fingerprint: `${networkAddress}|${userAgent}`,

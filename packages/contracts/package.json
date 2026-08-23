@@ -8,7 +8,9 @@
     "dist/index.d.ts",
     "dist/index.js",
     "dist/message-flow.d.ts",
-    "dist/message-flow.js"
+    "dist/message-flow.js",
+    "dist/realtime.d.ts",
+    "dist/realtime.js"
   ],
   "exports": {
     ".": {

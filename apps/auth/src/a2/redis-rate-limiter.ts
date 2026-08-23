@@ -12,6 +12,7 @@ export interface RedisScriptClient {
       readonly keys: readonly string[];
     },
   ): Promise<unknown>;
+  isReady(): boolean;
 }
 
 export interface RedisScriptClientFactory {

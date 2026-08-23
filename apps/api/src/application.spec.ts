@@ -18,7 +18,12 @@ afterEach(async () => {
 
 describe('API HTTP foundation', () => {
   it('serves liveness, readiness, and a local OpenAPI document', async () => {
-    const app = await createApiApplication();
+    const app = await createApiApplication(undefined, {
+      repository: {
+        isReady: () => Promise.resolve(true),
+        subscribe: () => Promise.resolve({ history: Object.freeze([]) }),
+      },
+    });
     openApplications.push(app);
     await app.listen(0, '127.0.0.1');
     const baseUrl = await app.getUrl();

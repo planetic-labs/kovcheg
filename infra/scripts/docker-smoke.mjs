@@ -84,7 +84,7 @@ function readinessSchema(document) {
   return schema;
 }
 
-async function readHealth(path, service, correlationId) {
+async function readHealth(path, service, correlationId, expectedState = 'ready') {
   const response = await fetchWithRetry(
     `${baseUrl}${path}`,
     correlationId === null ? undefined : { headers: { 'x-correlation-id': correlationId } },
@@ -95,7 +95,7 @@ async function readHealth(path, service, correlationId) {
   }
   const health = await response.json();
   assert.equal(health.service, service);
-  assert.equal(health.state, 'ready');
+  assert.equal(health.state, expectedState);
   assert.equal(health.status, 'ok');
   assert.equal(health.build.commitSha, expectedCommitSha);
   assert.equal(health.build.imageDigest, null);
@@ -105,7 +105,13 @@ async function readHealth(path, service, correlationId) {
 
 const webHealth = await readHealth('/health/ready', 'web', null);
 const apiHealth = await readHealth('/api/health/ready', 'api', 'api-smoke-001');
-const authHealth = await readHealth('/auth/health/ready', 'auth', 'auth-smoke-001');
+const authHealth = await readHealth('/auth/health/live', 'auth', 'auth-smoke-001', 'live');
+const disabledAuthReadiness = await fetchWithRetry(`${baseUrl}/auth/health/ready`);
+assert.equal(
+  disabledAuthReadiness.status,
+  503,
+  'Auth readiness must fail while its production runtime is intentionally disabled',
+);
 
 const [rootResponse, apiOpenApiResponse, authOpenApiResponse, apiDocs, authDocs] =
   await Promise.all([
@@ -123,9 +129,9 @@ assert.equal(apiDocs.status, 404, 'API Swagger UI must be disabled in production
 assert.equal(authDocs.status, 404, 'Auth Swagger UI must be disabled in production');
 
 const apiDocument = await apiOpenApiResponse.json();
-const authDocument = await authOpenApiResponse.json();
+await authOpenApiResponse.json();
 assertAgainstSchema(apiHealth, readinessSchema(apiDocument));
-assertAgainstSchema(authHealth, readinessSchema(authDocument));
+assert.equal(authHealth.state, 'live');
 assert.equal(webHealth.contractVersion, 1);
 
 const invalidCorrelationResponse = await fetchWithRetry(`${baseUrl}/api/health/live`, {
