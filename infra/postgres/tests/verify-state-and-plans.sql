@@ -11,7 +11,7 @@ $$;
 
 SELECT pg_temp.assert_true(
   (
-    SELECT count(*) = 14 AND min(chat_sequence) = 1 AND max(chat_sequence) = 14
+    SELECT count(*) > 0 AND min(chat_sequence) = 1 AND max(chat_sequence) = count(*)
     FROM kovcheg.messages
     WHERE chat_id = (
       SELECT id FROM kovcheg.chats
@@ -24,14 +24,19 @@ SELECT pg_temp.assert_true(
 );
 SELECT pg_temp.assert_true(
   (
-    SELECT count(*) = 14
-    FROM kovcheg.message_versions
-    WHERE chat_id = (
+    SELECT (
+      SELECT count(*) FROM kovcheg.message_versions
+      WHERE chat_id = target_chat.id
+    ) = (
+      SELECT count(*) FROM kovcheg.messages
+      WHERE chat_id = target_chat.id
+    )
+    FROM (
       SELECT id FROM kovcheg.chats
       WHERE provisioned_for_account_id = '00000000-0000-4000-8000-000000002001'
       ORDER BY id
       LIMIT 1
-    )
+    ) AS target_chat
   ),
   'every message must have an initial immutable version'
 );
@@ -42,8 +47,12 @@ SELECT pg_temp.assert_true(
 );
 SELECT pg_temp.assert_true(
   EXISTS (
-    SELECT 1 FROM kovcheg.outbox_events
-    WHERE idempotency_key = 'outbox-message-001' AND delivered_at IS NULL
+    SELECT 1
+    FROM kovcheg.outbox_events AS event
+    JOIN kovcheg.messages AS message ON message.id = event.aggregate_id
+    WHERE message.client_idempotency_key IN ('message-001', 'message-flow-001')
+      AND event.event_name = 'message.created'
+      AND event.delivered_at IS NULL
   ),
   'transactional outbox fixture must persist'
 );

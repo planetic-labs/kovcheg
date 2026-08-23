@@ -69,6 +69,29 @@ services:
     volumes:
       - ./infra/postgres:/workspace/infra/postgres:ro
 
+  message-flow-test:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: message-flow-test
+    command: ['node', 'dist/message-flow/message-flow.integration-check.js']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: error
+      NODE_ENV: test
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_runtime_password
+      PGUSER: kovcheg_app
+    networks:
+      - local
+    profiles:
+      - data
+    secrets:
+      - postgres_runtime_password
+
   redis:
     image: redis:8.2.1-bookworm@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
     command: ['redis-server', '--save', '', '--appendonly', 'no']
@@ -93,6 +116,10 @@ services:
       HOST: 0.0.0.0
       LOG_LEVEL: info
       NODE_ENV: production
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_runtime_password
+      PGUSER: kovcheg_app
       PORT: '3001'
     depends_on:
       postgres:
@@ -115,6 +142,8 @@ services:
     init: true
     networks:
       - local
+    secrets:
+      - postgres_runtime_password
     stop_grace_period: 10s
 
   auth:

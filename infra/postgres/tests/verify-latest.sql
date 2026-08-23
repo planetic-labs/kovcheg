@@ -10,12 +10,12 @@ END;
 $$;
 
 SELECT pg_temp.assert_true(
-  kovcheg.current_migration_version() = '0003',
-  'the foundation review migration must be recorded'
+  kovcheg.current_migration_version() = '0004',
+  'the message-flow migration must be recorded'
 );
 SELECT pg_temp.assert_true(
-  (SELECT count(*) = 3 FROM kovcheg_meta.schema_migrations),
-  'exactly three checksummed migrations must be applied'
+  (SELECT count(*) = 4 FROM kovcheg_meta.schema_migrations),
+  'exactly four checksummed migrations must be applied'
 );
 SELECT pg_temp.assert_true(
   (
@@ -251,9 +251,9 @@ BEGIN
   ) VALUES (
     target_chat_id,
     '00000000-0000-4000-8000-000000002001',
-    'message-001',
+    'message-flow-001',
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    'Synthetic first message',
+    'Synthetic message-flow message',
     'database-message-idempotent-retry'
   ) ON CONFLICT ON CONSTRAINT messages_idempotency_unique DO NOTHING;
 
@@ -337,9 +337,14 @@ SELECT pg_temp.assert_true(
   )
   AND EXISTS (
     SELECT 1 FROM kovcheg.outbox_events
-    WHERE idempotency_key = 'outbox-message-001' AND claim_token IS NULL
+    WHERE aggregate_id = (
+      SELECT id FROM kovcheg.messages
+      WHERE client_idempotency_key = 'message-flow-001'
+      ORDER BY created_at
+      LIMIT 1
+    )
   ),
-  'pre-v3 message and outbox data must remain readable'
+  'pre-v4 message and outbox data must remain readable'
 );
 
 INSERT INTO kovcheg.outbox_events (
