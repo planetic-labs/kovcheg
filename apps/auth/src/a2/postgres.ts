@@ -1,0 +1,687 @@
+import { readFileSync } from 'node:fs';
+
+import type { SessionId, UserId, Uuid } from '@kovcheg/contracts';
+import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
+import type { PoolConfig, QueryResultRow } from 'pg';
+import { Pool } from 'pg';
+
+import {
+  AuthError,
+  AuthRepositoryAuthorizationError,
+  AuthRepositoryConflictError,
+  AuthRepositoryNotFoundError,
+} from './contracts.js';
+import type { AccountRecord, AccountRole, AccountStatus, SessionPrincipal } from './contracts.js';
+import type { OidcClientRepository, RegisteredOidcClient } from './oidc.js';
+import type {
+  AuthRepository,
+  BootstrapAdministratorResult,
+  ConsumeChallengeResult,
+  IssueChallengeResult,
+} from './ports.js';
+
+export interface AuthPostgresClient {
+  query<Row extends QueryResultRow>(
+    text: string,
+    values?: readonly unknown[],
+  ): Promise<{ readonly rows: Row[] }>;
+}
+
+export interface AuthPostgresEnvironment {
+  readonly PGDATABASE?: string | undefined;
+  readonly PGHOST?: string | undefined;
+  readonly PGPASSWORD_FILE?: string | undefined;
+  readonly PGPORT?: string | undefined;
+  readonly PGUSER?: string | undefined;
+}
+
+interface AccountRow extends QueryResultRow {
+  readonly account_id: string;
+  readonly account_status: string;
+  readonly auth_role: string;
+  readonly created?: boolean | undefined;
+  readonly display_name: string;
+  readonly email: string;
+}
+
+interface ChallengeRow extends QueryResultRow {
+  readonly account_id: string | null;
+  readonly challenge_id: string | null;
+  readonly outcome: string;
+  readonly recipient: string | null;
+}
+
+interface SessionRow extends QueryResultRow {
+  readonly account_id: string | null;
+  readonly auth_roles: unknown;
+  readonly outcome?: string | undefined;
+  readonly session_id: string | null;
+}
+
+interface BooleanRow extends QueryResultRow {
+  readonly result: boolean;
+}
+
+interface CountRow extends QueryResultRow {
+  readonly result: number;
+}
+
+interface OidcClientRow extends QueryResultRow {
+  readonly allowed_scope: string;
+  readonly client_id: string;
+  readonly grant_type: string;
+  readonly pkce_required: boolean;
+  readonly redirect_uris: unknown;
+  readonly token_endpoint_auth_method: string;
+}
+
+interface OidcArtifactRow extends QueryResultRow {
+  readonly artifact_id?: string | undefined;
+  readonly consumed_at: Date | string | null;
+  readonly model?: string | undefined;
+  readonly payload: unknown;
+}
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const oidcModelPattern = /^[A-Za-z][A-Za-z0-9]{1,63}$/;
+
+function unavailable(): AuthError {
+  return new AuthError('auth.unavailable', 'Durable authentication storage is unavailable');
+}
+
+function mapPostgresError(error: unknown): Error {
+  if (error instanceof AuthError || error instanceof AuthRepositoryConflictError) {
+    return error;
+  }
+  const postgresError = error as { readonly code?: string };
+  if (postgresError.code === '42501') {
+    return new AuthRepositoryAuthorizationError();
+  }
+  if (postgresError.code === '23505') {
+    return new AuthRepositoryConflictError();
+  }
+  if (postgresError.code === 'P0002') {
+    return new AuthRepositoryNotFoundError();
+  }
+  return unavailable();
+}
+
+async function query<Row extends QueryResultRow>(
+  client: AuthPostgresClient,
+  text: string,
+  values: readonly unknown[] = [],
+): Promise<Row[]> {
+  try {
+    return (await client.query<Row>(text, values)).rows;
+  } catch (error) {
+    throw mapPostgresError(error);
+  }
+}
+
+function accountRole(value: string): AccountRole {
+  if (value !== 'administrator' && value !== 'student') {
+    throw unavailable();
+  }
+  return value;
+}
+
+function accountStatus(value: string): AccountStatus {
+  if (value !== 'active' && value !== 'deactivated') {
+    throw unavailable();
+  }
+  return value;
+}
+
+function identifier<T extends string>(value: string | null): T {
+  if (value === null || !uuidPattern.test(value)) {
+    throw unavailable();
+  }
+  return value as T;
+}
+
+function roles(value: unknown): readonly AccountRole[] {
+  const parsed =
+    typeof value === 'string' &&
+    /^\{(?:administrator|student)(?:,(?:administrator|student))*\}$/.test(value)
+      ? value.slice(1, -1).split(',')
+      : value;
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length < 1 ||
+    parsed.some((role) => typeof role !== 'string')
+  ) {
+    throw unavailable();
+  }
+  return Object.freeze(parsed.map(accountRole));
+}
+
+function mapAccount(row: AccountRow | undefined): AccountRecord | null {
+  if (row === undefined) {
+    return null;
+  }
+  if (typeof row.email !== 'string' || typeof row.display_name !== 'string') {
+    throw unavailable();
+  }
+  return Object.freeze({
+    displayName: row.display_name,
+    email: row.email,
+    roles: Object.freeze([accountRole(row.auth_role)]),
+    status: accountStatus(row.account_status),
+    userId: identifier<UserId>(row.account_id),
+  });
+}
+
+export class PostgresAuthRepository implements AuthRepository {
+  readonly productionSafe = true;
+
+  constructor(private readonly client: AuthPostgresClient) {}
+
+  async authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null> {
+    const rows = await query<SessionRow>(
+      this.client,
+      `SELECT account_id, session_id, auth_roles
+       FROM kovcheg.authenticate_auth_session($1, $2)`,
+      [tokenVerifier, new Date(now)],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    return Object.freeze({
+      roles: roles(row.auth_roles),
+      sessionId: identifier<SessionId>(row.session_id),
+      userId: identifier<UserId>(row.account_id),
+    });
+  }
+
+  async bootstrapAdministrator(
+    input: Parameters<AuthRepository['bootstrapAdministrator']>[0],
+  ): Promise<BootstrapAdministratorResult> {
+    const rows = await query<AccountRow>(
+      this.client,
+      `SELECT account_id, email, display_name, auth_role, account_status, created
+       FROM kovcheg.bootstrap_auth_administrator($1, $2, $3, $4)`,
+      [input.bootstrapId, input.userId, input.email, input.displayName],
+    );
+    const row = rows[0];
+    const account = mapAccount(row);
+    if (account === null || typeof row?.created !== 'boolean') {
+      throw unavailable();
+    }
+    return Object.freeze({ account, created: row.created });
+  }
+
+  async consumeChallengeAndCreateSession(
+    input: Parameters<AuthRepository['consumeChallengeAndCreateSession']>[0],
+  ): Promise<ConsumeChallengeResult> {
+    const rows = await query<SessionRow>(
+      this.client,
+      `SELECT outcome, account_id, session_id, auth_roles
+       FROM kovcheg.consume_auth_challenge_and_create_session(
+         $1, $2, $3, $4, $5, $6, $7, $8
+       )`,
+      [
+        input.challengeId,
+        input.candidateCodeVerifier,
+        new Date(input.now),
+        input.session.sessionId,
+        input.session.tokenVerifier,
+        new Date(input.session.issuedAt),
+        input.session.idleLifetimeMs,
+        new Date(input.session.absoluteExpiresAt),
+      ],
+    );
+    const row = rows[0];
+    if (row?.outcome === 'invalid') {
+      return Object.freeze({ kind: 'invalid' });
+    }
+    if (row?.outcome !== 'authenticated') {
+      throw unavailable();
+    }
+    return Object.freeze({
+      kind: 'authenticated',
+      principal: Object.freeze({
+        roles: roles(row.auth_roles),
+        sessionId: identifier<SessionId>(row.session_id),
+        userId: identifier<UserId>(row.account_id),
+      }),
+    });
+  }
+
+  async createAccountAsAdministrator(
+    input: Parameters<AuthRepository['createAccountAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    const rows = await query<AccountRow>(
+      this.client,
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $5)
+       )
+       SELECT account_id, email, display_name, auth_role, account_status
+       FROM session_activity
+       CROSS JOIN LATERAL kovcheg.admin_create_auth_account($1, $2, $3, $4, $5, $6)`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.email,
+        input.displayName,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const account = mapAccount(rows[0]);
+    if (account === null) {
+      throw unavailable();
+    }
+    return account;
+  }
+
+  async findAccountById(userId: UserId): Promise<AccountRecord | null> {
+    const rows = await query<AccountRow>(
+      this.client,
+      `SELECT account_id, email, display_name, auth_role, account_status
+       FROM kovcheg.find_auth_account_by_id($1)`,
+      [userId],
+    );
+    return mapAccount(rows[0]);
+  }
+
+  async invalidateChallenge(challengeId: Uuid, now: number): Promise<void> {
+    await query(this.client, 'SELECT kovcheg.invalidate_auth_challenge($1, $2)', [
+      challengeId,
+      new Date(now),
+    ]);
+  }
+
+  async issueChallengeForActiveAccount(
+    input: Parameters<AuthRepository['issueChallengeForActiveAccount']>[0],
+  ): Promise<IssueChallengeResult> {
+    const rows = await query<ChallengeRow>(
+      this.client,
+      `SELECT outcome, account_id, challenge_id, recipient
+       FROM kovcheg.issue_auth_challenge_for_active_account(
+         $1, $2, $3, $4, $5, $6, $7::bigint * interval '1 millisecond'
+       )`,
+      [
+        input.email,
+        input.challenge.challengeId,
+        input.challenge.codeVerifier,
+        new Date(input.challenge.issuedAt),
+        new Date(input.challenge.expiresAt),
+        input.challenge.maxAttempts,
+        input.resendCooldownMs,
+      ],
+    );
+    const row = rows[0];
+    if (row?.outcome === 'neutral') {
+      return Object.freeze({ kind: 'neutral' });
+    }
+    if (row?.outcome !== 'issued' || row.recipient === null) {
+      throw unavailable();
+    }
+    return Object.freeze({
+      accountId: identifier<UserId>(row.account_id),
+      challengeId: identifier<Uuid>(row.challenge_id),
+      kind: 'issued',
+      recipient: row.recipient,
+    });
+  }
+
+  async revokeAllSessionsAsAdministrator(
+    input: Parameters<AuthRepository['revokeAllSessionsAsAdministrator']>[0],
+  ): Promise<number> {
+    const rows = await query<CountRow>(
+      this.client,
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $3)
+       )
+       SELECT kovcheg.admin_revoke_all_auth_sessions($1, $2, $3, $4) AS result
+       FROM session_activity`,
+      [input.actorSessionVerifier, input.userId, new Date(input.now), input.correlationId],
+    );
+    if (!Number.isSafeInteger(rows[0]?.result) || (rows[0]?.result ?? -1) < 0) {
+      throw unavailable();
+    }
+    return rows[0]?.result ?? 0;
+  }
+
+  async revokeSessionAsAdministrator(
+    input: Parameters<AuthRepository['revokeSessionAsAdministrator']>[0],
+  ): Promise<boolean> {
+    const rows = await query<BooleanRow>(
+      this.client,
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $4)
+       )
+       SELECT kovcheg.admin_revoke_auth_session($1, $2, $3, $4, $5) AS result
+       FROM session_activity`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.sessionId,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    if (typeof rows[0]?.result !== 'boolean') {
+      throw unavailable();
+    }
+    return rows[0].result;
+  }
+
+  async revokeSessionByVerifier(tokenVerifier: string, now: number): Promise<boolean> {
+    return this.booleanFunction('kovcheg.revoke_auth_session_by_verifier', tokenVerifier, now);
+  }
+
+  async setAccountStatusAsAdministrator(
+    input: Parameters<AuthRepository['setAccountStatusAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    const rows = await query<AccountRow>(
+      this.client,
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $4)
+       )
+       SELECT account_id, email, display_name, auth_role, account_status
+       FROM session_activity
+       CROSS JOIN LATERAL kovcheg.admin_set_auth_account_status($1, $2, $3, $4, $5)`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.status,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const account = mapAccount(rows[0]);
+    if (account === null) {
+      throw unavailable();
+    }
+    return account;
+  }
+
+  async updateAccountAsAdministrator(
+    input: Parameters<AuthRepository['updateAccountAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    const rows = await query<AccountRow>(
+      this.client,
+      `WITH session_activity AS MATERIALIZED (
+         SELECT count(*) AS authenticated_session_count
+         FROM kovcheg.authenticate_auth_session($1, $5)
+       )
+       SELECT account_id, email, display_name, auth_role, account_status
+       FROM session_activity
+       CROSS JOIN LATERAL kovcheg.admin_update_auth_account($1, $2, $3, $4, $5, $6)`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.email,
+        input.displayName,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const account = mapAccount(rows[0]);
+    if (account === null) {
+      throw unavailable();
+    }
+    return account;
+  }
+
+  private async booleanFunction(
+    name: string,
+    identifierValue: string,
+    now: number,
+  ): Promise<boolean> {
+    const rows = await query<BooleanRow>(this.client, `SELECT ${name}($1, $2) AS result`, [
+      identifierValue,
+      new Date(now),
+    ]);
+    if (typeof rows[0]?.result !== 'boolean') {
+      throw unavailable();
+    }
+    return rows[0].result;
+  }
+}
+
+export class PostgresOidcClientRepository implements OidcClientRepository {
+  readonly productionSafe = true;
+
+  constructor(
+    private readonly client: AuthPostgresClient,
+    private readonly configuredClients: readonly RegisteredOidcClient[],
+  ) {}
+
+  async listRegisteredClients(): Promise<readonly RegisteredOidcClient[]> {
+    const clients = await Promise.all(
+      this.configuredClients.map(async (configured): Promise<RegisteredOidcClient> => {
+        const rows = await query<OidcClientRow>(
+          this.client,
+          `SELECT client_id, redirect_uris, allowed_scope, grant_type, pkce_required,
+                  token_endpoint_auth_method
+           FROM kovcheg.find_registered_oidc_client($1)`,
+          [configured.clientId],
+        );
+        const row = rows[0];
+        if (
+          row === undefined ||
+          row.client_id !== configured.clientId ||
+          row.allowed_scope !== 'openid' ||
+          row.grant_type !== 'authorization_code' ||
+          row.pkce_required !== true ||
+          row.token_endpoint_auth_method !== configured.tokenEndpointAuthMethod ||
+          !Array.isArray(row.redirect_uris) ||
+          row.redirect_uris.length < 1 ||
+          row.redirect_uris.some((value) => typeof value !== 'string')
+        ) {
+          throw unavailable();
+        }
+        const base = {
+          clientId: row.client_id,
+          redirectUris: Object.freeze([...row.redirect_uris] as string[]),
+          scopes: Object.freeze(['openid']),
+        };
+        return configured.tokenEndpointAuthMethod === 'client_secret_basic'
+          ? Object.freeze({
+              ...base,
+              clientSecret: configured.clientSecret,
+              tokenEndpointAuthMethod: 'client_secret_basic' as const,
+            })
+          : Object.freeze({ ...base, tokenEndpointAuthMethod: 'none' as const });
+      }),
+    );
+    return Object.freeze(clients);
+  }
+}
+
+function payloadObject(value: unknown): AdapterPayload {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw unavailable();
+  }
+  return value as AdapterPayload;
+}
+
+function consumedEpoch(value: Date | string | null): number | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  const milliseconds = value instanceof Date ? value.getTime() : Date.parse(value);
+  if (!Number.isFinite(milliseconds)) {
+    throw unavailable();
+  }
+  return Math.floor(milliseconds / 1000);
+}
+
+function textMetadata(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+class PostgresOidcProviderAdapter implements Adapter {
+  constructor(
+    private readonly model: string,
+    private readonly client: AuthPostgresClient,
+    private readonly now: () => number,
+  ) {
+    if (!oidcModelPattern.test(model)) {
+      throw unavailable();
+    }
+  }
+
+  async consume(id: string): Promise<void> {
+    const rows = await query<BooleanRow>(
+      this.client,
+      'SELECT kovcheg.consume_oidc_provider_artifact($1, $2, $3) AS result',
+      [this.model, id, new Date(this.now())],
+    );
+    if (rows[0]?.result !== true) {
+      throw unavailable();
+    }
+  }
+
+  async destroy(id: string): Promise<void> {
+    await query<BooleanRow>(
+      this.client,
+      'SELECT kovcheg.destroy_oidc_provider_artifact($1, $2) AS result',
+      [this.model, id],
+    );
+  }
+
+  async find(id: string): Promise<AdapterPayload | undefined> {
+    const rows = await query<OidcArtifactRow>(
+      this.client,
+      `SELECT payload, consumed_at
+       FROM kovcheg.find_oidc_provider_artifact($1, $2, $3)`,
+      [this.model, id, new Date(this.now())],
+    );
+    return this.mapArtifact(rows[0]);
+  }
+
+  async findByUid(uid: string): Promise<AdapterPayload | undefined> {
+    return this.findBySecondaryKey('uid', uid);
+  }
+
+  async findByUserCode(userCode: string): Promise<AdapterPayload | undefined> {
+    return this.findBySecondaryKey('user_code', userCode);
+  }
+
+  async revokeByGrantId(grantId: string): Promise<void> {
+    const rows = await query<CountRow>(
+      this.client,
+      'SELECT kovcheg.revoke_oidc_provider_artifacts_by_grant_id($1) AS result',
+      [grantId],
+    );
+    if (typeof rows[0]?.result !== 'number') {
+      throw unavailable();
+    }
+  }
+
+  async upsert(id: string, payload: AdapterPayload, expiresIn?: number): Promise<void> {
+    if (!Number.isSafeInteger(expiresIn) || (expiresIn ?? 0) <= 0) {
+      throw unavailable();
+    }
+    let durablePayload: AdapterPayload;
+    try {
+      durablePayload = payloadObject(JSON.parse(JSON.stringify(payload)) as unknown);
+    } catch {
+      throw unavailable();
+    }
+    await query(
+      this.client,
+      `SELECT kovcheg.upsert_oidc_provider_artifact(
+         $1, $2, $3::jsonb, $4, $5, $6, $7
+       )`,
+      [
+        this.model,
+        id,
+        JSON.stringify(durablePayload),
+        new Date(this.now() + (expiresIn ?? 0) * 1000),
+        textMetadata(payload.grantId),
+        textMetadata(payload.userCode),
+        textMetadata(payload.uid),
+      ],
+    );
+  }
+
+  private async findBySecondaryKey(
+    kind: 'uid' | 'user_code',
+    value: string,
+  ): Promise<AdapterPayload | undefined> {
+    const functionName =
+      kind === 'uid'
+        ? 'kovcheg.find_oidc_provider_artifact_by_uid'
+        : 'kovcheg.find_oidc_provider_artifact_by_user_code';
+    const rows = await query<OidcArtifactRow>(
+      this.client,
+      `SELECT model, artifact_id, payload, consumed_at FROM ${functionName}($1, $2)`,
+      [value, new Date(this.now())],
+    );
+    const row = rows[0];
+    return row?.model === this.model ? this.mapArtifact(row) : undefined;
+  }
+
+  private mapArtifact(row: OidcArtifactRow | undefined): AdapterPayload | undefined {
+    if (row === undefined) {
+      return undefined;
+    }
+    const payload = payloadObject(row.payload);
+    const consumed = consumedEpoch(row.consumed_at);
+    return Object.freeze(consumed === undefined ? { ...payload } : { ...payload, consumed });
+  }
+}
+
+export function createPostgresOidcStorageAdapter(
+  client: AuthPostgresClient,
+  now: () => number = Date.now,
+): AdapterFactory {
+  return (model) => new PostgresOidcProviderAdapter(model, client, now);
+}
+
+function required(
+  environment: AuthPostgresEnvironment,
+  key: keyof AuthPostgresEnvironment,
+): string {
+  const value = environment[key]?.trim();
+  if (value === undefined || value.length === 0) {
+    throw unavailable();
+  }
+  return value;
+}
+
+export function createAuthPostgresPool(environment: AuthPostgresEnvironment = process.env): Pool {
+  const user = required(environment, 'PGUSER');
+  if (user !== 'kovcheg_auth_app') {
+    throw unavailable();
+  }
+  const portValue = environment.PGPORT?.trim() || '5432';
+  if (!/^\d+$/.test(portValue)) {
+    throw unavailable();
+  }
+  const port = Number.parseInt(portValue, 10);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw unavailable();
+  }
+  let password: string;
+  try {
+    password = readFileSync(required(environment, 'PGPASSWORD_FILE'), 'utf8').replace(
+      /[\r\n]+$/u,
+      '',
+    );
+  } catch {
+    throw unavailable();
+  }
+  if (password.length === 0) {
+    throw unavailable();
+  }
+  const config: PoolConfig = {
+    application_name: 'kovcheg-auth',
+    database: required(environment, 'PGDATABASE'),
+    host: required(environment, 'PGHOST'),
+    max: 10,
+    password,
+    port,
+    user,
+  };
+  return new Pool(config);
+}
