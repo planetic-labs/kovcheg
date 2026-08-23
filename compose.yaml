@@ -94,6 +94,32 @@ services:
     secrets:
       - postgres_runtime_password
 
+  auth-integration-test:
+    build:
+      context: .
+      dockerfile: apps/auth/Dockerfile
+      target: auth-integration-test
+    command: ['node', 'dist/a2/auth.integration-check.js']
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      AUTH_REDIS_URL: redis://redis:6379
+      LOG_LEVEL: error
+      NODE_ENV: test
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_auth_password
+      PGUSER: kovcheg_auth_app
+    networks:
+      - local
+    profiles:
+      - data
+    secrets:
+      - postgres_auth_password
+
   redis:
     image: redis:8.2.1-bookworm@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
     command: ['redis-server', '--save', '', '--appendonly', 'no']
@@ -159,7 +185,12 @@ services:
       HOST: 0.0.0.0
       LOG_LEVEL: info
       NODE_ENV: production
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_auth_password
+      PGUSER: kovcheg_auth_app
       PORT: '3002'
+      AUTH_REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
@@ -181,6 +212,8 @@ services:
     init: true
     networks:
       - local
+    secrets:
+      - postgres_auth_password
     stop_grace_period: 10s
 
   worker:

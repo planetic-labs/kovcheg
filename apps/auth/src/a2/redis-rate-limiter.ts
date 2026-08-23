@@ -15,6 +15,7 @@ export interface RedisScriptClient {
 }
 
 export interface RedisScriptClientFactory {
+  readonly productionSafe?: true;
   connect(url: string): Promise<RedisScriptClient>;
 }
 

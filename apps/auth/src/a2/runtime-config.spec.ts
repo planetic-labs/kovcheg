@@ -4,6 +4,12 @@ import { loadAuthRuntimeConfig } from './runtime-config.js';
 
 function enabledSource() {
   return {
+    AUTH_ADMIN_BOOTSTRAP_JSON: JSON.stringify({
+      bootstrapId: 'synthetic-bootstrap-config-0001',
+      displayName: 'Synthetic Bootstrap Administrator',
+      email: 'synthetic-bootstrap@auth.invalid',
+      userId: '00000000-0000-4000-8000-000000000071',
+    }),
     AUTH_CHALLENGE_PEPPER: 'c'.repeat(64),
     AUTH_OIDC_CLIENTS_JSON: JSON.stringify([
       {
@@ -35,6 +41,10 @@ describe('A2 runtime configuration', () => {
     expect(config).toMatchObject({
       enabled: true,
       environment: 'test',
+      bootstrapAdministrator: {
+        email: 'synthetic-bootstrap@auth.invalid',
+        userId: '00000000-0000-4000-8000-000000000071',
+      },
       oidc: {
         clients: [{ clientId: 'synthetic-client', tokenEndpointAuthMethod: 'none' }],
         issuer: 'http://127.0.0.1:4300',

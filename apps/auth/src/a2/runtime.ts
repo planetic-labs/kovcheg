@@ -3,12 +3,7 @@ import type Provider from 'oidc-provider';
 import { AuthService } from './auth-service.js';
 import { AuthError } from './contracts.js';
 import { HmacAuthCrypto, SystemAuthRandomSource, systemClock } from './crypto.js';
-import { LocalAuthRepository, LocalEmailChallengeDelivery } from './local-adapters.js';
-import {
-  ConfiguredOidcClientRepository,
-  createOidcProvider,
-  StaticOidcClientRepository,
-} from './oidc.js';
+import { ConfiguredOidcClientRepository, createOidcProvider } from './oidc.js';
 import type { OidcClientRepository, OidcStorageAdapter } from './oidc.js';
 import type { AuthRandomSource, AuthRepository, Clock, EmailChallengeDelivery } from './ports.js';
 import { RedisRateLimiter } from './redis-rate-limiter.js';
@@ -28,9 +23,11 @@ export const authRuntimeToken = Symbol('auth-runtime');
 
 export interface CreateAuthRuntimeInput {
   readonly clientRepository?: OidcClientRepository;
+  readonly closePersistence?: (() => Promise<void>) | undefined;
   readonly config: EnabledAuthRuntimeConfig;
   readonly delivery: EmailChallengeDelivery;
   readonly oidcStorageAdapter?: OidcStorageAdapter;
+  readonly oidcStorageAdapterProductionSafe?: true | undefined;
   readonly random?: AuthRandomSource;
   readonly redisClientFactory: RedisScriptClientFactory;
   readonly repository: AuthRepository;
@@ -38,18 +35,28 @@ export interface CreateAuthRuntimeInput {
 }
 
 export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<AuthRuntime> {
-  const clientRepository =
+  const clientRepository: OidcClientRepository =
     input.clientRepository ?? new ConfiguredOidcClientRepository(input.config.oidc.clients);
   if (
     input.config.environment === 'production' &&
-    (input.repository instanceof LocalAuthRepository ||
-      input.delivery instanceof LocalEmailChallengeDelivery ||
-      clientRepository instanceof StaticOidcClientRepository)
+    (input.clientRepository === undefined ||
+      input.repository.productionSafe !== true ||
+      input.delivery.productionSafe !== true ||
+      clientRepository.productionSafe !== true ||
+      input.redisClientFactory.productionSafe !== true ||
+      input.oidcStorageAdapterProductionSafe !== true ||
+      clientRepository instanceof ConfiguredOidcClientRepository)
   ) {
     throw new AuthError('auth.unavailable', 'Test auth adapters are unavailable in production');
   }
 
-  const redisClient = await input.redisClientFactory.connect(input.config.redisUrl);
+  let redisClient: Awaited<ReturnType<RedisScriptClientFactory['connect']>>;
+  try {
+    redisClient = await input.redisClientFactory.connect(input.config.redisUrl);
+  } catch (error) {
+    await input.closePersistence?.();
+    throw error;
+  }
   const clock = input.clock ?? systemClock;
   const authService = new AuthService({
     clock,
@@ -81,7 +88,11 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
         : { storageAdapter: input.oidcStorageAdapter }),
     });
   } catch (error) {
-    await redisClient.close?.();
+    try {
+      await redisClient.close?.();
+    } finally {
+      await input.closePersistence?.();
+    }
     throw error;
   }
 
@@ -89,7 +100,11 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     authService,
     clock,
     close: async () => {
-      await redisClient.close?.();
+      try {
+        await redisClient.close?.();
+      } finally {
+        await input.closePersistence?.();
+      }
     },
     oidcProvider,
     sessionCookie,

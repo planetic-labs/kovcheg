@@ -1,7 +1,8 @@
 import type { JWKS } from 'oidc-provider';
+import type { UserId } from '@kovcheg/contracts';
 
 import { AuthError, emailChallengePolicy } from './contracts.js';
-import type { AuthPolicy } from './contracts.js';
+import type { AuthPolicy, BootstrapAdministratorInput } from './contracts.js';
 import type { AuthSecretMaterial } from './crypto.js';
 import type { RegisteredOidcClient } from './oidc.js';
 
@@ -13,6 +14,7 @@ export interface DisabledAuthRuntimeConfig {
 
 export interface EnabledAuthRuntimeConfig {
   readonly authSecrets: AuthSecretMaterial;
+  readonly bootstrapAdministrator?: BootstrapAdministratorInput | undefined;
   readonly enabled: true;
   readonly environment: AuthRuntimeEnvironment;
   readonly oidc: {
@@ -30,6 +32,7 @@ export interface EnabledAuthRuntimeConfig {
 export type AuthRuntimeConfig = DisabledAuthRuntimeConfig | EnabledAuthRuntimeConfig;
 
 export interface AuthRuntimeEnvironmentSource {
+  readonly AUTH_ADMIN_BOOTSTRAP_JSON?: string | undefined;
   readonly AUTH_CHALLENGE_PEPPER?: string | undefined;
   readonly AUTH_OIDC_CLIENTS_JSON?: string | undefined;
   readonly AUTH_OIDC_COOKIE_KEYS_JSON?: string | undefined;
@@ -40,6 +43,8 @@ export interface AuthRuntimeEnvironmentSource {
   readonly AUTH_RUNTIME_ENABLED?: string | undefined;
   readonly AUTH_SESSION_PEPPER?: string | undefined;
 }
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const defaultPolicy: AuthPolicy = Object.freeze({
   challenge: emailChallengePolicy,
@@ -130,6 +135,32 @@ function parseJwks(value: unknown): JWKS {
   return { keys: keys as JWKS['keys'] };
 }
 
+function parseBootstrap(value: string | undefined): BootstrapAdministratorInput | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+  const parsed = parseJson(value, 'AUTH_ADMIN_BOOTSTRAP_JSON');
+  if (parsed === null || typeof parsed !== 'object') {
+    throw new AuthError('auth.invalid-input', 'AUTH_ADMIN_BOOTSTRAP_JSON must be an object');
+  }
+  const candidate = parsed as Record<string, unknown>;
+  if (
+    typeof candidate.bootstrapId !== 'string' ||
+    typeof candidate.displayName !== 'string' ||
+    typeof candidate.email !== 'string' ||
+    typeof candidate.userId !== 'string' ||
+    !uuidPattern.test(candidate.userId)
+  ) {
+    throw new AuthError('auth.invalid-input', 'AUTH_ADMIN_BOOTSTRAP_JSON is invalid');
+  }
+  return Object.freeze({
+    bootstrapId: candidate.bootstrapId,
+    displayName: candidate.displayName,
+    email: candidate.email,
+    userId: candidate.userId as UserId,
+  });
+}
+
 function validateRedisUrl(value: string): string {
   let parsed: URL;
   try {
@@ -168,6 +199,7 @@ export function loadAuthRuntimeConfig(
       rateLimitPepper: required(source, 'AUTH_RATE_LIMIT_PEPPER'),
       sessionPepper: required(source, 'AUTH_SESSION_PEPPER'),
     }),
+    bootstrapAdministrator: parseBootstrap(source.AUTH_ADMIN_BOOTSTRAP_JSON),
     enabled: true,
     environment,
     oidc: Object.freeze({

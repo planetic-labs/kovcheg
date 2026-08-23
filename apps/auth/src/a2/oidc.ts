@@ -32,10 +32,15 @@ export interface ConfidentialOidcClient {
 export type RegisteredOidcClient = ConfidentialOidcClient | PublicOidcClient;
 
 export interface OidcClientRepository {
+  readonly productionSafe?: true;
   listRegisteredClients(): Promise<readonly RegisteredOidcClient[]>;
 }
 
 export type OidcStorageAdapter = AdapterConstructor | AdapterFactory;
+
+interface TtlAwareOidcGrant {
+  save(ttlSeconds: number): Promise<unknown>;
+}
 
 export interface CreateOidcProviderInput {
   readonly accountRepository: AuthRepository;
@@ -235,7 +240,7 @@ export async function createOidcProvider(input: CreateOidcProviderInput): Promis
         clientId: client.clientId,
       });
       grant.addOIDCScope('openid');
-      await grant.save();
+      await (grant as unknown as TtlAwareOidcGrant).save(input.oidcSessionTtlSeconds);
       return grant;
     },
     pkce: { required: () => true },
@@ -249,6 +254,7 @@ export async function createOidcProvider(input: CreateOidcProviderInput): Promis
     ttl: {
       AccessToken: 300,
       AuthorizationCode: 60,
+      Grant: input.oidcSessionTtlSeconds,
       IdToken: 300,
       Interaction: 600,
       Session: input.oidcSessionTtlSeconds,

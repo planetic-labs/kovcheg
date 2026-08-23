@@ -29,6 +29,7 @@ export type ConsumeChallengeResult =
   | { readonly kind: 'invalid' };
 
 export interface AuthRepository {
+  readonly productionSafe?: true;
   authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null>;
   bootstrapAdministrator(input: BootstrapAdministratorInput): Promise<BootstrapAdministratorResult>;
   consumeChallengeAndCreateSession(input: {
@@ -77,6 +78,7 @@ export interface Clock {
 }
 
 export interface EmailChallengeDelivery {
+  readonly productionSafe?: true;
   send(message: EmailChallengeMessage): Promise<void>;
 }
 

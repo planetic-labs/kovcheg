@@ -21,7 +21,22 @@ COPY . .
 
 RUN pnpm --filter @kovcheg/auth... build
 RUN pnpm --filter @kovcheg/auth deploy --prod --legacy /runtime
-RUN find /runtime -type f \( -name '*.map' -o -name '*.ts' -o -name '*.md' \) -delete
+RUN find /runtime -type f \( -name '*.map' -o -name '*.ts' -o -name '*.md' -o -name '*.spec.js' -o -name '*.test.js' \) -delete
+
+FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS auth-integration-test
+
+ENV HOST=127.0.0.1
+ENV LOG_LEVEL=error
+ENV NODE_ENV=test
+ENV PORT=3002
+
+WORKDIR /app
+
+COPY --from=build --chown=node:node /runtime/ ./
+
+USER node
+
+CMD ["node", "dist/a2/auth.integration-check.js"]
 
 FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
 
@@ -38,6 +53,8 @@ ENV PORT=3002
 WORKDIR /app
 
 COPY --from=build --chown=node:node /runtime/ ./
+
+RUN find /app -type f \( -name '*.integration-check.js' -o -name 'local-adapters.js' \) -delete
 
 USER node
 
