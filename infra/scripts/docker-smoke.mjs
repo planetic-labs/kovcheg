@@ -117,10 +117,19 @@ const [rootResponse, apiOpenApiResponse, authOpenApiResponse, apiDocs, authDocs]
   ]);
 
 assert.equal(rootResponse.status, 200);
-assert.equal(
-  rootResponse.headers.get('content-security-policy'),
-  "default-src 'self'; base-uri 'self'; connect-src 'self' ws: wss:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+const contentSecurityPolicy = rootResponse.headers.get('content-security-policy');
+assert.ok(contentSecurityPolicy, 'The web response must include a content security policy');
+const nonceMatch = contentSecurityPolicy.match(
+  /script-src 'self' 'nonce-([^']+)' 'strict-dynamic'/,
 );
+assert.ok(nonceMatch, 'The production script policy must contain a per-request nonce');
+const nonce = nonceMatch[1];
+assert.equal(
+  contentSecurityPolicy,
+  `default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self' 'nonce-${nonce}' 'strict-dynamic'; style-src 'self' 'nonce-${nonce}'`,
+);
+assert.doesNotMatch(contentSecurityPolicy, /'unsafe-inline'|'unsafe-eval'|(?:^|\s)wss?:/);
+assert.equal(rootResponse.headers.get('x-nonce'), null, 'The internal nonce header must not leak');
 assert.equal(rootResponse.headers.get('cross-origin-embedder-policy'), 'require-corp');
 assert.equal(rootResponse.headers.get('cross-origin-opener-policy'), 'same-origin');
 assert.equal(rootResponse.headers.get('cross-origin-resource-policy'), 'same-origin');
@@ -131,6 +140,20 @@ assert.equal(
 assert.equal(rootResponse.headers.get('x-content-type-options'), 'nosniff');
 assert.equal(rootResponse.headers.get('x-frame-options'), 'DENY');
 assert.equal(rootResponse.headers.get('x-powered-by'), null);
+const rootHtml = await rootResponse.text();
+const scriptTags = rootHtml.match(/<script\b[^>]*>/g) ?? [];
+assert.ok(scriptTags.length > 0, 'The rendered Next.js page must contain framework scripts');
+for (const scriptTag of scriptTags) {
+  assert.match(scriptTag, new RegExp(`\\bnonce=["']${nonce}["']`));
+}
+for (const styleTag of rootHtml.match(/<style\b[^>]*>/g) ?? []) {
+  assert.match(styleTag, new RegExp(`\\bnonce=["']${nonce}["']`));
+}
+const secondRootResponse = await fetchWithRetry(`${baseUrl}/`);
+const secondPolicy = secondRootResponse.headers.get('content-security-policy');
+const secondNonce = secondPolicy?.match(/script-src 'self' 'nonce-([^']+)' 'strict-dynamic'/)?.[1];
+assert.ok(secondNonce, 'Every rendered response must contain a nonce');
+assert.notEqual(secondNonce, nonce, 'The CSP nonce must be unique per request');
 assert.equal(apiOpenApiResponse.status, 200);
 assert.equal(authOpenApiResponse.status, 200);
 assert.equal(apiDocs.status, 404, 'API Swagger UI must be disabled in production');
