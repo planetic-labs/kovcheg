@@ -14,11 +14,13 @@ read_secret() {
 migration_password=$(read_secret /run/secrets/postgres_migration_password)
 runtime_password=$(read_secret /run/secrets/postgres_runtime_password)
 audit_password=$(read_secret /run/secrets/postgres_audit_password)
+auth_password=$(read_secret /run/secrets/postgres_auth_password)
 
 psql --set=ON_ERROR_STOP=1 \
   --set=migration_password="$migration_password" \
   --set=runtime_password="$runtime_password" \
   --set=audit_password="$audit_password" \
+  --set=auth_password="$auth_password" \
   --username "$POSTGRES_USER" \
   --dbname "$POSTGRES_DB" <<'SQL'
 SET password_encryption = 'scram-sha-256';
@@ -32,6 +34,9 @@ WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'kovcheg_runti
 SELECT 'CREATE ROLE kovcheg_audit NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
 WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'kovcheg_audit')
 \gexec
+SELECT 'CREATE ROLE kovcheg_auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'kovcheg_auth_runtime')
+\gexec
 
 SELECT 'CREATE ROLE kovcheg_migrator LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
 WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'kovcheg_migrator')
@@ -42,6 +47,9 @@ WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'kovcheg_app')
 SELECT 'CREATE ROLE kovcheg_audit_writer LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
 WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'kovcheg_audit_writer')
 \gexec
+SELECT 'CREATE ROLE kovcheg_auth_app LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'kovcheg_auth_app')
+\gexec
 
 SELECT format('ALTER ROLE kovcheg_migrator PASSWORD %L', :'migration_password')
 \gexec
@@ -49,15 +57,19 @@ SELECT format('ALTER ROLE kovcheg_app PASSWORD %L', :'runtime_password')
 \gexec
 SELECT format('ALTER ROLE kovcheg_audit_writer PASSWORD %L', :'audit_password')
 \gexec
+SELECT format('ALTER ROLE kovcheg_auth_app PASSWORD %L', :'auth_password')
+\gexec
 
 GRANT kovcheg_migration TO kovcheg_migrator;
 GRANT kovcheg_runtime TO kovcheg_app;
 GRANT kovcheg_audit TO kovcheg_audit_writer;
+GRANT kovcheg_auth_runtime TO kovcheg_auth_app;
 
 REVOKE CONNECT ON DATABASE kovcheg FROM PUBLIC;
-GRANT CONNECT ON DATABASE kovcheg TO kovcheg_migration, kovcheg_runtime, kovcheg_audit;
+GRANT CONNECT ON DATABASE kovcheg
+TO kovcheg_migration, kovcheg_runtime, kovcheg_audit, kovcheg_auth_runtime;
 GRANT CREATE ON DATABASE kovcheg TO kovcheg_migration;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 SQL
 
-unset migration_password runtime_password audit_password secret_value
+unset migration_password runtime_password audit_password auth_password secret_value

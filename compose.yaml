@@ -20,6 +20,7 @@ services:
       - local
     secrets:
       - postgres_audit_password
+      - postgres_auth_password
       - postgres_migration_password
       - postgres_runtime_password
       - postgres_superuser_password
@@ -63,6 +64,7 @@ services:
       - data
     secrets:
       - postgres_audit_password
+      - postgres_auth_password
       - postgres_migration_password
       - postgres_runtime_password
       - postgres_superuser_password
@@ -296,6 +298,8 @@ networks:
 secrets:
   postgres_audit_password:
     file: ${KOVCHEG_POSTGRES_AUDIT_PASSWORD_FILE:?local audit password file is required}
+  postgres_auth_password:
+    file: ${KOVCHEG_POSTGRES_AUTH_PASSWORD_FILE:?local auth password file is required}
   postgres_migration_password:
     file: ${KOVCHEG_POSTGRES_MIGRATION_PASSWORD_FILE:?local migration password file is required}
   postgres_runtime_password:

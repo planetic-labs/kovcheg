@@ -10,12 +10,12 @@ END;
 $$;
 
 SELECT pg_temp.assert_true(
-  kovcheg.current_migration_version() = '0004',
-  'the message-flow migration must be recorded'
+  kovcheg.current_migration_version() = '0005',
+  'the auth persistence migration must be recorded'
 );
 SELECT pg_temp.assert_true(
-  (SELECT count(*) = 4 FROM kovcheg_meta.schema_migrations),
-  'exactly four checksummed migrations must be applied'
+  (SELECT count(*) = 5 FROM kovcheg_meta.schema_migrations),
+  'exactly five checksummed migrations must be applied'
 );
 SELECT pg_temp.assert_true(
   (
@@ -374,3 +374,153 @@ SELECT pg_temp.assert_true(
   ),
   'the pre-v2 insert shape must remain compatible after v3'
 );
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT count(*) = 8
+    FROM information_schema.tables
+    WHERE table_schema = 'kovcheg'
+      AND table_name IN (
+        'account_auth_profiles',
+        'auth_administrator_bootstraps',
+        'auth_email_challenges',
+        'auth_sessions',
+        'oidc_clients',
+        'oidc_client_redirect_uris',
+        'oidc_provider_artifacts',
+        'accounts'
+      )
+  ),
+  'the auth persistence tables must extend the existing canonical account model'
+);
+
+SELECT pg_temp.assert_true(
+  EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_constraint
+    WHERE conrelid = 'kovcheg.account_auth_profiles'::regclass
+      AND conname = 'account_auth_profiles_email_key'
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_constraint
+    WHERE conrelid = 'kovcheg.account_auth_profiles'::regclass
+      AND conname = 'account_auth_profiles_email_normalized_check'
+      AND convalidated
+  )
+  AND EXISTS (
+    SELECT 1 FROM pg_catalog.pg_indexes
+    WHERE schemaname = 'kovcheg'
+      AND indexname = 'auth_email_challenges_one_open_per_account_unique'
+  )
+  AND EXISTS (
+    SELECT 1 FROM pg_catalog.pg_indexes
+    WHERE schemaname = 'kovcheg' AND indexname = 'auth_sessions_account_live_idx'
+  ),
+  'normalized email, one-open-challenge, and live-session invariants must be indexed'
+);
+
+SELECT pg_temp.assert_true(
+  NOT has_table_privilege(
+    'kovcheg_auth_app',
+    'kovcheg.account_auth_profiles',
+    'SELECT,INSERT,UPDATE,DELETE'
+  )
+  AND NOT has_table_privilege(
+    'kovcheg_auth_app',
+    'kovcheg.auth_email_challenges',
+    'SELECT,INSERT,UPDATE,DELETE'
+  )
+  AND NOT has_table_privilege(
+    'kovcheg_auth_app',
+    'kovcheg.auth_sessions',
+    'SELECT,INSERT,UPDATE,DELETE'
+  )
+  AND NOT has_table_privilege(
+    'kovcheg_auth_app',
+    'kovcheg.oidc_provider_artifacts',
+    'SELECT,INSERT,UPDATE,DELETE'
+  )
+  AND has_function_privilege(
+    'kovcheg_auth_app',
+    'kovcheg.consume_auth_challenge_and_create_session(uuid,text,timestamp with time zone,uuid,text,timestamp with time zone,bigint,timestamp with time zone)',
+    'EXECUTE'
+  )
+  AND NOT has_function_privilege(
+    'kovcheg_app',
+    'kovcheg.consume_auth_challenge_and_create_session(uuid,text,timestamp with time zone,uuid,text,timestamp with time zone,bigint,timestamp with time zone)',
+    'EXECUTE'
+  ),
+  'only the dedicated auth login may execute protected auth transactions'
+);
+
+SELECT pg_temp.assert_true(
+  NOT EXISTS (SELECT 1 FROM kovcheg.account_auth_profiles)
+  AND NOT EXISTS (SELECT 1 FROM kovcheg.auth_email_challenges)
+  AND NOT EXISTS (SELECT 1 FROM kovcheg.auth_sessions)
+  AND NOT EXISTS (SELECT 1 FROM kovcheg.oidc_clients)
+  AND NOT EXISTS (SELECT 1 FROM kovcheg.oidc_provider_artifacts),
+  'the migration must contain no contact identities, clients, challenges, sessions, or tokens'
+);
+
+SELECT pg_temp.assert_true(
+  NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'kovcheg'
+      AND table_name = 'oidc_clients'
+      AND column_name LIKE '%secret%'
+  ),
+  'OIDC client secrets must remain secret-store inputs rather than database records'
+);
+
+BEGIN;
+INSERT INTO kovcheg.oidc_clients (client_id, token_endpoint_auth_method)
+VALUES ('synthetic-local-client', 'none');
+INSERT INTO kovcheg.oidc_client_redirect_uris (client_id, redirect_uri) VALUES
+  ('synthetic-local-client', 'http://127.0.0.1/callback'),
+  ('synthetic-local-client', 'https://client.invalid/callback');
+
+SELECT pg_temp.assert_true(
+  kovcheg.oidc_redirect_uri_is_registered(
+    'synthetic-local-client',
+    'https://client.invalid/callback'
+  )
+  AND NOT kovcheg.oidc_redirect_uri_is_registered(
+    'synthetic-local-client',
+    'https://client.invalid/callback/extra'
+  )
+  AND (
+    SELECT redirect_uris = ARRAY[
+      'http://127.0.0.1/callback'::varchar,
+      'https://client.invalid/callback'::varchar
+    ]
+      AND allowed_scope = 'openid'
+      AND grant_type = 'authorization_code'
+      AND pkce_required
+    FROM kovcheg.find_registered_oidc_client('synthetic-local-client')
+  ),
+  'OIDC clients must use exact redirect URIs, openid, Authorization Code, and PKCE'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO kovcheg.oidc_client_redirect_uris (client_id, redirect_uri)
+    VALUES ('synthetic-local-client', 'https://client.invalid/*');
+    RAISE EXCEPTION 'a wildcard redirect URI was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    UPDATE kovcheg.oidc_clients
+    SET client_id = 'synthetic-renamed-client'
+    WHERE client_id = 'synthetic-local-client';
+    RAISE EXCEPTION 'an OIDC client ID was changed';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
+END;
+$$;
+ROLLBACK;
