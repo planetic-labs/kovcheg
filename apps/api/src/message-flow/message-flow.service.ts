@@ -6,17 +6,25 @@ import type {
   CreateTextMessageResponse,
   MessageHistoryPage,
 } from '@kovcheg/contracts';
-import { chatListContractVersion, messageFlowContractVersion } from '@kovcheg/contracts';
+import {
+  chatListContractVersion,
+  messageFlowContractVersion,
+  messageHistoryContractVersion,
+} from '@kovcheg/contracts';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 
 import { MessageFlowHttpError } from './message-flow.error.js';
-import type { MessageFlowRepository } from './message-flow.repository.js';
+import type {
+  MessageFlowRepository,
+  ReadMessageHistoryCommand,
+} from './message-flow.repository.js';
 import {
   MessageFlowRepositoryError,
   messageFlowRepositoryToken,
 } from './message-flow.repository.js';
 import {
   parseAfterSequence,
+  parseBeforeSequence,
   parseCreateTextMessageRequest,
   parseHistoryLimit,
   parseUuid,
@@ -77,14 +85,24 @@ export class MessageFlowService {
     chatIdValue: unknown,
     cookieHeader: string | undefined,
     afterSequenceValue: unknown,
+    beforeSequenceValue: unknown,
     limitValue: unknown,
     correlationId: CorrelationId,
   ): Promise<MessageHistoryPage> {
     const principal = await this.requirePrincipal(cookieHeader, correlationId);
     const chatId = parseUuid(chatIdValue);
-    const afterSequence = parseAfterSequence(afterSequenceValue);
     const limit = parseHistoryLimit(limitValue);
-    if (chatId === null || afterSequence === null || limit === null) {
+    const hasAfterSequence = afterSequenceValue !== undefined;
+    const hasBeforeSequence = beforeSequenceValue !== undefined;
+    const afterSequence = hasAfterSequence ? parseAfterSequence(afterSequenceValue) : null;
+    const beforeSequence = hasBeforeSequence ? parseBeforeSequence(beforeSequenceValue) : null;
+    if (
+      chatId === null ||
+      limit === null ||
+      (hasAfterSequence && afterSequence === null) ||
+      (hasBeforeSequence && beforeSequence === null) ||
+      (hasAfterSequence && hasBeforeSequence)
+    ) {
       throw new MessageFlowHttpError(
         'message-flow.invalid-request',
         correlationId,
@@ -92,21 +110,34 @@ export class MessageFlowService {
         'The history request is invalid.',
       );
     }
+    const cursor: ReadMessageHistoryCommand['cursor'] =
+      afterSequence !== null
+        ? { direction: 'after', sequence: afterSequence }
+        : beforeSequence !== null
+          ? { direction: 'before', sequence: beforeSequence }
+          : { direction: 'latest' };
 
     try {
       const result = await this.repository.readMessageHistory({
-        afterSequence,
         chatId,
+        cursor,
         limit,
         userId: principal.userId,
       });
+      const firstMessage = result.items.at(0);
       const lastMessage = result.items.at(-1);
       return Object.freeze({
-        contractVersion: messageFlowContractVersion,
+        contractVersion: messageHistoryContractVersion,
         hasMore: result.hasMore,
         items: result.items,
         nextAfterSequence:
-          result.hasMore && lastMessage !== undefined ? lastMessage.chatSequence : null,
+          cursor.direction === 'after' && result.hasMore && lastMessage !== undefined
+            ? lastMessage.chatSequence
+            : null,
+        nextBeforeSequence:
+          cursor.direction !== 'after' && result.hasMore && firstMessage !== undefined
+            ? firstMessage.chatSequence
+            : null,
       });
     } catch (error) {
       throw this.mapRepositoryError(error, correlationId);

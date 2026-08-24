@@ -309,6 +309,7 @@ export {
   createTextMessageResponseJsonSchema,
   messageFlowContractVersion,
   messageFlowErrorCodes,
+  messageHistoryContractVersion,
   messageHistoryPageJsonSchema,
   textMessageJsonSchema,
 } from './message-flow.js';

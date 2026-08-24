@@ -6,6 +6,7 @@ import {
   createTextMessageRequestJsonSchema,
   messageFlowContractVersion,
   messageFlowErrorCodes,
+  messageHistoryContractVersion,
   messageHistoryPageJsonSchema,
 } from './message-flow.js';
 
@@ -28,6 +29,7 @@ describe('message-flow contracts', () => {
   });
 
   it('keeps text input and sequence cursors bounded and machine-readable', () => {
+    expect(messageHistoryContractVersion).toBe(2);
     expect(createTextMessageRequestJsonSchema).toMatchObject({
       additionalProperties: false,
       required: ['clientMessageId', 'text'],
@@ -37,5 +39,17 @@ describe('message-flow contracts', () => {
       pattern: '^(0|[1-9][0-9]*)$',
       type: 'string',
     });
+    expect(messageHistoryPageJsonSchema.properties.nextBeforeSequence).toMatchObject({
+      nullable: true,
+      pattern: '^[1-9][0-9]*$',
+      type: 'string',
+    });
+    expect(messageHistoryPageJsonSchema.required).toEqual([
+      'contractVersion',
+      'hasMore',
+      'items',
+      'nextAfterSequence',
+      'nextBeforeSequence',
+    ]);
   });
 });

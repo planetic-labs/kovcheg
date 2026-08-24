@@ -16,8 +16,11 @@ export interface CreateTextMessageResult {
 }
 
 export interface ReadMessageHistoryCommand {
-  readonly afterSequence: string;
   readonly chatId: Uuid;
+  readonly cursor:
+    | { readonly direction: 'after'; readonly sequence: string }
+    | { readonly direction: 'before'; readonly sequence: string }
+    | { readonly direction: 'latest' };
   readonly limit: number;
   readonly userId: UserId;
 }

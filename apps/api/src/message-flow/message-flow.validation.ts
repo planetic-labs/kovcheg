@@ -41,12 +41,16 @@ export function parseCreateTextMessageRequest(value: unknown): CreateTextMessage
 }
 
 export function parseAfterSequence(value: unknown): string | null {
-  const candidate = value ?? '0';
-  if (typeof candidate !== 'string' || !sequenceExpression.test(candidate)) {
+  if (typeof value !== 'string' || !sequenceExpression.test(value)) {
     return null;
   }
 
-  return BigInt(candidate) <= maximumSequence ? candidate : null;
+  return BigInt(value) <= maximumSequence ? value : null;
+}
+
+export function parseBeforeSequence(value: unknown): string | null {
+  const candidate = parseAfterSequence(value);
+  return candidate !== null && candidate !== '0' ? candidate : null;
 }
 
 export function parseHistoryLimit(value: unknown): number | null {

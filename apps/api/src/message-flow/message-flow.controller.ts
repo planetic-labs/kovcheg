@@ -85,10 +85,18 @@ export class MessageFlowController {
   }
 
   @ApiQuery({
-    description: 'Return messages with a greater chat sequence.',
+    description:
+      'Return newer messages for forward catch-up. Mutually exclusive with beforeSequence; when neither cursor is present, the latest page is returned.',
     name: 'afterSequence',
     required: false,
-    schema: { default: '0', pattern: '^(0|[1-9][0-9]*)$', type: 'string' },
+    schema: { pattern: '^(0|[1-9][0-9]*)$', type: 'string' },
+  })
+  @ApiQuery({
+    description:
+      'Return older messages with a lower chat sequence. Mutually exclusive with afterSequence.',
+    name: 'beforeSequence',
+    required: false,
+    schema: { pattern: '^[1-9][0-9]*$', type: 'string' },
   })
   @ApiQuery({
     description: 'Page size from 1 through 100.',
@@ -102,6 +110,7 @@ export class MessageFlowController {
     @Param('chatId') chatId: string,
     @Headers('cookie') cookieHeader: string | undefined,
     @Query('afterSequence') afterSequence: string | undefined,
+    @Query('beforeSequence') beforeSequence: string | undefined,
     @Query('limit') limit: string | undefined,
     @Req() request: CorrelationRequest,
   ): Promise<MessageHistoryPage> {
@@ -109,6 +118,7 @@ export class MessageFlowController {
       chatId,
       cookieHeader,
       afterSequence,
+      beforeSequence,
       limit,
       request.correlationId as CorrelationId,
     );
