@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 
 import { HealthController } from './health.controller.js';
 import { MessageFlowModule } from './message-flow/message-flow.module.js';
+import { PersonaAuthorizationModule } from './persona-authorization/persona-authorization.module.js';
 import type { RealtimeModuleOptions } from './realtime/realtime.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
 import { ApplicationSessionModule } from './session/application-session.module.js';
@@ -20,6 +21,7 @@ export class ApiModule {
       imports: [
         ApplicationSessionModule.register(options.sessionAuthenticator),
         MessageFlowModule.register(),
+        PersonaAuthorizationModule,
         RealtimeModule.register(options),
       ],
       module: ApiModule,

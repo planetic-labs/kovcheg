@@ -24,7 +24,7 @@ sh infra/scripts/compose.sh up --detach --wait postgres
 sh infra/scripts/compose.sh --profile data run --rm migrate
 ```
 
-Run both a latest-from-zero scenario and the compatible migration boundaries `0001 → 0002 → 0003 → 0004 → 0005 → 0006 → 0007 → 0008` with:
+Run both a latest-from-zero scenario and the compatible migration boundaries `0001 → 0002 → 0003 → 0004 → 0005 → 0006 → 0007 → 0008 → 0009` with:
 
 ```sh
 pnpm database:test
@@ -44,5 +44,7 @@ The lifecycle applies migrations and registers only the synthetic `.invalid` loc
 The data core keeps authorization facts in PostgreSQL: platform-role assignments, chat audience and posting policies, chat administrators, role-based posting allowlists, service labels, and immutable membership periods. Runtime reads these facts through least-privilege tables and SECURITY DEFINER predicates; it does not infer rights from chat names or application memory.
 
 Auth persistence uses a separate `kovcheg_auth_app` login inheriting only `kovcheg_auth_runtime`. It has no direct table DML and calls protected functions for account bootstrap/creation, challenge issue/consume/invalidation, session authentication/revocation, activation changes, exact OIDC client lookups, and durable OIDC adapter operations. The migration contains no contact fixtures, client registrations, plaintext codes or tokens, client secrets, signing keys, cookie keys, or auth peppers.
+
+Persona authorization remains internal to the API runtime. It rechecks the exact personal session, operator, active system persona, and active individual grant through one migration-owned function on the caller's PostgreSQL transaction. The API runtime receives `EXECUTE` only and no direct DML on grant or auth-state tables.
 
 Message retries are serialized by their `(chat_id, sender_account_id, client_idempotency_key)` before the row-counter changes. A matching fingerprint skips insertion without consuming a sequence, while a mismatched fingerprint raises a uniqueness error. Event `payload`, audit `details`, and operation `metadata` accept only sanitized technical identifiers, codes, and counters. They must never contain message text, identity/contact data, authentication material, credentials, or secrets; recursive key-shape constraints provide a database guardrail in addition to this contract.
