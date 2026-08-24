@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  collectExecutionMetadata,
   readJson,
   repositoryRoot,
   walkFiles,
@@ -28,6 +29,7 @@ for (const file of workflowFiles) {
 }
 
 const report = {
+  ...(await collectExecutionMetadata()),
   findings,
   permissionPolicy,
   pinnedUses,

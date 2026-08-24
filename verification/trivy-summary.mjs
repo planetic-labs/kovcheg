@@ -1,12 +1,13 @@
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { repositoryRoot, writeJson } from './lib.mjs';
+import { collectExecutionMetadata, repositoryRoot, writeJson } from './lib.mjs';
 
 const unavailableIndex = process.argv.indexOf('--tool-unavailable');
 if (unavailableIndex >= 0) {
   const missingTools = process.argv.slice(unavailableIndex + 1);
   await writeJson('.artifacts/security/summary.json', {
+    ...(await collectExecutionMetadata()),
     missingTools,
     status: 'TOOL_UNAVAILABLE',
   });
@@ -72,6 +73,7 @@ for (const file of expectedReports) {
 const scanStatus = Number(process.env.TRIVY_SCAN_STATUS ?? 1);
 const blockingStatus = Number(process.env.TRIVY_BLOCKING_STATUS ?? 1);
 const report = {
+  ...(await collectExecutionMetadata()),
   blockingPolicy: 'fixed HIGH and CRITICAL vulnerabilities in production images',
   filesystem: countFindings(await readReport('filesystem.json')),
   images,

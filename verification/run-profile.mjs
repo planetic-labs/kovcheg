@@ -1,8 +1,17 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
-import { artifactRoot, repositoryRoot, writeJson } from './lib.mjs';
+import { artifactRoot, collectExecutionMetadata, repositoryRoot, writeJson } from './lib.mjs';
+import {
+  aggregateStatuses,
+  classifySpawnResult,
+  countStatuses,
+  evaluateToolchain,
+  exitCodeForStatus,
+  preserveNestedSummary,
+} from './profile-status.mjs';
 
 const profile = process.argv[2];
 if (!['code-quality', 'deep', 'fast'].includes(profile)) {
@@ -30,16 +39,7 @@ function runStep(name, command, args, options = {}) {
   });
   printOutput(result);
 
-  let status;
-  if (result.error?.code === 'ENOENT') {
-    status = 'TOOL_UNAVAILABLE';
-  } else if (result.status === 0) {
-    status = options.informational ? 'INFORMATIONAL' : 'PASS';
-  } else if (options.unavailablePattern?.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
-    status = 'TOOL_UNAVAILABLE';
-  } else {
-    status = 'FAIL';
-  }
+  let status = classifySpawnResult(result, options);
 
   const step = {
     command: [command, ...args].join(' '),
@@ -47,6 +47,20 @@ function runStep(name, command, args, options = {}) {
     name,
     status,
   };
+  if (options.nestedSummaryPath) {
+    try {
+      const nestedSummary = preserveNestedSummary(
+        JSON.parse(readFileSync(path.join(repositoryRoot, options.nestedSummaryPath), 'utf8')),
+      );
+      step.nestedSummary = nestedSummary;
+      status = nestedSummary.status;
+      step.status = status;
+    } catch (error) {
+      step.nestedSummaryError = error.message;
+      status = 'FAIL';
+      step.status = status;
+    }
+  }
   steps.push(step);
   console.log(`[${name}] ${status} (${step.durationMs} ms)`);
   return status;
@@ -61,23 +75,22 @@ function runToolchainCheck() {
   });
   const expectedNode = '24.19.0';
   const expectedPnpm = '11.22.0';
-  let status = 'PASS';
-  if (pnpm.error?.code === 'ENOENT') status = 'TOOL_UNAVAILABLE';
-  else if (
-    nodeVersion !== expectedNode ||
-    pnpm.status !== 0 ||
-    pnpm.stdout.trim() !== expectedPnpm
-  ) {
-    status = 'FAIL';
-  }
-  steps.push({
-    actual: { node: nodeVersion, pnpm: pnpm.stdout?.trim() ?? null },
-    durationMs: Date.now() - stepStartedAt,
-    expected: { node: expectedNode, pnpm: expectedPnpm },
-    name: 'toolchain',
-    status,
+  const evaluation = evaluateToolchain({
+    corepackResult: pnpm,
+    expectedNode,
+    expectedPnpm,
+    nodeVersion,
   });
-  console.log(`[toolchain] ${status}: Node ${nodeVersion}, pnpm ${pnpm.stdout.trim()}`);
+  steps.push({
+    actual: evaluation.actual,
+    durationMs: Date.now() - stepStartedAt,
+    expected: evaluation.expected,
+    name: 'toolchain',
+    status: evaluation.status,
+  });
+  console.log(
+    `[toolchain] ${evaluation.status}: Node ${nodeVersion}, pnpm ${evaluation.actual.pnpm ?? 'unavailable'}`,
+  );
 }
 
 function runDiffCheck() {
@@ -89,6 +102,13 @@ function runDiffCheck() {
 }
 
 function runCodeQualityChecks() {
+  runStep('verification-regression-fixtures', 'node', [
+    '--test',
+    'verification/source-analysis.test.mjs',
+    'verification/policy-checks.test.mjs',
+    'verification/run-profile.test.mjs',
+    'verification/workflow-policy.test.mjs',
+  ]);
   runStep('focused-tests-and-suppressions', 'node', ['verification/policy-checks.mjs']);
   runStep('knip-monorepo-regression', 'node', ['verification/knip-check.mjs', 'default']);
   runStep('knip-production-regression', 'node', ['verification/knip-check.mjs', 'production']);
@@ -114,7 +134,9 @@ if (profile === 'code-quality') {
   });
   runDiffCheck();
 } else {
-  runStep('fast-profile', 'node', ['verification/run-profile.mjs', 'fast']);
+  runStep('fast-profile', 'node', ['verification/run-profile.mjs', 'fast'], {
+    nestedSummaryPath: '.artifacts/verification/fast-summary.json',
+  });
   runStep(
     'critical-branch-coverage',
     'corepack',
@@ -165,17 +187,18 @@ if (profile === 'code-quality') {
   );
 }
 
-const hasFailure = steps.some((step) => step.status === 'FAIL');
-const hasUnavailable = steps.some((step) => step.status === 'TOOL_UNAVAILABLE');
-const overallStatus = hasFailure ? 'FAIL' : hasUnavailable ? 'TOOL_UNAVAILABLE' : 'PASS';
+const overallStatus = aggregateStatuses(steps.map((step) => step.status));
+const executionMetadata = await collectExecutionMetadata();
 const summary = {
+  ...executionMetadata,
   durationMs: Date.now() - startedAt,
   profile,
   status: overallStatus,
+  statusCounts: countStatuses(steps),
   steps,
 };
 await writeJson(path.join(artifactRoot, `${profile}-summary.json`), summary);
 console.log(
   `\n${profile} profile: ${overallStatus} (${summary.durationMs} ms, ${steps.length} steps)`,
 );
-process.exit(overallStatus === 'PASS' ? 0 : overallStatus === 'TOOL_UNAVAILABLE' ? 2 : 1);
+process.exit(exitCodeForStatus(overallStatus));
