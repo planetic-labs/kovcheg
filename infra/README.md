@@ -24,7 +24,7 @@ sh infra/scripts/compose.sh up --detach --wait postgres
 sh infra/scripts/compose.sh --profile data run --rm migrate
 ```
 
-Run both a latest-from-zero scenario and the compatible migration boundaries `0001 → 0002 → 0003 → 0004 → 0005 → 0006 → 0007` with:
+Run both a latest-from-zero scenario and the compatible migration boundaries `0001 → 0002 → 0003 → 0004 → 0005 → 0006 → 0007 → 0008` with:
 
 ```sh
 pnpm database:test
