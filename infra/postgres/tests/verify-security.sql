@@ -58,6 +58,55 @@ BEGIN
 END;
 $$;
 
+DO $$
+DECLARE
+  function_oid oid;
+  function_owner name;
+  function_security_definer boolean;
+  function_settings text[];
+BEGIN
+  function_oid := to_regprocedure(
+    'kovcheg.authorize_system_persona_action(uuid,uuid,uuid,timestamp with time zone)'
+  );
+  IF function_oid IS NOT NULL THEN
+    SELECT
+      owner.rolname,
+      procedure.prosecdef,
+      procedure.proconfig
+    INTO function_owner, function_security_definer, function_settings
+    FROM pg_catalog.pg_proc AS procedure
+    JOIN pg_catalog.pg_roles AS owner ON owner.oid = procedure.proowner
+    WHERE procedure.oid = function_oid;
+
+    PERFORM pg_temp.assert_true(
+      has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.authorize_system_persona_action(uuid,uuid,uuid,timestamp with time zone)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.authorize_system_persona_action(uuid,uuid,uuid,timestamp with time zone)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_audit_writer',
+        'kovcheg.authorize_system_persona_action(uuid,uuid,uuid,timestamp with time zone)',
+        'EXECUTE'
+      ),
+      'only the general runtime may execute persona authorization'
+    );
+
+    PERFORM pg_temp.assert_true(
+      function_owner = 'kovcheg_migration'
+      AND function_security_definer
+      AND function_settings = ARRAY['search_path=pg_catalog, kovcheg'],
+      'persona authorization must be migration-owned with a fixed search path'
+    );
+  END IF;
+END;
+$$;
+
 SELECT pg_temp.assert_true(
   current_setting('password_encryption') = 'scram-sha-256',
   'password_encryption must use SCRAM'

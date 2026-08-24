@@ -10,9 +10,12 @@ END;
 $$;
 
 SELECT pg_temp.assert_true(
-  kovcheg.current_migration_version() = '0008'
-  AND (SELECT count(*) = 8 FROM kovcheg_meta.schema_migrations),
-  'the eight-migration persona data-owner boundary must be recorded'
+  EXISTS (
+    SELECT 1
+    FROM kovcheg_meta.schema_migrations
+    WHERE version = '0008'
+  ),
+  'the persona data-owner migration must remain recorded'
 );
 
 SELECT pg_temp.assert_true(
