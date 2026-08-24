@@ -1,0 +1,11 @@
+describe.only('focused suite', () => {});
+it.skip('skipped test', () => {});
+test.skipIf(true)('conditional skip', () => {});
+test.todo('future test');
+test.concurrent.skip('concurrent skip', () => {});
+test('object skip', { skip: true }, () => {});
+it('object todo', { todo: 'blocked' }, () => {});
+describe('object only', { only: true }, () => {});
+function runtime(context) {
+  context.skip();
+}

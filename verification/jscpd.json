@@ -1,0 +1,9 @@
+{
+  "absolute": false,
+  "gitignore": true,
+  "minLines": 8,
+  "minTokens": 80,
+  "mode": "strict",
+  "output": ".artifacts/verification/deep/jscpd",
+  "reporters": ["json"]
+}

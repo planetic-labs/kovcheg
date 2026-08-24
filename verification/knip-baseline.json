@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "538065cfcdbb2828e0209f74f47e0523e8f8dd1e",
+  "policy": "Every fingerprint is an exact finding inherited from sourceCommit. It remains visible in reports; only additions fail the regression gate.",
+  "modes": {
+    "default": [
+      "duplicates:packages/contracts/src/index.ts:buildMetadataContractVersion|foundationContractVersion|healthContractVersion|machineErrorContractVersion|operationalEventContractVersion",
+      "exports:apps/api/src/realtime/realtime.repository.ts:UnavailableRealtimeRepository",
+      "exports:apps/api/src/session/application-session.ts:HttpApplicationSessionAuthenticator",
+      "files:apps/auth/src/a2/index.ts:apps/auth/src/a2/index.ts",
+      "types:apps/auth/src/a2/oidc.ts:ConfidentialOidcClient",
+      "types:apps/auth/src/a2/oidc.ts:PublicOidcClient",
+      "types:apps/auth/src/a2/runtime-config.ts:DisabledAuthRuntimeConfig"
+    ],
+    "production": [
+      "dependencies:apps/api/package.json:socket.io",
+      "duplicates:packages/contracts/src/index.ts:buildMetadataContractVersion|foundationContractVersion|healthContractVersion|machineErrorContractVersion|operationalEventContractVersion",
+      "exports:apps/api/src/message-flow/postgres-message-flow.repository.ts:PostgresMessageFlowRepository",
+      "exports:apps/api/src/realtime/realtime.repository.ts:PostgresRealtimeRepository",
+      "exports:apps/api/src/realtime/realtime.repository.ts:UnavailableRealtimeRepository",
+      "exports:apps/api/src/session/application-session.ts:HttpApplicationSessionAuthenticator",
+      "exports:apps/auth/src/a2/local-adapters.ts:LocalAuthRepository",
+      "exports:apps/auth/src/a2/local-adapters.ts:LocalRateLimiter",
+      "exports:apps/auth/src/a2/local-adapters.ts:ManualClock",
+      "exports:apps/auth/src/a2/local-adapters.ts:UnavailableRateLimiter",
+      "exports:apps/auth/src/a2/oidc.ts:StaticOidcClientRepository",
+      "exports:apps/auth/src/a2/redis-client.ts:authRedisReconnectDelay",
+      "exports:apps/worker/src/realtime/realtime-relay.ts:parseXAutoClaimReply",
+      "exports:apps/worker/src/realtime/realtime-relay.ts:parseXReadGroupReply",
+      "files:apps/auth/src/a2/index.ts:apps/auth/src/a2/index.ts",
+      "types:apps/api/src/realtime/realtime.repository.ts:RealtimeSubscriptionCommand",
+      "types:apps/api/src/realtime/realtime.repository.ts:RealtimeSubscriptionData",
+      "types:apps/auth/src/a2/oidc.ts:ConfidentialOidcClient",
+      "types:apps/auth/src/a2/oidc.ts:PublicOidcClient",
+      "types:apps/auth/src/a2/runtime-config.ts:DisabledAuthRuntimeConfig"
+    ]
+  }
+}

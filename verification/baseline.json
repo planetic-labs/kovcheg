@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "538065cfcdbb2828e0209f74f47e0523e8f8dd1e",
+  "moduleGraph": {
+    "cycles": []
+  },
+  "productionImages": ["kovcheg-api", "kovcheg-auth", "kovcheg-web", "kovcheg-worker"],
+  "informational": {
+    "complexity": {
+      "average": 2.726,
+      "maximum": 20,
+      "modules": 68
+    },
+    "coverage": {
+      "branchesPercent": 67.39,
+      "functionsPercent": 77.55,
+      "linesPercent": 72.31,
+      "statementsPercent": 71.46
+    },
+    "duplication": {
+      "clones": 7,
+      "duplicatedLines": 99,
+      "linesPercent": 0.7569386038687973
+    },
+    "webBundle": {
+      "files": 9,
+      "totalBytes": 566631
+    }
+  }
+}

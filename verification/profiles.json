@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "ux-accessibility",
+      "status": "NOT_APPLICABLE",
+      "reason": "The A6 client is not integrated."
+    },
+    {
+      "id": "playwright-axe-lighthouse-visual-regression",
+      "status": "NOT_APPLICABLE",
+      "reason": "This is a separate future package after A6 integration."
+    },
+    {
+      "id": "k6-performance-load",
+      "status": "INFORMATIONAL",
+      "reason": "No reproducible baseline or confirmed SLO exists yet; no load command is implemented."
+    },
+    {
+      "id": "zap-dast",
+      "status": "NOT_APPLICABLE",
+      "reason": "A stable complete local authenticated target does not exist yet."
+    },
+    {
+      "id": "backup-restore-blue-green-rollback",
+      "status": "NOT_APPLICABLE",
+      "reason": "Operational lifecycle verification belongs to A7."
+    }
+  ]
+}

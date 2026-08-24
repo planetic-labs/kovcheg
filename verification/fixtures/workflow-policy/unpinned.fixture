@@ -1,0 +1,12 @@
+name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  reusable:
+    uses: example/automation/.github/workflows/reusable.yml@main
+  steps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: example/action@v2
+      - uses: docker://example/scanner:latest
