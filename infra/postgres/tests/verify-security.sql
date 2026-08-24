@@ -9,6 +9,55 @@ BEGIN
 END;
 $$;
 
+DO $$
+BEGIN
+  IF to_regclass('kovcheg.system_persona_operator_grants') IS NOT NULL THEN
+    PERFORM pg_temp.assert_true(
+      has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.admin_grant_system_persona_operator(text,uuid,uuid,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.admin_revoke_system_persona_operator(text,uuid,uuid,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.admin_grant_system_persona_operator(text,uuid,uuid,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.admin_revoke_system_persona_operator(text,uuid,uuid,timestamp with time zone,character varying)',
+        'EXECUTE'
+      ),
+      'only the auth login may execute protected persona operator mutations'
+    );
+
+    PERFORM pg_temp.assert_true(
+      NOT has_table_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.system_persona_operator_grants',
+        'SELECT,INSERT,UPDATE,DELETE'
+      )
+      AND NOT has_table_privilege(
+        'kovcheg_app',
+        'kovcheg.system_persona_operator_grants',
+        'SELECT,INSERT,UPDATE,DELETE'
+      )
+      AND NOT has_table_privilege(
+        'kovcheg_audit_writer',
+        'kovcheg.system_persona_operator_grants',
+        'SELECT,INSERT,UPDATE,DELETE'
+      ),
+      'persona operator grants must expose no direct runtime DML'
+    );
+  END IF;
+END;
+$$;
+
 SELECT pg_temp.assert_true(
   current_setting('password_encryption') = 'scram-sha-256',
   'password_encryption must use SCRAM'

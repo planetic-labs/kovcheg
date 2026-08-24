@@ -29,6 +29,11 @@ SELECT pg_temp.assert_true(
     current_user,
     'kovcheg.oidc_provider_artifacts',
     'SELECT,INSERT,UPDATE,DELETE'
+  )
+  AND NOT has_table_privilege(
+    current_user,
+    'kovcheg.system_persona_operator_grants',
+    'SELECT,INSERT,UPDATE,DELETE'
   ),
   'the auth login must not receive direct table DML'
 );
@@ -67,6 +72,16 @@ SELECT pg_temp.assert_true(
   AND has_function_privilege(
     current_user,
     'kovcheg.validate_auth_session(text,timestamp with time zone)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    current_user,
+    'kovcheg.admin_grant_system_persona_operator(text,uuid,uuid,timestamp with time zone,character varying)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    current_user,
+    'kovcheg.admin_revoke_system_persona_operator(text,uuid,uuid,timestamp with time zone,character varying)',
     'EXECUTE'
   )
   AND NOT has_function_privilege(
@@ -1236,4 +1251,111 @@ SELECT pg_temp.assert_true(
     )
   ),
   'the concurrent verification fixture must have one live challenge'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    PERFORM *
+    FROM kovcheg.admin_grant_system_persona_operator(
+      repeat('o', 43),
+      '00000000-0000-4000-8000-000000003002',
+      '00000000-0000-4000-8000-000000001001',
+      '2030-01-01 00:20:30+00',
+      'persona-grant-failed-student'
+    );
+    RAISE EXCEPTION 'a student session granted system persona authority';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT operator_account_id = '00000000-0000-4000-8000-000000003002'
+      AND persona_account_id = '00000000-0000-4000-8000-000000001001'
+      AND grant_status = 'active'
+      AND granted_at = '2030-01-01 00:21:00+00'
+      AND revoked_at IS NULL
+    FROM kovcheg.admin_grant_system_persona_operator(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003002',
+      '00000000-0000-4000-8000-000000001001',
+      '2030-01-01 00:21:00+00',
+      'persona-grant-operator-one'
+    )
+  ),
+  'an administrator must grant one active operator-persona pair'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT operator_account_id = '00000000-0000-4000-8000-000000003003'
+      AND persona_account_id = '00000000-0000-4000-8000-000000001001'
+      AND grant_status = 'active'
+      AND granted_at = '2030-01-01 00:21:01+00'
+      AND revoked_at IS NULL
+    FROM kovcheg.admin_grant_system_persona_operator(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003003',
+      '00000000-0000-4000-8000-000000001001',
+      '2030-01-01 00:21:01+00',
+      'persona-grant-operator-two'
+    )
+  ),
+  'operator grants must be issued independently per person account'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    PERFORM *
+    FROM kovcheg.admin_grant_system_persona_operator(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003002',
+      '00000000-0000-4000-8000-000000001001',
+      '2030-01-01 00:21:01+00',
+      'persona-grant-failed-duplicate'
+    );
+    RAISE EXCEPTION 'an active operator grant was duplicated';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    PERFORM kovcheg.admin_revoke_system_persona_operator(
+      repeat('o', 43),
+      '00000000-0000-4000-8000-000000003003',
+      '00000000-0000-4000-8000-000000001001',
+      '2030-01-01 00:21:02+00',
+      'persona-revoke-failed-student'
+    );
+    RAISE EXCEPTION 'a student session revoked system persona authority';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+
+SELECT pg_temp.assert_true(
+  kovcheg.admin_revoke_system_persona_operator(
+    repeat('m', 43),
+    '00000000-0000-4000-8000-000000003002',
+    '00000000-0000-4000-8000-000000001001',
+    '2030-01-01 00:21:02+00',
+    'persona-revoke-operator-one'
+  ),
+  'an administrator must revoke one active operator-persona pair'
+);
+
+SELECT pg_temp.assert_true(
+  NOT kovcheg.admin_revoke_system_persona_operator(
+    repeat('m', 43),
+    '00000000-0000-4000-8000-000000003002',
+    '00000000-0000-4000-8000-000000001001',
+    '2030-01-01 00:21:03+00',
+    'persona-revoke-missing-retry'
+  ),
+  'repeating a revoked operator pair must be an ineffective no-op'
 );
