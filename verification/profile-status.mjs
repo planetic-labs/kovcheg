@@ -14,10 +14,10 @@ export function classifySpawnResult(result, options = {}) {
     if (statusSet.has(options.successStatus)) return options.successStatus;
     return options.informational ? 'INFORMATIONAL' : 'PASS';
   }
-  if (result.status === 2) return 'TOOL_UNAVAILABLE';
   if (options.unavailablePattern?.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
     return 'TOOL_UNAVAILABLE';
   }
+  if (options.unavailableExitCodes?.includes(result.status)) return 'TOOL_UNAVAILABLE';
   return 'FAIL';
 }
 
@@ -56,12 +56,55 @@ export function preserveNestedSummary(summary) {
     durationMs: summary.durationMs,
     generatedAt: summary.generatedAt,
     git: summary.git,
+    invocationId: summary.invocationId,
     profile: summary.profile,
     status: summary.status,
     statusCounts: summary.statusCounts,
     steps: summary.steps,
     tools: summary.tools,
   };
+}
+
+export function resolveNestedSummary({
+  artifactPrepared,
+  childResult,
+  childStatus,
+  expectedGit,
+  expectedInvocationId,
+  stepStartedAt,
+  summary,
+  summaryReadError,
+}) {
+  try {
+    if (!artifactPrepared) {
+      throw new Error('Nested summary artifact could not be cleared before the child invocation.');
+    }
+    if (summaryReadError) throw summaryReadError;
+    const nestedSummary = preserveNestedSummary(summary);
+    if (nestedSummary.invocationId !== expectedInvocationId) {
+      throw new Error('Nested summary invocationId does not match the current child invocation.');
+    }
+
+    const generatedAt = Date.parse(nestedSummary.generatedAt);
+    if (!Number.isFinite(generatedAt) || generatedAt < stepStartedAt) {
+      throw new Error('Nested summary generatedAt predates the current child invocation.');
+    }
+    if (
+      nestedSummary.git?.head !== expectedGit?.head ||
+      nestedSummary.git?.tree !== expectedGit?.tree
+    ) {
+      throw new Error('Nested summary HEAD/tree does not match the current invocation.');
+    }
+    if (childResult.error || childResult.status !== exitCodeForStatus(nestedSummary.status)) {
+      throw new Error('Nested summary status contradicts the current child exit code.');
+    }
+    return { nestedSummary, status: nestedSummary.status };
+  } catch (error) {
+    return {
+      nestedSummaryError: error.message,
+      status: childStatus === 'PASS' ? 'FAIL' : childStatus,
+    };
+  }
 }
 
 export function countStatuses(steps) {

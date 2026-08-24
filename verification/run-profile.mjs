@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { readFileSync, rmSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -10,7 +11,7 @@ import {
   countStatuses,
   evaluateToolchain,
   exitCodeForStatus,
-  preserveNestedSummary,
+  resolveNestedSummary,
 } from './profile-status.mjs';
 
 const profile = process.argv[2];
@@ -21,6 +22,8 @@ if (!['code-quality', 'deep', 'fast'].includes(profile)) {
 
 await mkdir(artifactRoot, { recursive: true });
 const startedAt = Date.now();
+const invocationId = process.env.VERIFICATION_INVOCATION_ID ?? randomUUID();
+const invocationGit = (await collectExecutionMetadata()).git;
 const steps = [];
 
 function printOutput(result) {
@@ -30,11 +33,29 @@ function printOutput(result) {
 
 function runStep(name, command, args, options = {}) {
   const stepStartedAt = Date.now();
+  const nestedSummaryPath = options.nestedSummaryPath
+    ? path.join(repositoryRoot, options.nestedSummaryPath)
+    : null;
+  const nestedInvocationId = nestedSummaryPath ? randomUUID() : null;
+  let artifactPrepared = true;
+  let artifactPreparationError;
+  if (nestedSummaryPath) {
+    try {
+      rmSync(nestedSummaryPath, { force: true });
+    } catch (error) {
+      artifactPrepared = false;
+      artifactPreparationError = error;
+    }
+  }
   console.log(`\n[${name}] ${command} ${args.join(' ')}`);
   const result = spawnSync(command, args, {
     cwd: repositoryRoot,
     encoding: 'utf8',
-    env: { ...process.env, NO_COLOR: '1' },
+    env: {
+      ...process.env,
+      NO_COLOR: '1',
+      ...(nestedInvocationId ? { VERIFICATION_INVOCATION_ID: nestedInvocationId } : {}),
+    },
     maxBuffer: 100 * 1024 * 1024,
   });
   printOutput(result);
@@ -47,19 +68,31 @@ function runStep(name, command, args, options = {}) {
     name,
     status,
   };
-  if (options.nestedSummaryPath) {
+  if (nestedSummaryPath) {
+    let summary;
+    let summaryReadError = artifactPreparationError;
     try {
-      const nestedSummary = preserveNestedSummary(
-        JSON.parse(readFileSync(path.join(repositoryRoot, options.nestedSummaryPath), 'utf8')),
-      );
-      step.nestedSummary = nestedSummary;
-      status = nestedSummary.status;
-      step.status = status;
+      summary = JSON.parse(readFileSync(nestedSummaryPath, 'utf8'));
     } catch (error) {
-      step.nestedSummaryError = error.message;
-      status = 'FAIL';
-      step.status = status;
+      summaryReadError ??= error;
     }
+    const resolution = resolveNestedSummary({
+      artifactPrepared,
+      childResult: result,
+      childStatus: status,
+      expectedGit: invocationGit,
+      expectedInvocationId: nestedInvocationId,
+      stepStartedAt,
+      summary,
+      summaryReadError,
+    });
+    step.nestedInvocationId = nestedInvocationId;
+    if (resolution.nestedSummary) step.nestedSummary = resolution.nestedSummary;
+    if (resolution.nestedSummaryError) {
+      step.nestedSummaryError = resolution.nestedSummaryError;
+    }
+    status = resolution.status;
+    step.status = status;
   }
   steps.push(step);
   console.log(`[${name}] ${status} (${step.durationMs} ms)`);
@@ -110,8 +143,12 @@ function runCodeQualityChecks() {
     'verification/workflow-policy.test.mjs',
   ]);
   runStep('focused-tests-and-suppressions', 'node', ['verification/policy-checks.mjs']);
-  runStep('knip-monorepo-regression', 'node', ['verification/knip-check.mjs', 'default']);
-  runStep('knip-production-regression', 'node', ['verification/knip-check.mjs', 'production']);
+  runStep('knip-monorepo-regression', 'node', ['verification/knip-check.mjs', 'default'], {
+    unavailableExitCodes: [2],
+  });
+  runStep('knip-production-regression', 'node', ['verification/knip-check.mjs', 'production'], {
+    unavailableExitCodes: [2],
+  });
   runStep('workspace-boundaries-and-cycles', 'node', ['verification/source-analysis.mjs']);
   runStep('production-entrypoints', 'node', ['verification/entrypoint-policy.mjs']);
   runStep('workflow-policy', 'node', ['verification/workflow-policy.mjs']);
@@ -136,6 +173,7 @@ if (profile === 'code-quality') {
 } else {
   runStep('fast-profile', 'node', ['verification/run-profile.mjs', 'fast'], {
     nestedSummaryPath: '.artifacts/verification/fast-summary.json',
+    unavailableExitCodes: [2],
   });
   runStep(
     'critical-branch-coverage',
@@ -192,6 +230,7 @@ const executionMetadata = await collectExecutionMetadata();
 const summary = {
   ...executionMetadata,
   durationMs: Date.now() - startedAt,
+  invocationId,
   profile,
   status: overallStatus,
   statusCounts: countStatuses(steps),
