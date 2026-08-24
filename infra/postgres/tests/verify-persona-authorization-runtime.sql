@@ -154,3 +154,46 @@ SELECT pg_temp.assert_true(
   ),
   'ordinary personal message outbox payloads must not expose the operator UUID'
 );
+
+CREATE TEMP TABLE persona_message_result AS
+SELECT *
+FROM kovcheg.create_text_message_for_session(
+  '00000000-0000-4000-8000-000000009401',
+  '00000000-0000-4000-8000-000000009201',
+  '00000000-0000-4000-8000-000000009001',
+  '00000000-0000-4000-8000-000000009101',
+  'persona-message-audit-001',
+  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  'Synthetic persona message',
+  'persona-message-audit-created',
+  '2030-01-01 00:30:00+00'
+);
+
+SELECT pg_temp.assert_true(
+  (SELECT was_created FROM persona_message_result)
+  AND (
+    SELECT sender_account_id = '00000000-0000-4000-8000-000000009101'
+    FROM persona_message_result
+  ),
+  'the authorized persona must be the persisted public sender'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT count(*) = 1
+      AND bool_and(
+        event.payload = jsonb_build_object(
+          'chatId', result.message_chat_id,
+          'messageId', result.message_id,
+          'chatSequence', result.chat_sequence,
+          'senderAccountId', result.sender_account_id
+        )
+      )
+      AND bool_and(NOT event.payload ? 'operatorAccountId')
+    FROM kovcheg.outbox_events AS event
+    CROSS JOIN persona_message_result AS result
+    WHERE event.aggregate_id = result.message_id
+      AND event.event_name = 'message.created'
+  ),
+  'the persona outbox event must expose only the public sender identity'
+);

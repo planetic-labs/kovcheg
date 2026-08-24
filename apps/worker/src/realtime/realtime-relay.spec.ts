@@ -5,7 +5,7 @@ import type { RedisClientType } from 'redis';
 import { RealtimeRelay, parseXAutoClaimReply, parseXReadGroupReply } from './realtime-relay.js';
 
 const serializedEvent = JSON.stringify({
-  contractVersion: 1,
+  contractVersion: 2,
   correlationId: 'realtime-relay-001',
   eventId: '00000000-0000-4000-8000-000000005301',
   eventName: 'message.created',
@@ -14,6 +14,7 @@ const serializedEvent = JSON.stringify({
     chatId: '00000000-0000-4000-8000-000000005302',
     chatSequence: '12',
     messageId: '00000000-0000-4000-8000-000000005303',
+    senderAccountId: '00000000-0000-4000-8000-000000005304',
   },
 });
 

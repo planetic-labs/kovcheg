@@ -38,6 +38,7 @@ compose up --detach --wait postgres redis
 compose --profile data run --rm migrate
 compose --profile data run --rm \
   --entrypoint sh migrate /workspace/infra/postgres/configure-local-auth.sh
+compose --profile data run --rm -e TEST_SCENARIO=persona-message-fixture database-test
 compose --profile data run --rm message-flow-test
 compose up --build --detach --wait
 

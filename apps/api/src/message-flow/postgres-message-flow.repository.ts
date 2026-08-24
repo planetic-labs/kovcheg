@@ -60,7 +60,7 @@ function mapMessage(row: MessageRow): TextMessage {
     clientMessageId: row.client_idempotency_key,
     createdAt: row.created_at.toISOString(),
     id: row.id as Uuid,
-    senderUserId: row.sender_account_id as UserId,
+    senderAccountId: row.sender_account_id as Uuid,
   });
 }
 
@@ -101,7 +101,10 @@ function mapPostgresError(error: unknown): MessageFlowRepositoryError {
 }
 
 export class PostgresMessageFlowRepository implements MessageFlowRepository, OnModuleDestroy {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly clock: () => Date = () => new Date(),
+  ) {}
 
   async close(): Promise<void> {
     await this.pool.end();
@@ -123,14 +126,17 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
            message_body AS body,
            created_at,
            was_created
-         FROM kovcheg.create_text_message($1, $2, $3, $4, $5, $6)`,
+         FROM kovcheg.create_text_message_for_session($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           command.chatId,
-          command.senderUserId,
+          command.operatorPrincipal.sessionId,
+          command.operatorPrincipal.userId,
+          command.personaAccountId ?? null,
           command.clientMessageId,
           command.contentFingerprint,
           command.body,
           command.correlationId,
+          this.clock(),
         ],
       );
       const row = result.rows[0];

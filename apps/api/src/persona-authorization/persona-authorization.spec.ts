@@ -119,6 +119,7 @@ describe('PostgresPersonaAuthorizer', () => {
           chatSequence: '1',
           messageId: '00000000-0000-4000-8000-000000009501',
           operatorAccountId,
+          senderAccountId: '00000000-0000-4000-8000-000000009101',
         },
       }),
     ).toBeNull();

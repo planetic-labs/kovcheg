@@ -1,7 +1,7 @@
 import type { ChatSequence, TextMessage } from './message-flow.js';
 import type { CorrelationId, UserId, Uuid } from './foundation-types.js';
 
-export const realtimeContractVersion = 1 as const;
+export const realtimeContractVersion = 2 as const;
 export const realtimeSocketPath = '/socket.io' as const;
 export const realtimeApplicationStreamName = 'kovcheg:application-events:v1' as const;
 export const realtimeAdapterStreamName = 'kovcheg:socket.io:v1' as const;
@@ -18,6 +18,7 @@ export interface MessageCreatedRealtimePayload {
   readonly chatId: Uuid;
   readonly chatSequence: ChatSequence;
   readonly messageId: Uuid;
+  readonly senderAccountId: Uuid;
 }
 
 export interface MessageCreatedRealtimeEvent {
@@ -83,12 +84,12 @@ export function parseMessageCreatedRealtimeEvent(
   if (
     Object.keys(value).sort().join(',') !==
       'contractVersion,correlationId,eventId,eventName,occurredAt,payload' ||
-    Object.keys(value.payload).sort().join(',') !== 'chatId,chatSequence,messageId'
+    Object.keys(value.payload).sort().join(',') !== 'chatId,chatSequence,messageId,senderAccountId'
   ) {
     return null;
   }
   const { contractVersion, correlationId, eventId, eventName, occurredAt, payload } = value;
-  const { chatId, chatSequence, messageId } = payload;
+  const { chatId, chatSequence, messageId, senderAccountId } = payload;
   if (
     contractVersion !== realtimeContractVersion ||
     typeof correlationId !== 'string' ||
@@ -104,7 +105,9 @@ export function parseMessageCreatedRealtimeEvent(
     typeof chatSequence !== 'string' ||
     !chatSequenceExpression.test(chatSequence) ||
     typeof messageId !== 'string' ||
-    !uuidExpression.test(messageId)
+    !uuidExpression.test(messageId) ||
+    typeof senderAccountId !== 'string' ||
+    !uuidExpression.test(senderAccountId)
   ) {
     return null;
   }
@@ -118,6 +121,7 @@ export function parseMessageCreatedRealtimeEvent(
       chatId: chatId as Uuid,
       chatSequence,
       messageId: messageId as Uuid,
+      senderAccountId: senderAccountId as Uuid,
     }),
   });
 }

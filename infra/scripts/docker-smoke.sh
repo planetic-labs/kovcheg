@@ -98,7 +98,7 @@ import { readFile } from 'node:fs/promises';
 
 const token = (await readFile('/run/secrets/realtime_relay_token', 'utf8')).trim();
 const event = {
-  contractVersion: 1,
+  contractVersion: 2,
   correlationId: 'relay-boundary-smoke-001',
   eventId: '00000000-0000-4000-8000-000000009901',
   eventName: 'message.created',
@@ -107,6 +107,7 @@ const event = {
     chatId: '00000000-0000-4000-8000-000000009902',
     chatSequence: '1',
     messageId: '00000000-0000-4000-8000-000000009903',
+    senderAccountId: '00000000-0000-4000-8000-000000009904',
   },
 };
 const request = (authorization) => ({

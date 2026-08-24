@@ -16,6 +16,7 @@ const claimed = Object.freeze({
     chatId: '00000000-0000-4000-8000-000000005203',
     chatSequence: '9',
     messageId: '00000000-0000-4000-8000-000000005204',
+    senderAccountId: '00000000-0000-4000-8000-000000005205',
   }),
 });
 
@@ -42,8 +43,13 @@ describe('outbox publisher', () => {
     ]);
     const serialized = (sendCommand.mock.calls[0]?.[0] as string[] | undefined)?.[4];
     expect(JSON.parse(serialized ?? '{}')).toMatchObject({
-      payload: { chatSequence: '9' },
+      contractVersion: 2,
+      payload: {
+        chatSequence: '9',
+        senderAccountId: claimed.payload.senderAccountId,
+      },
     });
+    expect(serialized).not.toContain('operatorAccountId');
     expect(repository.markPublished).toHaveBeenCalledWith(claimed.eventId, claimed.claimToken);
     expect(repository.release).not.toHaveBeenCalled();
   });

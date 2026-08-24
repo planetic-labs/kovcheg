@@ -155,6 +155,63 @@ INSERT INTO kovcheg.auth_sessions (
     '2030-01-01 00:30:00+00'
   );
 
+INSERT INTO kovcheg.auth_sessions (
+  id,
+  account_id,
+  token_verifier,
+  issued_at,
+  last_seen_at,
+  idle_lifetime_ms,
+  idle_expires_at,
+  absolute_expires_at,
+  revoked_at
+) VALUES (
+  '00000000-0000-4000-8000-000000009291',
+  '00000000-0000-4000-8000-000000009001',
+  repeat('9', 43),
+  '2020-01-01 00:00:00+00',
+  '2020-01-01 00:00:00+00',
+  2524608000000,
+  '2100-01-01 00:00:00+00',
+  '2100-01-01 00:00:00+00',
+  NULL
+);
+
+INSERT INTO kovcheg.chats (id, kind, created_by_account_id)
+VALUES
+  (
+    '00000000-0000-4000-8000-000000009401',
+    'direct',
+    '00000000-0000-4000-8000-000000009001'
+  ),
+  (
+    '00000000-0000-4000-8000-000000009402',
+    'direct',
+    '00000000-0000-4000-8000-000000009001'
+  );
+
+INSERT INTO kovcheg.chat_memberships (chat_id, account_id, role) VALUES
+  (
+    '00000000-0000-4000-8000-000000009401',
+    '00000000-0000-4000-8000-000000009001',
+    'member'
+  ),
+  (
+    '00000000-0000-4000-8000-000000009401',
+    '00000000-0000-4000-8000-000000009101',
+    'synthetic_system'
+  ),
+  (
+    '00000000-0000-4000-8000-000000009402',
+    '00000000-0000-4000-8000-000000009001',
+    'member'
+  ),
+  (
+    '00000000-0000-4000-8000-000000009402',
+    '00000000-0000-4000-8000-000000009102',
+    'synthetic_system'
+  );
+
 INSERT INTO kovcheg.system_persona_operator_grants (
   operator_account_id,
   persona_account_id,

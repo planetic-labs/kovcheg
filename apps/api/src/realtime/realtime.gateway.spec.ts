@@ -18,6 +18,7 @@ import { RealtimeRepositoryError } from './realtime.repository.js';
 
 const openApplications: Awaited<ReturnType<typeof createApiApplication>>[] = [];
 const openSockets: Socket[] = [];
+const senderAccountId = '00000000-0000-4000-8000-000000005901';
 
 afterEach(async () => {
   for (const socket of openSockets.splice(0)) {
@@ -90,6 +91,7 @@ describe('realtime gateway', () => {
         chatId: '00000000-0000-4000-8000-000000005002',
         chatSequence: '1',
         messageId: '00000000-0000-4000-8000-000000005003',
+        senderAccountId,
       },
     });
 
@@ -126,7 +128,7 @@ describe('realtime gateway', () => {
                 clientMessageId: 'realtime-history-001',
                 createdAt: '2026-01-01T00:00:00.000Z',
                 id: '00000000-0000-4000-8000-000000005102' as Uuid,
-                senderUserId: syntheticUserIds.activePrimary,
+                senderAccountId: syntheticUserIds.activePrimary,
               }),
             ]),
           }),
@@ -166,6 +168,7 @@ describe('realtime gateway', () => {
           chatId: '00000000-0000-4000-8000-000000005101',
           chatSequence: '4',
           messageId: '00000000-0000-4000-8000-000000005104',
+          senderAccountId,
         },
       }),
       headers: {
@@ -226,6 +229,7 @@ describe('realtime gateway', () => {
           chatId: '00000000-0000-4000-8000-000000005201',
           chatSequence: '1',
           messageId: '00000000-0000-4000-8000-000000005203',
+          senderAccountId,
         },
       }),
       headers: {
@@ -285,6 +289,7 @@ describe('realtime gateway', () => {
           chatId: '00000000-0000-4000-8000-000000005301',
           chatSequence: '1',
           messageId: '00000000-0000-4000-8000-000000005303',
+          senderAccountId,
         },
       }),
       headers: {
@@ -381,6 +386,7 @@ describe('realtime gateway', () => {
           chatId,
           chatSequence: '1',
           messageId: '00000000-0000-4000-8000-000000005503',
+          senderAccountId,
         },
       }),
       headers: {
@@ -450,6 +456,7 @@ describe('realtime gateway', () => {
           chatId,
           chatSequence: '1',
           messageId: '00000000-0000-4000-8000-000000005603',
+          senderAccountId,
         },
       }),
       headers: {

@@ -73,7 +73,7 @@ const socket = io(baseUrl, {
 try {
   const ready = onceWithTimeout(socket, 'realtime.ready');
   socket.connect();
-  assert.equal((await ready).contractVersion, 1, 'A valid A2 session must authenticate Socket.IO');
+  assert.equal((await ready).contractVersion, 2, 'A valid A2 session must authenticate Socket.IO');
 
   const subscription = await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Timed out subscribing to the chat')), 5_000);
@@ -99,6 +99,7 @@ try {
   });
   assert.equal(createMessageResponse.status, 201, 'The authenticated message must be created');
   const createdMessage = await createMessageResponse.json();
+  assert.equal(createdMessage.contractVersion, 2);
   const realtimeMessage = await deliveredMessage;
   assert.equal(
     realtimeMessage.payload?.messageId,
@@ -107,6 +108,8 @@ try {
   );
   assert.equal(realtimeMessage.payload?.chatId, chatId);
   assert.equal(realtimeMessage.payload?.chatSequence, createdMessage.message?.chatSequence);
+  assert.equal(realtimeMessage.payload?.senderAccountId, createdMessage.message?.senderAccountId);
+  assert.equal('operatorAccountId' in realtimeMessage.payload, false);
 
   const logoutResponse = await request('/auth/session', {
     headers: { cookie },

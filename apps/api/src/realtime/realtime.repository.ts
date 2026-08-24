@@ -61,7 +61,7 @@ function mapMessage(row: MessageRow): TextMessage {
     clientMessageId: row.client_idempotency_key,
     createdAt: row.created_at.toISOString(),
     id: row.id as Uuid,
-    senderUserId: row.sender_account_id as UserId,
+    senderAccountId: row.sender_account_id as Uuid,
   });
 }
 

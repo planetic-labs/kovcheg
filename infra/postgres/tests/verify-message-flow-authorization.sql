@@ -9,13 +9,80 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION pg_temp.create_test_text_message(
+  p_chat_id uuid,
+  p_client_idempotency_key varchar,
+  p_content_fingerprint varchar,
+  p_body text,
+  p_correlation_id varchar
+)
+RETURNS TABLE (
+  message_id uuid,
+  message_chat_id uuid,
+  sender_account_id uuid,
+  chat_sequence bigint,
+  client_idempotency_key varchar,
+  message_body text,
+  created_at timestamptz,
+  was_created boolean
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF to_regprocedure(
+    'kovcheg.create_text_message_for_session(uuid,uuid,uuid,uuid,character varying,character varying,text,character varying,timestamp with time zone)'
+  ) IS NULL THEN
+    RETURN QUERY
+    SELECT *
+    FROM kovcheg.create_text_message(
+      p_chat_id,
+      '00000000-0000-4000-8000-000000002001',
+      p_client_idempotency_key,
+      p_content_fingerprint,
+      p_body,
+      p_correlation_id
+    );
+    RETURN;
+  END IF;
+
+  RETURN QUERY EXECUTE
+    'SELECT * FROM kovcheg.create_text_message_for_session($1,$2,$3,$4,$5,$6,$7,$8,$9)'
+  USING
+    p_chat_id,
+    '00000000-0000-4000-8000-000000002201'::uuid,
+    '00000000-0000-4000-8000-000000002001'::uuid,
+    NULL::uuid,
+    p_client_idempotency_key,
+    p_content_fingerprint,
+    p_body,
+    p_correlation_id,
+    '2030-01-01 00:30:00+00'::timestamptz;
+END;
+$$;
+
 SELECT pg_temp.assert_true(
-  has_function_privilege(
-    'kovcheg_app',
-    'kovcheg.create_text_message(uuid,uuid,character varying,character varying,text,character varying)',
-    'EXECUTE'
-  ),
-  'runtime must execute only the atomic message-flow entrypoint'
+  CASE
+    WHEN to_regprocedure(
+      'kovcheg.create_text_message_for_session(uuid,uuid,uuid,uuid,character varying,character varying,text,character varying,timestamp with time zone)'
+    ) IS NULL THEN
+      has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.create_text_message(uuid,uuid,character varying,character varying,text,character varying)',
+        'EXECUTE'
+      )
+    ELSE
+      has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.create_text_message_for_session(uuid,uuid,uuid,uuid,character varying,character varying,text,character varying,timestamp with time zone)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.create_text_message(uuid,uuid,character varying,character varying,text,character varying)',
+        'EXECUTE'
+      )
+  END,
+  'runtime must use the session-bound entrypoint after migration v10'
 );
 SELECT pg_temp.assert_true(
   NOT has_table_privilege('kovcheg_app', 'kovcheg.messages', 'INSERT')
@@ -42,13 +109,12 @@ WHERE id = '00000000-0000-4000-8000-000000002001';
 DO $$
 BEGIN
   BEGIN
-    PERFORM kovcheg.create_text_message(
+    PERFORM pg_temp.create_test_text_message(
       (
         SELECT chat_id FROM kovcheg.messages
         WHERE client_idempotency_key = 'message-flow-001'
         ORDER BY created_at LIMIT 1
       ),
-      '00000000-0000-4000-8000-000000002001',
       'message-flow-deactivated',
       'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
       'Synthetic deactivated message',
@@ -60,13 +126,12 @@ BEGIN
   END;
 
   BEGIN
-    PERFORM kovcheg.create_text_message(
+    PERFORM pg_temp.create_test_text_message(
       (
         SELECT chat_id FROM kovcheg.messages
         WHERE client_idempotency_key = 'message-flow-001'
         ORDER BY created_at LIMIT 1
       ),
-      '00000000-0000-4000-8000-000000002001',
       'message-flow-001',
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       'Synthetic message-flow message',
@@ -92,13 +157,12 @@ WHERE account_id = '00000000-0000-4000-8000-000000002001'
 DO $$
 BEGIN
   BEGIN
-    PERFORM kovcheg.create_text_message(
+    PERFORM pg_temp.create_test_text_message(
       (
         SELECT chat_id FROM kovcheg.messages
         WHERE client_idempotency_key = 'message-flow-001'
         ORDER BY created_at LIMIT 1
       ),
-      '00000000-0000-4000-8000-000000002001',
       'message-flow-001',
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       'Synthetic message-flow message',
@@ -143,9 +207,8 @@ BEGIN
   FROM kovcheg.chat_counters WHERE chat_id = target_chat_id;
 
   BEGIN
-    PERFORM kovcheg.create_text_message(
+    PERFORM pg_temp.create_test_text_message(
       target_chat_id,
-      '00000000-0000-4000-8000-000000002001',
       'message-flow-atomic-failure',
       'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
       'Synthetic atomic failure',
