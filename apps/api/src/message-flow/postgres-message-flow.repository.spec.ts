@@ -83,8 +83,8 @@ describe('PostgresMessageFlowRepository', () => {
 
     await expect(
       repository.readMessageHistory({
-        afterSequence: '8',
         chatId: command.chatId,
+        cursor: { direction: 'after', sequence: '8' },
         limit: 1,
         userId: command.senderUserId,
       }),
@@ -93,6 +93,73 @@ describe('PostgresMessageFlowRepository', () => {
     expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence ASC');
     expect(query.mock.calls[2]?.[1]).toEqual([command.senderUserId, command.chatId, '8', 2]);
     expect(query.mock.calls[3]?.[0]).toBe('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('reads the latest bounded window in ascending response order', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ allowed: true }] })
+      .mockResolvedValueOnce({
+        rows: [
+          { ...messageRow, chat_sequence: '11' },
+          { ...messageRow, chat_sequence: '10' },
+          { ...messageRow, chat_sequence: '9' },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+    const release = vi.fn();
+    const repository = new PostgresMessageFlowRepository({
+      connect: vi.fn().mockResolvedValue({ query, release } as unknown as PoolClient),
+    } as unknown as Pool);
+
+    await expect(
+      repository.readMessageHistory({
+        chatId: command.chatId,
+        cursor: { direction: 'latest' },
+        limit: 2,
+        userId: command.senderUserId,
+      }),
+    ).resolves.toMatchObject({
+      hasMore: true,
+      items: [{ chatSequence: '10' }, { chatSequence: '11' }],
+    });
+    expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence DESC');
+    expect(query.mock.calls[2]?.[0]).not.toContain('message.chat_sequence < $3');
+    expect(query.mock.calls[2]?.[0]).not.toContain('message.chat_sequence > $3');
+    expect(query.mock.calls[2]?.[1]).toEqual([command.senderUserId, command.chatId, 3]);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('reads an exclusive older page and restores ascending response order', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ allowed: true }] })
+      .mockResolvedValueOnce({
+        rows: [
+          { ...messageRow, chat_sequence: '8' },
+          { ...messageRow, chat_sequence: '7' },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+    const release = vi.fn();
+    const repository = new PostgresMessageFlowRepository({
+      connect: vi.fn().mockResolvedValue({ query, release } as unknown as PoolClient),
+    } as unknown as Pool);
+
+    await expect(
+      repository.readMessageHistory({
+        chatId: command.chatId,
+        cursor: { direction: 'before', sequence: '9' },
+        limit: 1,
+        userId: command.senderUserId,
+      }),
+    ).resolves.toMatchObject({ hasMore: true, items: [{ chatSequence: '8' }] });
+    expect(query.mock.calls[2]?.[0]).toContain('message.chat_sequence < $3::bigint');
+    expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence DESC');
+    expect(query.mock.calls[2]?.[1]).toEqual([command.senderUserId, command.chatId, '9', 2]);
     expect(release).toHaveBeenCalledOnce();
   });
 

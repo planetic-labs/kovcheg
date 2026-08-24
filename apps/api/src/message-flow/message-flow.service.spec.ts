@@ -1,7 +1,7 @@
 import type { CorrelationId, TextMessage, Uuid } from '@kovcheg/contracts';
 import { syntheticUserIds } from '@kovcheg/contracts/testing';
 import { HttpException } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ApplicationSessionAuthenticator } from '../session/application-session.js';
 import { ApplicationSessionError } from '../session/application-session.js';
@@ -130,7 +130,7 @@ describe('MessageFlowService', () => {
       createRepository(),
     );
     await expectMachineError(
-      service.readMessageHistory(chatId, activeCookie, '0', '50', correlationId),
+      service.readMessageHistory(chatId, activeCookie, '0', undefined, '50', correlationId),
       503,
       'message-flow.identity-unavailable',
     );
@@ -166,7 +166,17 @@ describe('MessageFlowService', () => {
       'message-flow.invalid-request',
     );
     await expectMachineError(
-      service.readMessageHistory(chatId, activeCookie, '-1', '101', correlationId),
+      service.readMessageHistory(chatId, activeCookie, '-1', undefined, '101', correlationId),
+      400,
+      'message-flow.invalid-request',
+    );
+    await expectMachineError(
+      service.readMessageHistory(chatId, activeCookie, '0', '7', '50', correlationId),
+      400,
+      'message-flow.invalid-request',
+    );
+    await expectMachineError(
+      service.readMessageHistory(chatId, activeCookie, undefined, '0', '50', correlationId),
       400,
       'message-flow.invalid-request',
     );
@@ -199,27 +209,91 @@ describe('MessageFlowService', () => {
     }
   });
 
-  it('returns a deterministic next cursor only when another page exists', async () => {
+  it('keeps explicit afterSequence as the forward catch-up cursor', async () => {
     const secondMessage = {
       ...message,
       chatSequence: '8',
       id: '00000000-0000-4000-8000-000000004102' as Uuid,
     };
+    const readMessageHistory = vi
+      .fn<MessageFlowRepository['readMessageHistory']>()
+      .mockResolvedValue({ hasMore: true, items: [message, secondMessage] });
     const service = new MessageFlowService(
       createSessionAuthenticator(),
-      createRepository({
-        readMessageHistory: () =>
-          Promise.resolve({ hasMore: true, items: [message, secondMessage] }),
-      }),
+      createRepository({ readMessageHistory }),
     );
 
     await expect(
-      service.readMessageHistory(chatId, activeCookie, '6', '2', correlationId),
+      service.readMessageHistory(chatId, activeCookie, '6', undefined, '2', correlationId),
     ).resolves.toEqual({
-      contractVersion: 1,
+      contractVersion: 2,
       hasMore: true,
       items: [message, secondMessage],
       nextAfterSequence: '8',
+      nextBeforeSequence: null,
+    });
+    expect(readMessageHistory).toHaveBeenCalledWith({
+      chatId,
+      cursor: { direction: 'after', sequence: '6' },
+      limit: 2,
+      userId: syntheticUserIds.activePrimary,
+    });
+  });
+
+  it('defaults to the latest page and exposes a stable cursor for older messages', async () => {
+    const secondMessage = {
+      ...message,
+      chatSequence: '8',
+      id: '00000000-0000-4000-8000-000000004102' as Uuid,
+    };
+    const readMessageHistory = vi
+      .fn<MessageFlowRepository['readMessageHistory']>()
+      .mockResolvedValue({ hasMore: true, items: [message, secondMessage] });
+    const service = new MessageFlowService(
+      createSessionAuthenticator(),
+      createRepository({ readMessageHistory }),
+    );
+
+    await expect(
+      service.readMessageHistory(chatId, activeCookie, undefined, undefined, '2', correlationId),
+    ).resolves.toEqual({
+      contractVersion: 2,
+      hasMore: true,
+      items: [message, secondMessage],
+      nextAfterSequence: null,
+      nextBeforeSequence: '7',
+    });
+    expect(readMessageHistory).toHaveBeenCalledWith({
+      chatId,
+      cursor: { direction: 'latest' },
+      limit: 2,
+      userId: syntheticUserIds.activePrimary,
+    });
+  });
+
+  it('uses beforeSequence exclusively for the next older page', async () => {
+    const readMessageHistory = vi
+      .fn<MessageFlowRepository['readMessageHistory']>()
+      .mockResolvedValue({ hasMore: false, items: [message] });
+    const service = new MessageFlowService(
+      createSessionAuthenticator(),
+      createRepository({ readMessageHistory }),
+    );
+
+    await expect(
+      service.readMessageHistory(chatId, activeCookie, undefined, '9', '50', correlationId),
+    ).resolves.toEqual({
+      contractVersion: 2,
+      hasMore: false,
+      items: [message],
+      nextAfterSequence: null,
+      nextBeforeSequence: null,
+    });
+    expect(readMessageHistory).toHaveBeenCalledWith({
+      chatId,
+      cursor: { direction: 'before', sequence: '9' },
+      limit: 50,
+      userId: syntheticUserIds.activePrimary,
     });
   });
 });

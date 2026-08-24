@@ -1,6 +1,7 @@
 import type { CorrelationId, UserId, Uuid } from './foundation-types.js';
 
 export const messageFlowContractVersion = 1 as const;
+export const messageHistoryContractVersion = 2 as const;
 export const chatListContractVersion = 1 as const;
 
 export const messageFlowErrorCodes = Object.freeze([
@@ -49,10 +50,11 @@ export interface CreateTextMessageResponse {
 }
 
 export interface MessageHistoryPage {
-  readonly contractVersion: typeof messageFlowContractVersion;
+  readonly contractVersion: typeof messageHistoryContractVersion;
   readonly hasMore: boolean;
   readonly items: readonly TextMessage[];
   readonly nextAfterSequence: ChatSequence | null;
+  readonly nextBeforeSequence: ChatSequence | null;
 }
 
 export interface MessageFlowRequestContext {
@@ -62,6 +64,7 @@ export interface MessageFlowRequestContext {
 
 const uuidSchema = Object.freeze({ format: 'uuid', type: 'string' });
 const chatSequenceSchema = Object.freeze({ pattern: '^(0|[1-9][0-9]*)$', type: 'string' });
+const positiveChatSequenceSchema = Object.freeze({ pattern: '^[1-9][0-9]*$', type: 'string' });
 
 export const availableChatJsonSchema = Object.freeze({
   additionalProperties: false,
@@ -138,11 +141,27 @@ export const createTextMessageResponseJsonSchema = Object.freeze({
 export const messageHistoryPageJsonSchema = Object.freeze({
   additionalProperties: false,
   properties: {
-    contractVersion: { enum: [messageFlowContractVersion], type: 'integer' },
-    hasMore: { type: 'boolean' },
-    items: { items: textMessageJsonSchema, type: 'array' },
-    nextAfterSequence: { nullable: true, ...chatSequenceSchema },
+    contractVersion: { enum: [messageHistoryContractVersion], type: 'integer' },
+    hasMore: {
+      description: 'Whether another page exists in the requested cursor direction.',
+      type: 'boolean',
+    },
+    items: {
+      description: 'Visible messages in ascending chat-sequence order.',
+      items: textMessageJsonSchema,
+      type: 'array',
+    },
+    nextAfterSequence: {
+      ...chatSequenceSchema,
+      description: 'Forward cursor when another catch-up page exists.',
+      nullable: true,
+    },
+    nextBeforeSequence: {
+      ...positiveChatSequenceSchema,
+      description: 'Exclusive backward cursor when another older page exists.',
+      nullable: true,
+    },
   },
-  required: ['contractVersion', 'hasMore', 'items', 'nextAfterSequence'],
+  required: ['contractVersion', 'hasMore', 'items', 'nextAfterSequence', 'nextBeforeSequence'],
   type: 'object',
 });

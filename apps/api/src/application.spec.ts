@@ -76,6 +76,7 @@ describe('API HTTP foundation', () => {
           get: {
             parameters: expect.arrayContaining([
               expect.objectContaining({ in: 'query', name: 'afterSequence' }),
+              expect.objectContaining({ in: 'query', name: 'beforeSequence' }),
               expect.objectContaining({ in: 'query', name: 'limit' }),
             ]),
             responses: { 200: expect.any(Object), 403: expect.any(Object) },

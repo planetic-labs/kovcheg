@@ -133,6 +133,25 @@ async function main(): Promise<void> {
       'The conflict must be machine-readable and correlation-bound',
     );
 
+    const historyClientMessageIds = Array.from(
+      { length: 5 },
+      (_, index) => `integration-history-${String(index + 1).padStart(3, '0')}`,
+    );
+    for (const [index, clientMessageId] of historyClientMessageIds.entries()) {
+      const response = await fetch(endpoint, {
+        body: JSON.stringify({
+          clientMessageId,
+          text: `Synthetic history message ${index + 1}`,
+        }),
+        headers: {
+          ...headers,
+          [correlationIdHeaderName]: `integration-history-create-${index + 1}`,
+        },
+        method: 'POST',
+      });
+      assert(response.status === 201, 'Each synthetic history message must be created once');
+    }
+
     const forbidden = await fetch(endpoint, {
       headers: {
         cookie: `kovcheg_session=${syntheticUserIds.activeSecondary}`,
@@ -141,15 +160,130 @@ async function main(): Promise<void> {
     });
     assert(forbidden.status === 403, 'A non-member must not read another direct chat');
 
-    const history = await fetch(`${endpoint}?afterSequence=0&limit=1`, {
+    const latestHistory = await fetch(`${endpoint}?limit=2`, {
       headers: {
         cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
-        [correlationIdHeaderName]: 'integration-history-page',
+        [correlationIdHeaderName]: 'integration-history-latest',
       },
     });
-    assert(history.status === 200, 'An active member must read message history');
-    const historyPayload = await readJson(history);
-    assert(Array.isArray(historyPayload.items), 'History must return an item array');
+    assert(latestHistory.status === 200, 'An active member must read the latest history window');
+    const latestPayload = await readJson(latestHistory);
+    assert(latestPayload.contractVersion === 2, 'History pagination must use contract version 2');
+    assert(Array.isArray(latestPayload.items), 'Latest history must return an item array');
+    const latestItems = latestPayload.items as Record<string, unknown>[];
+    assert(
+      latestItems.map((item) => item.clientMessageId).join(',') ===
+        historyClientMessageIds.slice(-2).join(','),
+      'The default history page must contain the newest bounded window in ascending order',
+    );
+    const latestBeforeSequence = latestPayload.nextBeforeSequence;
+    assert(
+      latestPayload.hasMore === true &&
+        typeof latestBeforeSequence === 'string' &&
+        latestPayload.nextAfterSequence === null,
+      'The latest page must expose only the older-page cursor when older messages exist',
+    );
+
+    const middleHistory = await fetch(
+      `${endpoint}?beforeSequence=${latestBeforeSequence}&limit=2`,
+      {
+        headers: {
+          cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+          [correlationIdHeaderName]: 'integration-history-middle',
+        },
+      },
+    );
+    assert(middleHistory.status === 200, 'The next older history page must be readable');
+    const middlePayload = await readJson(middleHistory);
+    assert(Array.isArray(middlePayload.items), 'The middle history page must return an item array');
+    const middleItems = middlePayload.items as Record<string, unknown>[];
+    assert(
+      middleItems.map((item) => item.clientMessageId).join(',') ===
+        historyClientMessageIds.slice(1, 3).join(','),
+      'The older cursor must be exclusive and preserve ascending response order',
+    );
+    const middleBeforeSequence = middlePayload.nextBeforeSequence;
+    assert(
+      middlePayload.hasMore === true && typeof middleBeforeSequence === 'string',
+      'The middle page must expose another older-page cursor',
+    );
+
+    const oldestHistory = await fetch(
+      `${endpoint}?beforeSequence=${middleBeforeSequence}&limit=2`,
+      {
+        headers: {
+          cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+          [correlationIdHeaderName]: 'integration-history-oldest',
+        },
+      },
+    );
+    assert(oldestHistory.status === 200, 'The oldest bounded history page must be readable');
+    const oldestPayload = await readJson(oldestHistory);
+    assert(Array.isArray(oldestPayload.items), 'The oldest history page must return an item array');
+    const oldestItems = oldestPayload.items as Record<string, unknown>[];
+    assert(
+      oldestItems.map((item) => item.clientMessageId).join(',') ===
+        ['integration-message-001', historyClientMessageIds[0]].join(','),
+      'Backward pagination must reach the first visible message without a gap',
+    );
+    assert(
+      oldestPayload.hasMore === false && oldestPayload.nextBeforeSequence === null,
+      'The oldest page must terminate backward pagination',
+    );
+
+    const completeHistory = [...oldestItems, ...middleItems, ...latestItems];
+    const completeMessageIds = completeHistory.map((item) => item.id);
+    assert(
+      completeHistory.map((item) => item.clientMessageId).join(',') ===
+        ['integration-message-001', ...historyClientMessageIds].join(','),
+      'Backward pages must reconstruct the visible history in exact order',
+    );
+    assert(
+      new Set(completeMessageIds).size === completeMessageIds.length,
+      'Backward pages must not duplicate a message at cursor boundaries',
+    );
+    for (let index = 1; index < completeHistory.length; index += 1) {
+      const previousSequence = completeHistory[index - 1]?.chatSequence;
+      const currentSequence = completeHistory[index]?.chatSequence;
+      assert(
+        typeof previousSequence === 'string' &&
+          typeof currentSequence === 'string' &&
+          BigInt(currentSequence) > BigInt(previousSequence),
+        'Backward pages must preserve strictly increasing chat sequence order',
+      );
+    }
+
+    const createdSequence = (createdPayload.message as Record<string, unknown>).chatSequence;
+    assert(typeof createdSequence === 'string', 'The created message must expose chatSequence');
+    const catchUpHistory = await fetch(`${endpoint}?afterSequence=${createdSequence}&limit=2`, {
+      headers: {
+        cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+        [correlationIdHeaderName]: 'integration-history-catch-up',
+      },
+    });
+    assert(catchUpHistory.status === 200, 'Explicit afterSequence catch-up must remain available');
+    const catchUpPayload = await readJson(catchUpHistory);
+    assert(Array.isArray(catchUpPayload.items), 'Catch-up history must return an item array');
+    const catchUpItems = catchUpPayload.items as Record<string, unknown>[];
+    assert(
+      catchUpItems.map((item) => item.clientMessageId).join(',') ===
+        historyClientMessageIds.slice(0, 2).join(',') &&
+        catchUpPayload.hasMore === true &&
+        catchUpPayload.nextAfterSequence === catchUpItems.at(-1)?.chatSequence &&
+        catchUpPayload.nextBeforeSequence === null,
+      'Forward catch-up must preserve its cursor and ascending page semantics',
+    );
+
+    const conflictingCursors = await fetch(
+      `${endpoint}?afterSequence=${createdSequence}&beforeSequence=${latestBeforeSequence}`,
+      {
+        headers: {
+          cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+          [correlationIdHeaderName]: 'integration-history-conflicting-cursors',
+        },
+      },
+    );
+    assert(conflictingCursors.status === 400, 'Two history cursor directions must be rejected');
 
     const chatList = await fetch(`${baseUrl}/chats`, {
       headers: {

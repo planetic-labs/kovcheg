@@ -174,6 +174,19 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
         throw new MessageFlowRepositoryError('forbidden');
       }
 
+      const descending = command.cursor.direction !== 'after';
+      const cursorPredicate =
+        command.cursor.direction === 'latest'
+          ? ''
+          : command.cursor.direction === 'after'
+            ? 'AND message.chat_sequence > $3::bigint'
+            : 'AND message.chat_sequence < $3::bigint';
+      const limitParameter = command.cursor.direction === 'latest' ? '$3' : '$4';
+      const parameters =
+        command.cursor.direction === 'latest'
+          ? [command.userId, command.chatId, command.limit + 1]
+          : [command.userId, command.chatId, command.cursor.sequence, command.limit + 1];
+      const order = descending ? 'DESC' : 'ASC';
       const result = await client.query<MessageRow>(
         `SELECT
            message.id,
@@ -189,7 +202,7 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
           AND membership.account_id = $1
           AND membership.status = 'active'
          WHERE message.chat_id = $2
-           AND message.chat_sequence > $3::bigint
+           ${cursorPredicate}
            AND EXISTS (
              SELECT 1
              FROM kovcheg.chat_membership_periods AS period
@@ -200,14 +213,15 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
                  OR message.chat_sequence <= period.revoked_after_sequence
                )
            )
-         ORDER BY message.chat_sequence ASC, message.id ASC
-         LIMIT $4`,
-        [command.userId, command.chatId, command.afterSequence, command.limit + 1],
+         ORDER BY message.chat_sequence ${order}, message.id ${order}
+         LIMIT ${limitParameter}`,
+        parameters,
       );
       await client.query('COMMIT');
 
       const hasMore = result.rows.length > command.limit;
-      const rows = hasMore ? result.rows.slice(0, command.limit) : result.rows;
+      const pageRows = hasMore ? result.rows.slice(0, command.limit) : result.rows;
+      const rows = descending ? [...pageRows].reverse() : pageRows;
       return Object.freeze({
         hasMore,
         items: Object.freeze(rows.map(mapMessage)),
