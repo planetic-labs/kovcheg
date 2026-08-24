@@ -1,0 +1,3 @@
+test('ordinary test', { skip: false, todo: false, only: false }, () => {});
+const harmless = 'test.skip and context.skip are only text';
+// describe.only('commented out', () => {});

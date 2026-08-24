@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "workflows": {
+    ".github/workflows/ci.yml": {
+      "contents": "read"
+    },
+    ".github/workflows/codeql.yml": {
+      "actions": "read",
+      "contents": "read",
+      "security-events": "write"
+    },
+    ".github/workflows/container-security.yml": {
+      "contents": "read"
+    },
+    ".github/workflows/deep-verification.yml": {
+      "contents": "read"
+    },
+    ".github/workflows/security.yml": {
+      "contents": "read"
+    }
+  }
+}
