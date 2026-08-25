@@ -62,6 +62,54 @@ describe('PostgresMessageFlowRepository', () => {
     ]);
   });
 
+  it('uses session-bound group creation and scoped administrator entrypoints', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            authorization_version: '1',
+            chat_id: command.chatId,
+            is_administrator: true,
+            target_account_id: command.operatorPrincipal.userId,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            authorization_version: '2',
+            chat_id: command.chatId,
+            is_administrator: true,
+            target_account_id: '00000000-0000-4000-8000-000000000002',
+          },
+        ],
+      });
+    const repository = new PostgresMessageFlowRepository({ query } as unknown as Pool, () => now);
+
+    await expect(
+      repository.createGroupChat({
+        chatId: command.chatId,
+        correlationId: command.correlationId,
+        operatorPrincipal: command.operatorPrincipal,
+        reason: 'group-created',
+      }),
+    ).resolves.toMatchObject({ authorizationVersion: 1, isAdministrator: true });
+    await expect(
+      repository.setChatAdministrator({
+        chatId: command.chatId,
+        correlationId: command.correlationId,
+        granted: true,
+        operatorPrincipal: command.operatorPrincipal,
+        reason: 'creator-assigned',
+        targetAccountId: '00000000-0000-4000-8000-000000000002' as UserId,
+        version: 2,
+      }),
+    ).resolves.toMatchObject({ authorizationVersion: 2, isAdministrator: true });
+    expect(query.mock.calls[0]?.[0]).toContain('create_group_chat_for_session');
+    expect(query.mock.calls[1]?.[0]).toContain('set_chat_administrator_for_session');
+  });
+
   it('passes a requested persona without exposing or replacing the operator principal', async () => {
     const personaAccountId = '00000000-0000-4000-8000-000000000201' as Uuid;
     const query = vi.fn().mockResolvedValue({
@@ -196,7 +244,12 @@ describe('PostgresMessageFlowRepository', () => {
   it('lists only PostgreSQL-selected active memberships in stable order', async () => {
     const query = vi.fn().mockResolvedValue({
       rows: [
-        { can_read: true, can_write: true, id: command.chatId, kind: 'direct' },
+        {
+          can_read: true,
+          can_write: true,
+          id: command.chatId,
+          kind: 'direct',
+        },
         {
           can_read: true,
           can_write: false,

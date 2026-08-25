@@ -1,5 +1,6 @@
 import type {
   AvailableChatList,
+  ChatAdministrationResponse,
   CorrelationId,
   CorrelationRequest,
   CreateTextMessageResponse,
@@ -7,10 +8,13 @@ import type {
 } from '@kovcheg/contracts';
 import {
   availableChatListJsonSchema,
+  chatAdministrationResponseJsonSchema,
+  createGroupChatRequestJsonSchema,
   createTextMessageRequestJsonSchema,
   createTextMessageResponseJsonSchema,
   machineErrorJsonSchema,
   messageHistoryPageJsonSchema,
+  setChatAdministratorRequestJsonSchema,
 } from '@kovcheg/contracts';
 import {
   Body,
@@ -141,6 +145,46 @@ export class ChatListController {
   ): Promise<AvailableChatList> {
     return this.messageFlow.listAvailableChats(
       cookieHeader,
+      request.correlationId as CorrelationId,
+    );
+  }
+
+  @ApiBody({ schema: createGroupChatRequestJsonSchema })
+  @ApiCreatedResponse({ schema: chatAdministrationResponseJsonSchema })
+  @ApiBadRequestResponse(errorResponse)
+  @ApiForbiddenResponse(errorResponse)
+  @Post('groups')
+  createGroupChat(
+    @Headers('cookie') cookieHeader: string | undefined,
+    @Body() body: unknown,
+    @Req() request: CorrelationRequest,
+  ): Promise<ChatAdministrationResponse> {
+    return this.messageFlow.createGroupChat(
+      cookieHeader,
+      body,
+      request.correlationId as CorrelationId,
+    );
+  }
+
+  @ApiParam({ format: 'uuid', name: 'chatId', type: 'string' })
+  @ApiParam({ format: 'uuid', name: 'accountId', type: 'string' })
+  @ApiBody({ schema: setChatAdministratorRequestJsonSchema })
+  @ApiOkResponse({ schema: chatAdministrationResponseJsonSchema })
+  @ApiBadRequestResponse(errorResponse)
+  @ApiForbiddenResponse(errorResponse)
+  @Post(':chatId/administrators/:accountId')
+  setChatAdministrator(
+    @Param('chatId') chatId: string,
+    @Param('accountId') accountId: string,
+    @Headers('cookie') cookieHeader: string | undefined,
+    @Body() body: unknown,
+    @Req() request: CorrelationRequest,
+  ): Promise<ChatAdministrationResponse> {
+    return this.messageFlow.setChatAdministrator(
+      chatId,
+      accountId,
+      cookieHeader,
+      body,
       request.correlationId as CorrelationId,
     );
   }

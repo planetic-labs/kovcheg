@@ -151,8 +151,8 @@ async function administrativeRequest(input: {
 
 async function main(): Promise<void> {
   const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
-  const administratorId = randomUUID() as UserId;
-  const administratorEmail = `administrator-${suffix}@auth.invalid`;
+  const administratorId = '00000000-0000-4000-8000-000000003001' as UserId;
+  const administratorEmail = 'synthetic-administrator@auth.invalid';
   const activeEmail = `active-${suffix}@auth.invalid`;
   const inactiveEmail = `inactive-${suffix}@auth.invalid`;
   const clock = new ManualClock(Date.UTC(2031, 0, 1));
@@ -182,16 +182,17 @@ async function main(): Promise<void> {
     const bootstrapResults = await Promise.all(
       Array.from({ length: 8 }, async () =>
         runtime.authService.bootstrapAdministrator({
-          bootstrapId: `synthetic-bootstrap-${suffix}`,
-          displayName: 'Synthetic Integration Administrator',
+          bootstrapId: 'synthetic-bootstrap-0001',
+          displayName: 'Synthetic Administrator',
           email: administratorEmail,
           userId: administratorId,
         }),
       ),
     );
     assert(
-      bootstrapResults.filter((result) => result.created).length === 1,
-      'Concurrent administrator bootstrap must create exactly once',
+      bootstrapResults.filter((result) => result.created).length <= 1 &&
+        bootstrapResults.every((result) => result.account.userId === administratorId),
+      'Concurrent administrator bootstrap must resolve to the unique server owner',
     );
 
     integrationStage = 'administrator-challenge-issue';

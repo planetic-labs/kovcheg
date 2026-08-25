@@ -498,6 +498,53 @@ END;
 $$;
 
 DO $$
+BEGIN
+  IF to_regprocedure(
+    'kovcheg.create_group_chat_for_session(uuid,uuid,uuid,character varying,timestamp with time zone,character varying)'
+  ) IS NOT NULL THEN
+    PERFORM pg_temp.assert_true(
+      has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.create_group_chat_for_session(uuid,uuid,uuid,character varying,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.set_chat_administrator_for_session(uuid,uuid,uuid,uuid,boolean,character varying,bigint,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.create_group_chat_for_session(uuid,uuid,uuid,character varying,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.require_active_personal_application_session(uuid,uuid,timestamp with time zone)',
+        'EXECUTE'
+      ),
+      'only the message runtime may execute scoped authenticated chat administration entrypoints'
+    );
+
+    PERFORM pg_temp.assert_true(
+      NOT has_table_privilege(
+        'kovcheg_app', 'kovcheg.server_owner', 'SELECT,INSERT,UPDATE,DELETE'
+      )
+      AND NOT has_table_privilege(
+        'kovcheg_auth_app', 'kovcheg.server_owner', 'SELECT,INSERT,UPDATE,DELETE'
+      )
+      AND NOT has_table_privilege(
+        'kovcheg_app',
+        'kovcheg.chat_administration_versions',
+        'SELECT,INSERT,UPDATE,DELETE'
+      ),
+      'runtime roles must not bypass owner or chat-administration functions with direct table access'
+    );
+  END IF;
+END;
+$$;
+
+DO $$
 DECLARE
   expected_event_count integer;
 BEGIN

@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 
 import type {
   AvailableChatList,
+  ChatAdministrationResponse,
   CorrelationId,
   CreateTextMessageResponse,
   MessageHistoryPage,
 } from '@kovcheg/contracts';
 import {
   chatListContractVersion,
+  chatAdministrationContractVersion,
   messageFlowContractVersion,
   messageHistoryContractVersion,
 } from '@kovcheg/contracts';
@@ -25,8 +27,10 @@ import {
 import {
   parseAfterSequence,
   parseBeforeSequence,
+  parseCreateGroupChatRequest,
   parseCreateTextMessageRequest,
   parseHistoryLimit,
+  parseSetChatAdministratorRequest,
   parseUuid,
 } from './message-flow.validation.js';
 import type { ApplicationSessionAuthenticator } from '../session/application-session.js';
@@ -43,6 +47,36 @@ export class MessageFlowService {
     @Inject(messageFlowRepositoryToken)
     private readonly repository: MessageFlowRepository,
   ) {}
+
+  async createGroupChat(
+    cookieHeader: string | undefined,
+    bodyValue: unknown,
+    correlationId: CorrelationId,
+  ): Promise<ChatAdministrationResponse> {
+    const principal = await this.requirePrincipal(cookieHeader, correlationId);
+    const body = parseCreateGroupChatRequest(bodyValue);
+    if (body === null) {
+      throw new MessageFlowHttpError(
+        'message-flow.invalid-request',
+        correlationId,
+        HttpStatus.BAD_REQUEST,
+        'The chat administration request is invalid.',
+      );
+    }
+    try {
+      return Object.freeze({
+        ...(await this.repository.createGroupChat({
+          chatId: body.chatId,
+          correlationId,
+          operatorPrincipal: principal,
+          reason: body.reason,
+        })),
+        contractVersion: chatAdministrationContractVersion,
+      });
+    } catch (error) {
+      throw this.mapRepositoryError(error, correlationId);
+    }
+  }
 
   async createTextMessage(
     chatIdValue: unknown,
@@ -154,6 +188,43 @@ export class MessageFlowService {
       return Object.freeze({
         contractVersion: chatListContractVersion,
         items: await this.repository.listAvailableChats(principal.userId),
+      });
+    } catch (error) {
+      throw this.mapRepositoryError(error, correlationId);
+    }
+  }
+
+  async setChatAdministrator(
+    chatIdValue: unknown,
+    targetAccountIdValue: unknown,
+    cookieHeader: string | undefined,
+    bodyValue: unknown,
+    correlationId: CorrelationId,
+  ): Promise<ChatAdministrationResponse> {
+    const principal = await this.requirePrincipal(cookieHeader, correlationId);
+    const chatId = parseUuid(chatIdValue);
+    const targetAccountId = parseUuid(targetAccountIdValue);
+    const body = parseSetChatAdministratorRequest(bodyValue);
+    if (chatId === null || targetAccountId === null || body === null) {
+      throw new MessageFlowHttpError(
+        'message-flow.invalid-request',
+        correlationId,
+        HttpStatus.BAD_REQUEST,
+        'The chat administration request is invalid.',
+      );
+    }
+    try {
+      return Object.freeze({
+        ...(await this.repository.setChatAdministrator({
+          chatId,
+          correlationId,
+          granted: body.granted,
+          operatorPrincipal: principal,
+          reason: body.reason,
+          targetAccountId,
+          version: body.version,
+        })),
+        contractVersion: chatAdministrationContractVersion,
       });
     } catch (error) {
       throw this.mapRepositoryError(error, correlationId);

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   availableChatListJsonSchema,
+  chatAdministrationContractVersion,
   chatListContractVersion,
+  createGroupChatRequestJsonSchema,
   createTextMessageRequestJsonSchema,
   messageFlowContractVersion,
   messageFlowErrorCodes,
@@ -23,6 +25,14 @@ describe('message-flow contracts', () => {
     });
     expect(availableChatListJsonSchema.properties.items.items).toMatchObject({
       required: ['capabilities', 'id', 'kind'],
+    });
+  });
+
+  it('publishes a minimal versioned group-administration seam', () => {
+    expect(chatAdministrationContractVersion).toBe(1);
+    expect(createGroupChatRequestJsonSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['chatId', 'reason'],
     });
   });
 

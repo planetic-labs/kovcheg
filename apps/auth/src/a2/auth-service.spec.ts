@@ -214,6 +214,77 @@ describe('A2 administrator and account use cases', () => {
     ).rejects.toMatchObject({ code: 'auth.invalid-session' });
   });
 
+  it('keeps owner-only platform administration separate from delegated functional grants', async () => {
+    const fixture = createFixture();
+    await bootstrap(fixture);
+    const ownerSession = await login(fixture, 'administrator@example.invalid', 'owner');
+    const delegated = await fixture.service.createAccount(
+      ownerSession.sessionToken,
+      {
+        displayName: 'Delegated Administrator',
+        email: 'delegated-administrator@example.invalid',
+      },
+      administrationCorrelationId,
+    );
+    await fixture.service.grantFunctionalGrant(
+      ownerSession.sessionToken,
+      delegated.userId,
+      'platform_administrator',
+      { reason: 'owner-delegated', version: 2 },
+      administrationCorrelationId,
+    );
+    const delegatedSession = await login(fixture, delegated.email, 'delegated-administrator');
+    const specialist = await fixture.service.createAccount(
+      delegatedSession.sessionToken,
+      { displayName: 'Synthetic Specialist', email: 'specialist@example.invalid' },
+      administrationCorrelationId,
+    );
+
+    for (const [grant, version] of [
+      ['editor', 2],
+      ['chronicler', 3],
+      ['technical_administrator', 4],
+    ] as const) {
+      await fixture.service.grantFunctionalGrant(
+        delegatedSession.sessionToken,
+        specialist.userId,
+        grant,
+        { reason: 'delegated-assignment', version },
+        administrationCorrelationId,
+      );
+    }
+    await expect(
+      fixture.service.grantFunctionalGrant(
+        delegatedSession.sessionToken,
+        specialist.userId,
+        'platform_administrator',
+        { reason: 'delegated-denied', version: 5 },
+        administrationCorrelationId,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.forbidden' });
+
+    const specialistSession = await login(fixture, specialist.email, 'specialist');
+    await expect(
+      fixture.service.authenticateSession(specialistSession.sessionToken),
+    ).resolves.toMatchObject({
+      administrativeCapabilities: {
+        canManageAccounts: false,
+        canManageFunctionalGrants: false,
+        canManagePlatformAdministrators: false,
+      },
+      diagnosticCapabilities: {
+        canReadBuildAndMigrationVersions: true,
+        canReadHealthAndReadiness: true,
+        canReadQueueAndTechnicalState: true,
+        canReadSanitizedDiagnostics: true,
+      },
+      functionalGrants: ['editor', 'chronicler', 'technical_administrator'],
+      isServerOwner: false,
+      materialCapabilities: [],
+      sensitiveCapabilities: { canPerformSensitiveActions: false },
+    });
+  });
+
   it('keeps browser sessions independent, logs out only the current one, and deactivation revokes all', async () => {
     const fixture = createFixture();
     await bootstrap(fixture);

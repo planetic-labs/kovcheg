@@ -331,7 +331,7 @@ INSERT INTO kovcheg.auth_sessions (
 SELECT pg_temp.assert_true(
   (
     SELECT principal @> pg_catalog.jsonb_build_object(
-      'contractVersion', 1,
+      'contractVersion', 2,
       'accountAccess', 'member',
       'accountStatus', 'active',
       'sessionStatus', 'active',
@@ -341,7 +341,18 @@ SELECT pg_temp.assert_true(
       AND principal -> 'administrativeCapabilities' = pg_catalog.jsonb_build_object(
         'canManageAccounts', false,
         'canManageDomainStatus', false,
-        'canManageFunctionalGrants', false
+        'canManageFunctionalGrants', false,
+        'canManagePlatformAdministrators', false
+      )
+      AND principal -> 'diagnosticCapabilities' = pg_catalog.jsonb_build_object(
+        'canReadHealthAndReadiness', false,
+        'canReadBuildAndMigrationVersions', false,
+        'canReadQueueAndTechnicalState', false,
+        'canReadSanitizedDiagnostics', false
+      )
+      AND principal -> 'materialCapabilities' = '[]'::jsonb
+      AND principal -> 'sensitiveCapabilities' = pg_catalog.jsonb_build_object(
+        'canPerformSensitiveActions', false
       )
     FROM (
       SELECT kovcheg.read_current_principal_authorization(

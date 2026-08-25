@@ -136,7 +136,7 @@ function identifier<T extends string>(value: string | null): T {
 function grants(value: unknown): readonly FunctionalGrant[] {
   const parsed =
     typeof value === 'string' &&
-    /^\{(?:(?:warrior|platform_administrator|chronicler)(?:,(?:warrior|platform_administrator|chronicler))*)?\}$/.test(
+    /^\{(?:(?:warrior|platform_administrator|chronicler|editor|technical_administrator)(?:,(?:warrior|platform_administrator|chronicler|editor|technical_administrator))*)?\}$/.test(
       value,
     )
       ? value.slice(1, -1).split(',')

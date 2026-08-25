@@ -922,17 +922,30 @@ SELECT pg_temp.assert_true(
 
 SELECT pg_temp.assert_true(
   (
-    SELECT created
-      AND account_access = 'member'
-      AND functional_grants @> ARRAY['platform_administrator']
-    FROM kovcheg.bootstrap_role_capable_administrator(
-      'synthetic-bootstrap-0002',
+    SELECT account_access = 'member'
+      AND functional_grants = ARRAY[]::text[]
+    FROM kovcheg.admin_create_role_capable_account(
+      repeat('m', 43),
       '00000000-0000-4000-8000-000000003004',
       'synthetic-administrator-two@auth.invalid',
-      'Synthetic Administrator Two'
+      'Synthetic Administrator Two',
+      '2030-01-01 00:12:06+00',
+      'role-followup-create-delegated'
+    )
+  )
+  AND (
+    SELECT functional_grants @> ARRAY['platform_administrator']
+    FROM kovcheg.admin_grant_functional_grant(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003004',
+      'platform_administrator',
+      'owner-delegated',
+      2,
+      '2030-01-01 00:12:07+00',
+      'role-followup-grant-platform-administrator'
     )
   ),
-  'a second administrator fixture must be bootstrapped independently'
+  'only the established owner may explicitly delegate platform administration'
 );
 
 SELECT pg_temp.assert_true(

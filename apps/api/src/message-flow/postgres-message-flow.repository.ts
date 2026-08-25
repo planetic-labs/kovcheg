@@ -47,6 +47,13 @@ interface ChatRow extends QueryResultRow {
   readonly kind: string;
 }
 
+interface ChatAdministrationRow extends QueryResultRow {
+  readonly authorization_version: string;
+  readonly chat_id: string;
+  readonly is_administrator: boolean;
+  readonly target_account_id: string;
+}
+
 function mapChat(row: ChatRow): AvailableChat {
   if (row.kind !== 'direct' && row.kind !== 'group') {
     throw new MessageFlowRepositoryError('internal');
@@ -58,6 +65,23 @@ function mapChat(row: ChatRow): AvailableChat {
     capabilities: Object.freeze({ canRead: row.can_read, canWrite: row.can_write }),
     id: row.id as Uuid,
     kind: row.kind as ChatKind,
+  });
+}
+
+function mapChatAdministration(row: ChatAdministrationRow) {
+  const authorizationVersion = Number.parseInt(row.authorization_version, 10);
+  if (
+    !Number.isSafeInteger(authorizationVersion) ||
+    authorizationVersion < 1 ||
+    typeof row.is_administrator !== 'boolean'
+  ) {
+    throw new MessageFlowRepositoryError('internal');
+  }
+  return Object.freeze({
+    authorizationVersion,
+    chatId: row.chat_id as Uuid,
+    isAdministrator: row.is_administrator,
+    targetAccountId: row.target_account_id as Uuid,
   });
 }
 
@@ -87,6 +111,9 @@ function mapPostgresError(error: unknown): MessageFlowRepositoryError {
     postgresError.constraint === 'messages_idempotency_unique'
   ) {
     return new MessageFlowRepositoryError('idempotency-key-reused');
+  }
+  if (postgresError.code === '23505' || postgresError.code === 'P0002') {
+    return new MessageFlowRepositoryError('invalid-request');
   }
   if (
     postgresError.code === '22001' ||
@@ -121,6 +148,28 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
 
   onModuleDestroy(): Promise<void> {
     return this.close();
+  }
+
+  async createGroupChat(command: Parameters<MessageFlowRepository['createGroupChat']>[0]) {
+    try {
+      const result = await this.pool.query<ChatAdministrationRow>(
+        `SELECT chat_id, target_account_id, is_administrator, authorization_version
+         FROM kovcheg.create_group_chat_for_session($1, $2, $3, $4, $5, $6)`,
+        [
+          command.chatId,
+          command.operatorPrincipal.sessionId,
+          command.operatorPrincipal.userId,
+          command.reason,
+          this.clock(),
+          command.correlationId,
+        ],
+      );
+      const row = result.rows[0];
+      if (row === undefined) throw new MessageFlowRepositoryError('unavailable');
+      return mapChatAdministration(row);
+    } catch (error) {
+      throw mapPostgresError(error);
+    }
   }
 
   async createTextMessage(command: CreateTextMessageCommand): Promise<CreateTextMessageResult> {
@@ -226,6 +275,35 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
       throw mapPostgresError(error);
     } finally {
       client.release();
+    }
+  }
+
+  async setChatAdministrator(
+    command: Parameters<MessageFlowRepository['setChatAdministrator']>[0],
+  ) {
+    try {
+      const result = await this.pool.query<ChatAdministrationRow>(
+        `SELECT chat_id, target_account_id, is_administrator, authorization_version
+         FROM kovcheg.set_chat_administrator_for_session(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9
+         )`,
+        [
+          command.chatId,
+          command.operatorPrincipal.sessionId,
+          command.operatorPrincipal.userId,
+          command.targetAccountId,
+          command.granted,
+          command.reason,
+          command.version,
+          this.clock(),
+          command.correlationId,
+        ],
+      );
+      const row = result.rows[0];
+      if (row === undefined) throw new MessageFlowRepositoryError('unavailable');
+      return mapChatAdministration(row);
+    } catch (error) {
+      throw mapPostgresError(error);
     }
   }
 

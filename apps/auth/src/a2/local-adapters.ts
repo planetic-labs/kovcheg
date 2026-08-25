@@ -34,6 +34,7 @@ interface StoredAccount {
   domainStatus: DomainStatus;
   email: string;
   functionalGrants: FunctionalGrant[];
+  isServerOwner: boolean;
   status: AccountStatus;
   userId: UserId;
 }
@@ -66,6 +67,7 @@ function cloneAccount(account: StoredAccount): AccountRecord {
 
 function sessionPrincipal(account: StoredAccount, session: StoredSession): SessionPrincipal {
   const isAdministrator = account.functionalGrants.includes('platform_administrator');
+  const isTechnicalAdministrator = account.functionalGrants.includes('technical_administrator');
   return Object.freeze({
     accountAccess: 'member',
     accountStatus: 'active',
@@ -73,10 +75,20 @@ function sessionPrincipal(account: StoredAccount, session: StoredSession): Sessi
       canManageAccounts: isAdministrator,
       canManageDomainStatus: isAdministrator,
       canManageFunctionalGrants: isAdministrator,
+      canManagePlatformAdministrators: account.isServerOwner,
     }),
     contractVersion: principalAuthorizationContractVersion,
+    diagnosticCapabilities: Object.freeze({
+      canReadBuildAndMigrationVersions: isTechnicalAdministrator,
+      canReadHealthAndReadiness: isTechnicalAdministrator,
+      canReadQueueAndTechnicalState: isTechnicalAdministrator,
+      canReadSanitizedDiagnostics: isTechnicalAdministrator,
+    }),
     domainStatus: account.domainStatus,
     functionalGrants: Object.freeze([...account.functionalGrants]),
+    isServerOwner: account.isServerOwner,
+    materialCapabilities: Object.freeze([]),
+    sensitiveCapabilities: Object.freeze({ canPerformSensitiveActions: false }),
     sessionId: session.sessionId,
     sessionStatus: 'active',
     userId: account.userId,
@@ -177,12 +189,16 @@ export class LocalAuthRepository implements AuthRepository {
       if (this.accountsById.has(input.userId) || this.accountsByEmail.has(input.email)) {
         throw new AuthRepositoryConflictError();
       }
+      if (this.accountsById.size > 0 && this.bootstrapAccounts.size > 0) {
+        throw new AuthRepositoryConflictError();
+      }
 
       const account: StoredAccount = {
         displayName: input.displayName,
         domainStatus: 'incubator_participant',
         email: input.email,
         functionalGrants: ['platform_administrator'],
+        isServerOwner: true,
         status: 'active',
         userId: input.userId,
       };
@@ -257,6 +273,7 @@ export class LocalAuthRepository implements AuthRepository {
         domainStatus: 'incubator_participant',
         email: input.email,
         functionalGrants: [],
+        isServerOwner: false,
         status: 'active',
         userId: input.userId,
       };
@@ -277,7 +294,10 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['grantFunctionalGrantAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     return this.queue.run(() => {
-      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const actor = this.requireAdministrator(input.actorSessionVerifier, input.now);
+      if (input.grant === 'platform_administrator' && !actor.isServerOwner) {
+        throw new AuthRepositoryAuthorizationError();
+      }
       const account = this.requireAccount(input.userId);
       if (!account.functionalGrants.includes(input.grant)) {
         account.functionalGrants.push(input.grant);
@@ -366,8 +386,14 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['revokeFunctionalGrantAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     return this.queue.run(() => {
-      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const actor = this.requireAdministrator(input.actorSessionVerifier, input.now);
+      if (input.grant === 'platform_administrator' && !actor.isServerOwner) {
+        throw new AuthRepositoryAuthorizationError();
+      }
       const account = this.requireAccount(input.userId);
+      if (input.grant === 'platform_administrator' && account.isServerOwner) {
+        throw new AuthRepositoryConflictError();
+      }
       account.functionalGrants = account.functionalGrants.filter((grant) => grant !== input.grant);
       return cloneAccount(account);
     });
