@@ -1,4 +1,4 @@
-import type { CorrelationId, UserId, Uuid } from '@kovcheg/contracts';
+import type { CorrelationId, SessionId, UserId, Uuid } from '@kovcheg/contracts';
 import type { Pool, PoolClient } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -14,8 +14,12 @@ const command = Object.freeze({
   clientMessageId: 'repository-message-001',
   contentFingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   correlationId: 'repository-message-created' as CorrelationId,
-  senderUserId: '00000000-0000-4000-8000-000000000001' as UserId,
+  operatorPrincipal: Object.freeze({
+    sessionId: '00000000-0000-4000-8000-000000000101' as SessionId,
+    userId: '00000000-0000-4000-8000-000000000001' as UserId,
+  }),
 });
+const now = new Date('2026-01-01T00:00:00.000Z');
 
 const messageRow = Object.freeze({
   body: command.body,
@@ -24,14 +28,14 @@ const messageRow = Object.freeze({
   client_idempotency_key: command.clientMessageId,
   created_at: new Date('2026-01-01T00:00:00.000Z'),
   id: '00000000-0000-4000-8000-000000004101',
-  sender_account_id: command.senderUserId,
+  sender_account_id: command.operatorPrincipal.userId,
   was_created: true,
 });
 
 describe('PostgresMessageFlowRepository', () => {
   it('calls the atomic entrypoint and maps bigint sequences as strings', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [messageRow] });
-    const repository = new PostgresMessageFlowRepository({ query } as unknown as Pool);
+    const repository = new PostgresMessageFlowRepository({ query } as unknown as Pool, () => now);
 
     await expect(repository.createTextMessage(command)).resolves.toEqual({
       message: {
@@ -41,17 +45,43 @@ describe('PostgresMessageFlowRepository', () => {
         clientMessageId: command.clientMessageId,
         createdAt: '2026-01-01T00:00:00.000Z',
         id: messageRow.id,
-        senderUserId: command.senderUserId,
+        senderAccountId: command.operatorPrincipal.userId,
       },
       wasCreated: true,
     });
     expect(query).toHaveBeenCalledWith(expect.stringContaining('create_text_message'), [
       command.chatId,
-      command.senderUserId,
+      command.operatorPrincipal.sessionId,
+      command.operatorPrincipal.userId,
+      null,
       command.clientMessageId,
       command.contentFingerprint,
       command.body,
       command.correlationId,
+      now,
+    ]);
+  });
+
+  it('passes a requested persona without exposing or replacing the operator principal', async () => {
+    const personaAccountId = '00000000-0000-4000-8000-000000000201' as Uuid;
+    const query = vi.fn().mockResolvedValue({
+      rows: [{ ...messageRow, sender_account_id: personaAccountId }],
+    });
+    const repository = new PostgresMessageFlowRepository({ query } as unknown as Pool, () => now);
+
+    await expect(
+      repository.createTextMessage({ ...command, personaAccountId }),
+    ).resolves.toMatchObject({ message: { senderAccountId: personaAccountId } });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('create_text_message_for_session'), [
+      command.chatId,
+      command.operatorPrincipal.sessionId,
+      command.operatorPrincipal.userId,
+      personaAccountId,
+      command.clientMessageId,
+      command.contentFingerprint,
+      command.body,
+      command.correlationId,
+      now,
     ]);
   });
 
@@ -86,12 +116,17 @@ describe('PostgresMessageFlowRepository', () => {
         chatId: command.chatId,
         cursor: { direction: 'after', sequence: '8' },
         limit: 1,
-        userId: command.senderUserId,
+        userId: command.operatorPrincipal.userId,
       }),
     ).resolves.toMatchObject({ hasMore: true, items: [{ chatSequence: '9' }] });
     expect(query.mock.calls[0]?.[0]).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence ASC');
-    expect(query.mock.calls[2]?.[1]).toEqual([command.senderUserId, command.chatId, '8', 2]);
+    expect(query.mock.calls[2]?.[1]).toEqual([
+      command.operatorPrincipal.userId,
+      command.chatId,
+      '8',
+      2,
+    ]);
     expect(query.mock.calls[3]?.[0]).toBe('COMMIT');
     expect(release).toHaveBeenCalledOnce();
   });
@@ -119,7 +154,7 @@ describe('PostgresMessageFlowRepository', () => {
         chatId: command.chatId,
         cursor: { direction: 'latest' },
         limit: 2,
-        userId: command.senderUserId,
+        userId: command.operatorPrincipal.userId,
       }),
     ).resolves.toMatchObject({
       hasMore: true,
@@ -128,7 +163,7 @@ describe('PostgresMessageFlowRepository', () => {
     expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence DESC');
     expect(query.mock.calls[2]?.[0]).not.toContain('message.chat_sequence < $3');
     expect(query.mock.calls[2]?.[0]).not.toContain('message.chat_sequence > $3');
-    expect(query.mock.calls[2]?.[1]).toEqual([command.senderUserId, command.chatId, 3]);
+    expect(query.mock.calls[2]?.[1]).toEqual([command.operatorPrincipal.userId, command.chatId, 3]);
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -154,12 +189,17 @@ describe('PostgresMessageFlowRepository', () => {
         chatId: command.chatId,
         cursor: { direction: 'before', sequence: '9' },
         limit: 1,
-        userId: command.senderUserId,
+        userId: command.operatorPrincipal.userId,
       }),
     ).resolves.toMatchObject({ hasMore: true, items: [{ chatSequence: '8' }] });
     expect(query.mock.calls[2]?.[0]).toContain('message.chat_sequence < $3::bigint');
     expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence DESC');
-    expect(query.mock.calls[2]?.[1]).toEqual([command.senderUserId, command.chatId, '9', 2]);
+    expect(query.mock.calls[2]?.[1]).toEqual([
+      command.operatorPrincipal.userId,
+      command.chatId,
+      '9',
+      2,
+    ]);
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -172,12 +212,12 @@ describe('PostgresMessageFlowRepository', () => {
     });
     const repository = new PostgresMessageFlowRepository({ query } as unknown as Pool);
 
-    await expect(repository.listAvailableChats(command.senderUserId)).resolves.toEqual([
+    await expect(repository.listAvailableChats(command.operatorPrincipal.userId)).resolves.toEqual([
       { id: command.chatId, kind: 'direct' },
       { id: '00000000-0000-4000-8000-000000004002', kind: 'group' },
     ]);
     expect(query).toHaveBeenCalledWith(expect.stringContaining("membership.status = 'active'"), [
-      command.senderUserId,
+      command.operatorPrincipal.userId,
     ]);
     expect(query.mock.calls[0]?.[0]).toContain('ORDER BY chat.created_at ASC, chat.id ASC');
   });

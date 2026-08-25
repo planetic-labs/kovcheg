@@ -1,7 +1,7 @@
 import type { CorrelationId, UserId, Uuid } from './foundation-types.js';
 
-export const messageFlowContractVersion = 1 as const;
-export const messageHistoryContractVersion = 2 as const;
+export const messageFlowContractVersion = 2 as const;
+export const messageHistoryContractVersion = 3 as const;
 export const chatListContractVersion = 1 as const;
 
 export const messageFlowErrorCodes = Object.freeze([
@@ -35,11 +35,12 @@ export interface TextMessage {
   readonly clientMessageId: string;
   readonly createdAt: string;
   readonly id: Uuid;
-  readonly senderUserId: UserId;
+  readonly senderAccountId: Uuid;
 }
 
 export interface CreateTextMessageRequest {
   readonly clientMessageId: string;
+  readonly personaAccountId?: Uuid;
   readonly text: string;
 }
 
@@ -99,7 +100,7 @@ export const textMessageJsonSchema = Object.freeze({
     },
     createdAt: { format: 'date-time', type: 'string' },
     id: uuidSchema,
-    senderUserId: uuidSchema,
+    senderAccountId: uuidSchema,
   },
   required: [
     'body',
@@ -108,7 +109,7 @@ export const textMessageJsonSchema = Object.freeze({
     'clientMessageId',
     'createdAt',
     'id',
-    'senderUserId',
+    'senderAccountId',
   ],
   type: 'object',
 });
@@ -121,6 +122,7 @@ export const createTextMessageRequestJsonSchema = Object.freeze({
       pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$',
       type: 'string',
     },
+    personaAccountId: uuidSchema,
     text: { maxLength: 20_000, minLength: 1, type: 'string' },
   },
   required: ['clientMessageId', 'text'],

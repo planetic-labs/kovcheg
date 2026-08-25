@@ -69,7 +69,8 @@ export class MessageFlowService {
         clientMessageId: body.clientMessageId,
         contentFingerprint: createHash('sha256').update(body.text, 'utf8').digest('hex'),
         correlationId,
-        senderUserId: principal.userId,
+        operatorPrincipal: principal,
+        ...(body.personaAccountId === undefined ? {} : { personaAccountId: body.personaAccountId }),
       });
       return Object.freeze({
         contractVersion: messageFlowContractVersion,

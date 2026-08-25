@@ -1,5 +1,7 @@
 import type { AvailableChat, CorrelationId, TextMessage, UserId, Uuid } from '@kovcheg/contracts';
 
+import type { ApplicationPrincipal } from '../session/application-session.js';
+
 export const messageFlowRepositoryToken = Symbol('messageFlowRepository');
 export interface CreateTextMessageCommand {
   readonly body: string;
@@ -7,7 +9,8 @@ export interface CreateTextMessageCommand {
   readonly clientMessageId: string;
   readonly contentFingerprint: string;
   readonly correlationId: CorrelationId;
-  readonly senderUserId: UserId;
+  readonly operatorPrincipal: ApplicationPrincipal;
+  readonly personaAccountId?: Uuid;
 }
 
 export interface CreateTextMessageResult {

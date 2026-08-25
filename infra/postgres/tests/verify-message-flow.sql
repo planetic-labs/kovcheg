@@ -9,23 +9,123 @@ BEGIN
 END;
 $$;
 
-DO $$
+CREATE FUNCTION pg_temp.create_test_text_message(
+  p_chat_id uuid,
+  p_operator_account_id uuid,
+  p_client_idempotency_key varchar,
+  p_content_fingerprint varchar,
+  p_body text,
+  p_correlation_id varchar
+)
+RETURNS TABLE (
+  message_id uuid,
+  message_chat_id uuid,
+  sender_account_id uuid,
+  chat_sequence bigint,
+  client_idempotency_key varchar,
+  message_body text,
+  created_at timestamptz,
+  was_created boolean
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  session_id uuid;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM kovcheg.accounts
-    WHERE id = '00000000-0000-4000-8000-000000002001'
-  ) THEN
-    PERFORM kovcheg.provision_account_with_starter_set(
-      '00000000-0000-4000-8000-000000002001',
-      'database-provision-001'
+  IF to_regprocedure(
+    'kovcheg.create_text_message_for_session(uuid,uuid,uuid,uuid,character varying,character varying,text,character varying,timestamp with time zone)'
+  ) IS NULL THEN
+    RETURN QUERY
+    SELECT *
+    FROM kovcheg.create_text_message(
+      p_chat_id,
+      p_operator_account_id,
+      p_client_idempotency_key,
+      p_content_fingerprint,
+      p_body,
+      p_correlation_id
     );
+    RETURN;
+  END IF;
+
+  session_id := CASE p_operator_account_id
+    WHEN '00000000-0000-4000-8000-000000002001'::uuid
+      THEN '00000000-0000-4000-8000-000000002201'::uuid
+    WHEN '00000000-0000-4000-8000-000000002002'::uuid
+      THEN '00000000-0000-4000-8000-000000002202'::uuid
+    ELSE '00000000-0000-4000-8000-000000002299'::uuid
+  END;
+
+  RETURN QUERY EXECUTE
+    'SELECT * FROM kovcheg.create_text_message_for_session($1,$2,$3,$4,$5,$6,$7,$8,$9)'
+  USING
+    p_chat_id,
+    session_id,
+    p_operator_account_id,
+    NULL::uuid,
+    p_client_idempotency_key,
+    p_content_fingerprint,
+    p_body,
+    p_correlation_id,
+    '2030-01-01 00:30:00+00'::timestamptz;
+END;
+$$;
+
+DO $$
+DECLARE
+  account_id uuid;
+BEGIN
+  FOREACH account_id IN ARRAY ARRAY[
+    '00000000-0000-4000-8000-000000002001'::uuid,
+    '00000000-0000-4000-8000-000000002002'::uuid,
+    '00000000-0000-4000-8000-000000002003'::uuid
+  ] LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM kovcheg.accounts AS account WHERE account.id = account_id
+    ) THEN
+      PERFORM kovcheg.provision_account_with_starter_set(
+        account_id,
+        ('database-provision-' || account_id::text)::varchar
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
+
+DO $$
+DECLARE
+  spoof_chat_id uuid;
+BEGIN
+  IF to_regprocedure(
+    'kovcheg.create_text_message_for_session(uuid,uuid,uuid,uuid,character varying,character varying,text,character varying,timestamp with time zone)'
+  ) IS NOT NULL THEN
+    SELECT chat.id
+    INTO STRICT spoof_chat_id
+    FROM kovcheg.chats AS chat
+    WHERE chat.provisioned_for_account_id = '00000000-0000-4000-8000-000000002003'
+    ORDER BY chat.id
+    LIMIT 1;
+
+    BEGIN
+      PERFORM kovcheg.create_text_message(
+        spoof_chat_id,
+        '00000000-0000-4000-8000-000000002003',
+        'message-flow-sessionless-spoof',
+        '9999999999999999999999999999999999999999999999999999999999999999',
+        'Synthetic sessionless spoof attempt',
+        'database-message-flow-sessionless-spoof'
+      );
+      RAISE EXCEPTION 'runtime used the sessionless entrypoint to impersonate an active person';
+    EXCEPTION WHEN insufficient_privilege THEN
+      NULL;
+    END;
   END IF;
 END;
 $$;
 
 CREATE TEMP TABLE first_message_flow_result AS
 SELECT *
-FROM kovcheg.create_text_message(
+FROM pg_temp.create_test_text_message(
   (
     SELECT id FROM kovcheg.chats
     WHERE provisioned_for_account_id = '00000000-0000-4000-8000-000000002001'
@@ -60,10 +160,17 @@ SELECT pg_temp.assert_true(
     JOIN first_message_flow_result AS result ON event.aggregate_id = result.message_id
     WHERE event.event_name = 'message.created'
       AND event.correlation_id = 'database-message-flow-created'
-      AND event.payload = jsonb_build_object(
+      AND event.payload = (
+        jsonb_build_object(
         'chatId', result.message_chat_id,
         'messageId', result.message_id,
         'chatSequence', result.chat_sequence
+        ) || CASE
+          WHEN to_regprocedure(
+            'kovcheg.create_text_message_for_session(uuid,uuid,uuid,uuid,character varying,character varying,text,character varying,timestamp with time zone)'
+          ) IS NULL THEN '{}'::jsonb
+          ELSE jsonb_build_object('senderAccountId', result.sender_account_id)
+        END
       )
   ),
   'message creation must atomically create one sanitized outbox event'
@@ -71,7 +178,7 @@ SELECT pg_temp.assert_true(
 
 CREATE TEMP TABLE replayed_message_flow_result AS
 SELECT *
-FROM kovcheg.create_text_message(
+FROM pg_temp.create_test_text_message(
   (SELECT message_chat_id FROM first_message_flow_result),
   '00000000-0000-4000-8000-000000002001',
   'message-flow-001',
@@ -101,7 +208,7 @@ SELECT pg_temp.assert_true(
 DO $$
 BEGIN
   BEGIN
-    PERFORM kovcheg.create_text_message(
+    PERFORM pg_temp.create_test_text_message(
       (SELECT message_chat_id FROM first_message_flow_result),
       '00000000-0000-4000-8000-000000002001',
       'message-flow-001',
@@ -115,21 +222,9 @@ BEGIN
   END;
 
   BEGIN
-    PERFORM kovcheg.create_text_message(
+    PERFORM pg_temp.create_test_text_message(
       (SELECT message_chat_id FROM first_message_flow_result),
-      (
-        SELECT account.id
-        FROM kovcheg.accounts AS account
-        WHERE account.status = 'active'
-          AND NOT EXISTS (
-            SELECT 1 FROM kovcheg.chat_memberships AS membership
-            WHERE membership.chat_id = (SELECT message_chat_id FROM first_message_flow_result)
-              AND membership.account_id = account.id
-              AND membership.status = 'active'
-          )
-        ORDER BY account.id
-        LIMIT 1
-      ),
+      '00000000-0000-4000-8000-000000002002',
       'message-flow-nonmember',
       'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
       'Synthetic unauthorized message',

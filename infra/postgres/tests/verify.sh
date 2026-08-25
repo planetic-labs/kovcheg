@@ -38,6 +38,45 @@ query_as_migration() {
     --set=ON_ERROR_STOP=1 --username kovcheg_migrator --command "$1"
 }
 
+message_audit_enabled=false
+
+run_message_creation_as_runtime() {
+  message_chat_id=$1
+  message_key=$2
+  message_fingerprint=$3
+  message_body=$4
+  message_correlation_id=$5
+
+  if [ "$message_audit_enabled" = true ]; then
+    PGPASSWORD="$runtime_password" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+      --username kovcheg_app --command="
+        SELECT * FROM kovcheg.create_text_message_for_session(
+          '$message_chat_id',
+          '00000000-0000-4000-8000-000000002201',
+          '00000000-0000-4000-8000-000000002001',
+          NULL,
+          '$message_key',
+          '$message_fingerprint',
+          '$message_body',
+          '$message_correlation_id',
+          '2030-01-01 00:30:00+00'
+        )
+      "
+  else
+    PGPASSWORD="$runtime_password" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+      --username kovcheg_app --command="
+        SELECT * FROM kovcheg.create_text_message(
+          '$message_chat_id',
+          '00000000-0000-4000-8000-000000002001',
+          '$message_key',
+          '$message_fingerprint',
+          '$message_body',
+          '$message_correlation_id'
+        )
+      "
+  fi
+}
+
 verify_latest_migration_state() {
   latest_state=$(
     query_as_migration "
@@ -45,8 +84,8 @@ verify_latest_migration_state() {
       FROM kovcheg_meta.schema_migrations
     "
   )
-  if [ "$latest_state" != '0009:9' ]; then
-    echo 'The complete nine-migration chain was not recorded.' >&2
+  if [ "$latest_state" != '0010:10' ]; then
+    echo 'The complete ten-migration chain was not recorded.' >&2
     exit 1
   fi
 }
@@ -101,17 +140,12 @@ run_message_flow_race_test() {
   parallel_number=1
   parallel_pids=''
   while [ "$parallel_number" -le 12 ]; do
-    PGPASSWORD="$runtime_password" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
-      --username kovcheg_app --command="
-        SELECT * FROM kovcheg.create_text_message(
-          '$parallel_chat_id',
-          '00000000-0000-4000-8000-000000002001',
-          'message-flow-race-001',
-          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-          'Synthetic concurrent retry',
-          'database-message-flow-race-$parallel_number'
-        )
-      " >/dev/null &
+    run_message_creation_as_runtime \
+      "$parallel_chat_id" \
+      'message-flow-race-001' \
+      'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' \
+      'Synthetic concurrent retry' \
+      "database-message-flow-race-$parallel_number" >/dev/null &
     parallel_pids="$parallel_pids $!"
     parallel_number=$((parallel_number + 1))
   done
@@ -139,17 +173,12 @@ run_message_flow_race_test() {
   parallel_number=1
   parallel_pids=''
   while [ "$parallel_number" -le 12 ]; do
-    PGPASSWORD="$runtime_password" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
-      --username kovcheg_app --command="
-        SELECT * FROM kovcheg.create_text_message(
-          '$parallel_chat_id',
-          '00000000-0000-4000-8000-000000002001',
-          'message-flow-parallel-$parallel_number',
-          'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-          'Synthetic parallel message $parallel_number',
-          'database-message-flow-parallel-$parallel_number'
-        )
-      " >/dev/null &
+    run_message_creation_as_runtime \
+      "$parallel_chat_id" \
+      "message-flow-parallel-$parallel_number" \
+      'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' \
+      "Synthetic parallel message $parallel_number" \
+      "database-message-flow-parallel-$parallel_number" >/dev/null &
     parallel_pids="$parallel_pids $!"
     parallel_number=$((parallel_number + 1))
   done
@@ -185,8 +214,22 @@ run_core_tests() {
 }
 
 run_message_flow_tests() {
+  if [ "$(query_as_migration "
+    SELECT to_regprocedure(
+      'kovcheg.create_text_message_for_session(uuid,uuid,uuid,uuid,character varying,character varying,text,character varying,timestamp with time zone)'
+    ) IS NOT NULL
+  ")" = t ]; then
+    message_audit_enabled=true
+  else
+    message_audit_enabled=false
+  fi
+
   run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
   run_sql kovcheg_migrator "$migration_password" "$test_root/verify-core.sql"
+  if [ "$message_audit_enabled" = true ]; then
+    run_sql kovcheg_migrator "$migration_password" \
+      "$test_root/verify-message-flow-session-fixture.sql"
+  fi
   run_sql kovcheg_app "$runtime_password" "$test_root/verify-message-flow.sql"
   run_message_flow_race_test
   run_sql kovcheg_migrator "$migration_password" "$test_root/verify-message-flow-authorization.sql"
@@ -296,6 +339,10 @@ case "$scenario" in
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     run_persona_authorization_tests
     ;;
+  persona-message-fixture)
+    run_sql kovcheg_migrator "$migration_password" \
+      "$test_root/verify-persona-authorization-fixtures.sql"
+    ;;
   upgrade-v1)
     run_core_tests
     ;;
@@ -329,6 +376,10 @@ case "$scenario" in
   upgrade-v8)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v8.sql"
+    ;;
+  upgrade-v9)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v9.sql"
     ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"

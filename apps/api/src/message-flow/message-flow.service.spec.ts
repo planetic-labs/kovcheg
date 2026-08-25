@@ -19,7 +19,7 @@ const message: TextMessage = Object.freeze({
   clientMessageId: 'client-message-001',
   createdAt: '2026-01-01T00:00:00.000Z',
   id: '00000000-0000-4000-8000-000000004101',
-  senderUserId: syntheticUserIds.activePrimary,
+  senderAccountId: syntheticUserIds.activePrimary,
 });
 
 function createSessionAuthenticator(
@@ -77,7 +77,7 @@ describe('MessageFlowService', () => {
         { clientMessageId: 'client-message-001', text: 'Synthetic message' },
         correlationId,
       ),
-    ).resolves.toEqual({ contractVersion: 1, message, outcome: 'created' });
+    ).resolves.toEqual({ contractVersion: 2, message, outcome: 'created' });
 
     const replayedService = new MessageFlowService(
       createSessionAuthenticator(),
@@ -92,7 +92,41 @@ describe('MessageFlowService', () => {
         { clientMessageId: 'client-message-001', text: 'Synthetic message' },
         correlationId,
       ),
-    ).resolves.toEqual({ contractVersion: 1, message, outcome: 'replayed' });
+    ).resolves.toEqual({ contractVersion: 2, message, outcome: 'replayed' });
+  });
+
+  it('keeps the personal principal distinct from a requested public persona sender', async () => {
+    const personaAccountId = '00000000-0000-4000-8000-000000004201' as Uuid;
+    const personaMessage = Object.freeze({ ...message, senderAccountId: personaAccountId });
+    const createTextMessage = vi
+      .fn<MessageFlowRepository['createTextMessage']>()
+      .mockResolvedValue({ message: personaMessage, wasCreated: true });
+    const service = new MessageFlowService(
+      createSessionAuthenticator(),
+      createRepository({ createTextMessage }),
+    );
+
+    await expect(
+      service.createTextMessage(
+        chatId,
+        activeCookie,
+        {
+          clientMessageId: 'client-message-persona-001',
+          personaAccountId,
+          text: 'Synthetic persona message',
+        },
+        correlationId,
+      ),
+    ).resolves.toEqual({ contractVersion: 2, message: personaMessage, outcome: 'created' });
+    expect(createTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operatorPrincipal: {
+          sessionId: '00000000-0000-4000-8000-000000006101',
+          userId: syntheticUserIds.activePrimary,
+        },
+        personaAccountId,
+      }),
+    );
   });
 
   it('rejects missing, unknown, and deactivated sessions before repository access', async () => {
@@ -166,6 +200,20 @@ describe('MessageFlowService', () => {
       'message-flow.invalid-request',
     );
     await expectMachineError(
+      service.createTextMessage(
+        chatId,
+        activeCookie,
+        {
+          clientMessageId: 'client-message-001',
+          personaAccountId: 'not-a-uuid',
+          text: 'Synthetic message',
+        },
+        correlationId,
+      ),
+      400,
+      'message-flow.invalid-request',
+    );
+    await expectMachineError(
       service.readMessageHistory(chatId, activeCookie, '-1', undefined, '101', correlationId),
       400,
       'message-flow.invalid-request',
@@ -226,7 +274,7 @@ describe('MessageFlowService', () => {
     await expect(
       service.readMessageHistory(chatId, activeCookie, '6', undefined, '2', correlationId),
     ).resolves.toEqual({
-      contractVersion: 2,
+      contractVersion: 3,
       hasMore: true,
       items: [message, secondMessage],
       nextAfterSequence: '8',
@@ -257,7 +305,7 @@ describe('MessageFlowService', () => {
     await expect(
       service.readMessageHistory(chatId, activeCookie, undefined, undefined, '2', correlationId),
     ).resolves.toEqual({
-      contractVersion: 2,
+      contractVersion: 3,
       hasMore: true,
       items: [message, secondMessage],
       nextAfterSequence: null,
@@ -283,7 +331,7 @@ describe('MessageFlowService', () => {
     await expect(
       service.readMessageHistory(chatId, activeCookie, undefined, '9', '50', correlationId),
     ).resolves.toEqual({
-      contractVersion: 2,
+      contractVersion: 3,
       hasMore: false,
       items: [message],
       nextAfterSequence: null,

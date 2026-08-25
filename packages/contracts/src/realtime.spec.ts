@@ -10,6 +10,7 @@ import {
 
 const eventId = '00000000-0000-4000-8000-000000005001' as Uuid;
 const messageId = '00000000-0000-4000-8000-000000005002' as Uuid;
+const senderAccountId = '00000000-0000-4000-8000-000000005006' as Uuid;
 
 function event() {
   return {
@@ -22,6 +23,7 @@ function event() {
       chatId: '00000000-0000-4000-8000-000000005003' as Uuid,
       chatSequence: '7',
       messageId,
+      senderAccountId,
     },
   };
 }

@@ -18,12 +18,22 @@ export function parseCreateTextMessageRequest(value: unknown): CreateTextMessage
 
   const candidate = value as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
-  if (keys.length !== 2 || keys[0] !== 'clientMessageId' || keys[1] !== 'text') {
+  const hasPersona = candidate.personaAccountId !== undefined;
+  const expectedKeys = hasPersona
+    ? ['clientMessageId', 'personaAccountId', 'text']
+    : ['clientMessageId', 'text'];
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index])
+  ) {
     return null;
   }
   if (
     typeof candidate.clientMessageId !== 'string' ||
     !clientMessageIdExpression.test(candidate.clientMessageId) ||
+    (hasPersona &&
+      (typeof candidate.personaAccountId !== 'string' ||
+        !uuidExpression.test(candidate.personaAccountId))) ||
     typeof candidate.text !== 'string'
   ) {
     return null;
@@ -34,10 +44,18 @@ export function parseCreateTextMessageRequest(value: unknown): CreateTextMessage
     return null;
   }
 
-  return Object.freeze({
-    clientMessageId: candidate.clientMessageId,
-    text: candidate.text,
-  });
+  return Object.freeze(
+    hasPersona
+      ? {
+          clientMessageId: candidate.clientMessageId,
+          personaAccountId: candidate.personaAccountId as Uuid,
+          text: candidate.text,
+        }
+      : {
+          clientMessageId: candidate.clientMessageId,
+          text: candidate.text,
+        },
+  );
 }
 
 export function parseAfterSequence(value: unknown): string | null {

@@ -15,6 +15,7 @@ export interface ClaimedOutboxEvent {
     chatId: string;
     chatSequence: string;
     messageId: string;
+    senderAccountId: string;
   }>;
 }
 
@@ -32,6 +33,7 @@ interface OutboxRow extends QueryResultRow {
   readonly id: string;
   readonly occurred_at: Date;
   readonly message_id: string;
+  readonly sender_account_id: string;
 }
 
 interface PostgresEnvironment {
@@ -82,6 +84,7 @@ export class PostgresOutboxRepository implements OutboxRepository {
            event.payload ->> 'chatId' AS chat_id,
            event.payload ->> 'chatSequence' AS chat_sequence,
            event.payload ->> 'messageId' AS message_id,
+           event.payload ->> 'senderAccountId' AS sender_account_id,
            event.occurred_at`,
         [claimToken, leaseMilliseconds],
       );
@@ -100,6 +103,7 @@ export class PostgresOutboxRepository implements OutboxRepository {
           chatId: row.chat_id,
           chatSequence: row.chat_sequence,
           messageId: row.message_id,
+          senderAccountId: row.sender_account_id,
         }),
       });
     } catch (error) {

@@ -24,15 +24,16 @@ describe('message-flow contracts', () => {
   });
 
   it('publishes a versioned error boundary without a browser identity header', () => {
-    expect(messageFlowContractVersion).toBe(1);
+    expect(messageFlowContractVersion).toBe(2);
     expect(messageFlowErrorCodes).toContain('message-flow.idempotency-key-reused');
   });
 
   it('keeps text input and sequence cursors bounded and machine-readable', () => {
-    expect(messageHistoryContractVersion).toBe(2);
+    expect(messageHistoryContractVersion).toBe(3);
     expect(createTextMessageRequestJsonSchema).toMatchObject({
       additionalProperties: false,
       required: ['clientMessageId', 'text'],
+      properties: { personaAccountId: { format: 'uuid', type: 'string' } },
     });
     expect(messageHistoryPageJsonSchema.properties.nextAfterSequence).toMatchObject({
       nullable: true,

@@ -2,11 +2,16 @@ import { readFileSync } from 'node:fs';
 
 import type { SessionId, UserId } from '@kovcheg/contracts';
 import { correlationIdHeaderName } from '@kovcheg/contracts';
-import { syntheticUserIds } from '@kovcheg/contracts/testing';
 import { Pool } from 'pg';
 
 import { createApiApplication } from '../application.js';
 import { ApplicationSessionError } from '../session/application-session.js';
+
+const primaryUserId = '00000000-0000-4000-8000-000000009001' as UserId;
+const primarySessionId = '00000000-0000-4000-8000-000000009291' as SessionId;
+const secondaryUserId = '00000000-0000-4000-8000-000000009002' as UserId;
+const secondarySessionId = '00000000-0000-4000-8000-000000009202' as SessionId;
+const messageChatId = '00000000-0000-4000-8000-000000009402';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -30,62 +35,37 @@ async function main(): Promise<void> {
     user: process.env.PGUSER,
   });
 
-  for (const userId of [syntheticUserIds.activePrimary, syntheticUserIds.activeSecondary]) {
-    const account = await pool.query<{ readonly present: boolean }>(
-      'SELECT EXISTS (SELECT 1 FROM kovcheg.accounts WHERE id = $1) AS present',
-      [userId],
-    );
-    if (account.rows[0]?.present !== true) {
-      await pool.query('SELECT * FROM kovcheg.provision_account_with_starter_set($1, $2)', [
-        userId,
-        `message-flow-provision-${userId.slice(-4)}`,
-      ]);
-    }
-  }
-
-  const chat = await pool.query<{ readonly id: string }>(
-    `SELECT id
-     FROM kovcheg.chats
-     WHERE provisioned_for_account_id = $1
-     ORDER BY id
-     LIMIT 1`,
-    [syntheticUserIds.activePrimary],
+  const chat = await pool.query<{ readonly present: boolean }>(
+    'SELECT EXISTS (SELECT 1 FROM kovcheg.chats WHERE id = $1) AS present',
+    [messageChatId],
   );
-  const chatId = chat.rows[0]?.id;
-  assert(chatId !== undefined, 'A synthetic direct chat is required');
+  assert(chat.rows[0]?.present === true, 'The synthetic message-audit chat is required');
+  const chatId = messageChatId;
+
+  const authenticate = (cookieHeader: string | undefined) => {
+    const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
+    const userId = match?.[1] as UserId | undefined;
+    if (userId === primaryUserId) {
+      return Promise.resolve({ sessionId: primarySessionId, userId });
+    }
+    if (userId === secondaryUserId) {
+      return Promise.resolve({ sessionId: secondarySessionId, userId });
+    }
+    return Promise.reject(new ApplicationSessionError('unauthenticated'));
+  };
 
   const app = await createApiApplication(undefined, {
     sessionAuthenticator: {
-      authenticate(cookieHeader) {
-        const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
-        const userId = match?.[1] as UserId | undefined;
-        if (
-          userId !== syntheticUserIds.activePrimary &&
-          userId !== syntheticUserIds.activeSecondary
-        ) {
-          return Promise.reject(new ApplicationSessionError('unauthenticated'));
-        }
-        return Promise.resolve({ sessionId: userId as SessionId, userId });
-      },
+      authenticate,
       isReady: () => Promise.resolve(true),
-      validate(cookieHeader) {
-        const match = /(?:^|;\s*)kovcheg_session=([0-9a-f-]{36})(?:;|$)/iu.exec(cookieHeader ?? '');
-        const userId = match?.[1] as UserId | undefined;
-        if (
-          userId !== syntheticUserIds.activePrimary &&
-          userId !== syntheticUserIds.activeSecondary
-        ) {
-          return Promise.reject(new ApplicationSessionError('unauthenticated'));
-        }
-        return Promise.resolve({ sessionId: userId as SessionId, userId });
-      },
+      validate: authenticate,
     },
   });
   await app.listen(0, '127.0.0.1');
   const baseUrl = await app.getUrl();
   const endpoint = `${baseUrl}/chats/${chatId}/messages`;
   const headers = {
-    cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+    cookie: `kovcheg_session=${primaryUserId}`,
     'content-type': 'application/json',
   };
 
@@ -102,6 +82,11 @@ async function main(): Promise<void> {
     assert(created.status === 201, 'The first send must return 201');
     const createdPayload = await readJson(created);
     assert(createdPayload.outcome === 'created', 'The first send must report created');
+    assert(createdPayload.contractVersion === 2, 'Message creation must use contract version 2');
+    assert(
+      (createdPayload.message as Record<string, unknown>).senderAccountId === primaryUserId,
+      'An ordinary message must expose the personal account as its public sender',
+    );
 
     const replayed = await fetch(endpoint, {
       body,
@@ -154,7 +139,7 @@ async function main(): Promise<void> {
 
     const forbidden = await fetch(endpoint, {
       headers: {
-        cookie: `kovcheg_session=${syntheticUserIds.activeSecondary}`,
+        cookie: `kovcheg_session=${secondaryUserId}`,
         [correlationIdHeaderName]: 'integration-history-forbidden',
       },
     });
@@ -162,13 +147,13 @@ async function main(): Promise<void> {
 
     const latestHistory = await fetch(`${endpoint}?limit=2`, {
       headers: {
-        cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+        cookie: `kovcheg_session=${primaryUserId}`,
         [correlationIdHeaderName]: 'integration-history-latest',
       },
     });
     assert(latestHistory.status === 200, 'An active member must read the latest history window');
     const latestPayload = await readJson(latestHistory);
-    assert(latestPayload.contractVersion === 2, 'History pagination must use contract version 2');
+    assert(latestPayload.contractVersion === 3, 'History pagination must use contract version 3');
     assert(Array.isArray(latestPayload.items), 'Latest history must return an item array');
     const latestItems = latestPayload.items as Record<string, unknown>[];
     assert(
@@ -188,7 +173,7 @@ async function main(): Promise<void> {
       `${endpoint}?beforeSequence=${latestBeforeSequence}&limit=2`,
       {
         headers: {
-          cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+          cookie: `kovcheg_session=${primaryUserId}`,
           [correlationIdHeaderName]: 'integration-history-middle',
         },
       },
@@ -212,7 +197,7 @@ async function main(): Promise<void> {
       `${endpoint}?beforeSequence=${middleBeforeSequence}&limit=2`,
       {
         headers: {
-          cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+          cookie: `kovcheg_session=${primaryUserId}`,
           [correlationIdHeaderName]: 'integration-history-oldest',
         },
       },
@@ -257,7 +242,7 @@ async function main(): Promise<void> {
     assert(typeof createdSequence === 'string', 'The created message must expose chatSequence');
     const catchUpHistory = await fetch(`${endpoint}?afterSequence=${createdSequence}&limit=2`, {
       headers: {
-        cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+        cookie: `kovcheg_session=${primaryUserId}`,
         [correlationIdHeaderName]: 'integration-history-catch-up',
       },
     });
@@ -278,7 +263,7 @@ async function main(): Promise<void> {
       `${endpoint}?afterSequence=${createdSequence}&beforeSequence=${latestBeforeSequence}`,
       {
         headers: {
-          cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+          cookie: `kovcheg_session=${primaryUserId}`,
           [correlationIdHeaderName]: 'integration-history-conflicting-cursors',
         },
       },
@@ -287,7 +272,7 @@ async function main(): Promise<void> {
 
     const chatList = await fetch(`${baseUrl}/chats`, {
       headers: {
-        cookie: `kovcheg_session=${syntheticUserIds.activePrimary}`,
+        cookie: `kovcheg_session=${primaryUserId}`,
         [correlationIdHeaderName]: 'integration-chat-list',
       },
     });

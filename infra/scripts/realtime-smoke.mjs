@@ -8,7 +8,6 @@ import {
   realtimeSocketEvents,
   realtimeSocketPath,
 } from '../../packages/contracts/dist/index.js';
-import { syntheticUserIds } from '../../packages/contracts/dist/testing/index.js';
 import { io } from 'socket.io-client';
 
 const baseUrl = process.argv[2];
@@ -18,7 +17,8 @@ assert.ok(baseUrl, 'A loopback base URL is required');
 assert.ok(transport === 'polling' || transport === 'websocket', 'A transport is required');
 assert.match(composeProject ?? '', /^[A-Za-z0-9_-]+$/);
 
-const chatId = '00000000-0000-4000-8000-000000001201';
+const socketUserId = '00000000-0000-4000-8000-000000009001';
+const chatId = '00000000-0000-4000-8000-000000009402';
 const clients = [];
 let clientMessageCounter = 0;
 
@@ -156,6 +156,17 @@ async function waitForMessage(client, messageId) {
     1,
     'Client-side event/message deduplication must keep one delivery',
   );
+  const delivered = client.events.find((event) => event.payload.messageId === messageId);
+  assert.equal(
+    delivered.payload.senderAccountId,
+    socketUserId,
+    'Realtime delivery must expose only the public sender account',
+  );
+  assert.equal(
+    Object.hasOwn(delivered.payload, 'operatorAccountId'),
+    false,
+    'Realtime delivery must not expose the protected audit actor',
+  );
 }
 
 function outboxState(messageId) {
@@ -177,12 +188,12 @@ try {
   assert.equal(affinity.status, 200);
   assert.match(affinity.headers.get('set-cookie') ?? '', /kovcheg_affinity=/u);
 
-  const primary = createClient(syntheticUserIds.activePrimary);
+  const primary = createClient(socketUserId);
   await waitForReady(primary);
 
   let secondary;
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    const candidate = createClient(syntheticUserIds.activeSecondary);
+    const candidate = createClient(socketUserId);
     await waitForReady(candidate);
     if (candidate.instanceId !== primary.instanceId) {
       secondary = candidate;
@@ -193,7 +204,7 @@ try {
   assert.ok(secondary, `${transport} clients must be distributed across both sticky API instances`);
   await Promise.all([subscribe(primary), subscribe(secondary)]);
 
-  const crossInstance = await sendMessage(syntheticUserIds.activePrimary, 'cross-instance');
+  const crossInstance = await sendMessage(socketUserId, 'cross-instance');
   await Promise.all([
     waitForMessage(primary, crossInstance.message.id),
     waitForMessage(secondary, crossInstance.message.id),
@@ -201,7 +212,7 @@ try {
 
   const secondaryReadyBeforeReconnect = secondary.readyCount;
   secondary.socket.disconnect();
-  const missed = await sendMessage(syntheticUserIds.activePrimary, 'reconnect-gap');
+  const missed = await sendMessage(socketUserId, 'reconnect-gap');
   secondary.socket.connect();
   await waitForReady(secondary, secondaryReadyBeforeReconnect);
   const catchUp = await subscribe(secondary);
@@ -220,7 +231,7 @@ try {
       clients.filter((client) => client.socket.active).every((client) => !client.socket.connected),
     'Redis loss must disconnect realtime clients before unsafe partial fanout',
   );
-  const duringRedisDown = await sendMessage(syntheticUserIds.activePrimary, 'redis-down');
+  const duringRedisDown = await sendMessage(socketUserId, 'redis-down');
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   assert.match(outboxState(duringRedisDown.message.id), /^pending:[1-9][0-9]*$/u);
 
@@ -242,7 +253,7 @@ try {
     'Outbox publisher did not recover after Redis returned',
   );
 
-  const afterRedisRecovery = await sendMessage(syntheticUserIds.activePrimary, 'redis-recovered');
+  const afterRedisRecovery = await sendMessage(socketUserId, 'redis-recovered');
   await Promise.all(
     activeClients.map((client) => waitForMessage(client, afterRedisRecovery.message.id)),
   );
@@ -261,7 +272,7 @@ try {
       await subscribe(client);
     }
   }
-  const oneApi = await sendMessage(syntheticUserIds.activePrimary, 'one-api');
+  const oneApi = await sendMessage(socketUserId, 'one-api');
   await Promise.all(activeClients.map((client) => waitForMessage(client, oneApi.message.id)));
   compose('up', '--detach', '--wait', 'api-1');
 } finally {

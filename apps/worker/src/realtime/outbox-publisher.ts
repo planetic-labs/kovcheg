@@ -28,6 +28,7 @@ export class OutboxPublisher {
         chatId: claimed.payload.chatId,
         chatSequence: claimed.payload.chatSequence,
         messageId: claimed.payload.messageId,
+        senderAccountId: claimed.payload.senderAccountId,
       },
     });
     if (event === null) {
