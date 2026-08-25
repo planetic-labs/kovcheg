@@ -38,6 +38,72 @@ query_as_migration() {
     --set=ON_ERROR_STOP=1 --username kovcheg_migrator --command "$1"
 }
 
+wait_for_application_lock() {
+  application_name=$1
+  lock_id=$2
+  lock_granted=$3
+
+  query_as_migration "
+    DO \$\$
+    DECLARE
+      attempt integer := 0;
+    BEGIN
+      LOOP
+        PERFORM pg_catalog.pg_stat_clear_snapshot();
+        IF EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_locks AS held_lock
+          JOIN pg_catalog.pg_stat_activity AS activity
+            ON activity.pid = held_lock.pid
+          WHERE activity.application_name = '$application_name'
+            AND held_lock.locktype = 'advisory'
+            AND held_lock.objid = $lock_id
+            AND held_lock.granted IS $lock_granted
+        ) THEN
+          RETURN;
+        END IF;
+
+        attempt := attempt + 1;
+        IF attempt > 1000000 THEN
+          RAISE EXCEPTION 'deterministic race barrier was not reached';
+        END IF;
+      END LOOP;
+    END;
+    \$\$;
+  " >/dev/null
+}
+
+wait_for_application_row_lock() {
+  application_name=$1
+
+  query_as_migration "
+    DO \$\$
+    DECLARE
+      attempt integer := 0;
+    BEGIN
+      LOOP
+        PERFORM pg_catalog.pg_stat_clear_snapshot();
+        IF EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_locks AS waiting_lock
+          JOIN pg_catalog.pg_stat_activity AS activity
+            ON activity.pid = waiting_lock.pid
+          WHERE activity.application_name = '$application_name'
+            AND NOT waiting_lock.granted
+        ) THEN
+          RETURN;
+        END IF;
+
+        attempt := attempt + 1;
+        IF attempt > 1000000 THEN
+          RAISE EXCEPTION 'concurrent authorization mutation did not wait for the action';
+        END IF;
+      END LOOP;
+    END;
+    \$\$;
+  " >/dev/null
+}
+
 message_audit_enabled=false
 
 run_message_creation_as_runtime() {
@@ -84,8 +150,8 @@ verify_latest_migration_state() {
       FROM kovcheg_meta.schema_migrations
     "
   )
-  if [ "$latest_state" != '0010:10' ]; then
-    echo 'The complete ten-migration chain was not recorded.' >&2
+  if [ "$latest_state" != '0011:11' ]; then
+    echo 'The complete eleven-migration chain was not recorded.' >&2
     exit 1
   fi
 }
@@ -319,11 +385,193 @@ run_auth_tests() {
   run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
 }
 
+run_persona_message_race() {
+  race_name=$1
+  operator_account_id=$2
+  persona_account_id=$3
+  session_id=$4
+  chat_id=$5
+  lock_base=$6
+  mutation_role=$7
+  mutation_sql=$8
+
+  ready_lock=$((lock_base + 1))
+  gate_lock=$((lock_base + 2))
+  gate_application="persona-race-gate-$race_name"
+  action_application="persona-race-action-$race_name"
+  mutation_application="persona-race-mutation-$race_name"
+  gate_fifo="/tmp/kovcheg-persona-race-$race_name-$$.fifo"
+  gate_output="/tmp/kovcheg-persona-race-$race_name-$$-gate.log"
+  action_output="/tmp/kovcheg-persona-race-$race_name-$$-action.log"
+  mutation_output="/tmp/kovcheg-persona-race-$race_name-$$-mutation.log"
+  denied_output="/tmp/kovcheg-persona-race-$race_name-$$-denied.log"
+
+  mkfifo "$gate_fifo"
+  PGAPPNAME="$gate_application" PGPASSWORD="$migration_password" \
+    psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --username kovcheg_migrator \
+    <"$gate_fifo" >"$gate_output" 2>&1 &
+  gate_pid=$!
+  exec 9>"$gate_fifo"
+  printf 'SELECT pg_advisory_lock(%s);\n' "$gate_lock" >&9
+  wait_for_application_lock "$gate_application" "$gate_lock" true
+
+  PGAPPNAME="$action_application" PGPASSWORD="$runtime_password" \
+    psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --username kovcheg_app --command="
+      BEGIN;
+      SELECT * FROM kovcheg.authorize_system_persona_action(
+        '$session_id',
+        '$operator_account_id',
+        '$persona_account_id',
+        '2030-01-01 00:30:00+00'
+      );
+      SELECT pg_advisory_lock($ready_lock);
+      SELECT pg_advisory_lock($gate_lock);
+      SELECT * FROM kovcheg.create_text_message_for_session(
+        '$chat_id',
+        '$session_id',
+        '$operator_account_id',
+        '$persona_account_id',
+        'privacy-race-$race_name-before',
+        repeat('e', 64),
+        'Synthetic privacy race message',
+        'privacy-race-$race_name-before',
+        '2030-01-01 00:30:00+00'
+      );
+      COMMIT;
+    " >"$action_output" 2>&1 &
+  action_pid=$!
+  wait_for_application_lock "$action_application" "$ready_lock" true
+
+  if [ "$mutation_role" = auth ]; then
+    PGAPPNAME="$mutation_application" PGPASSWORD="$auth_password" \
+      psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --username kovcheg_auth_app \
+      --command="$mutation_sql" >"$mutation_output" 2>&1 &
+  else
+    PGAPPNAME="$mutation_application" PGPASSWORD="$migration_password" \
+      psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --username kovcheg_migrator \
+      --command="$mutation_sql" >"$mutation_output" 2>&1 &
+  fi
+  mutation_pid=$!
+  wait_for_application_row_lock "$mutation_application"
+
+  printf 'SELECT pg_advisory_unlock(%s);\n' "$gate_lock" >&9
+  if ! wait "$action_pid"; then
+    sed -n '1,120p' "$action_output" >&2
+    echo "The authorization-first $race_name action failed." >&2
+    exit 1
+  fi
+  if ! wait "$mutation_pid"; then
+    sed -n '1,120p' "$mutation_output" >&2
+    echo "The concurrent $race_name mutation failed." >&2
+    exit 1
+  fi
+  exec 9>&-
+  if ! wait "$gate_pid"; then
+    sed -n '1,120p' "$gate_output" >&2
+    echo "The $race_name barrier session failed." >&2
+    exit 1
+  fi
+
+  if PGPASSWORD="$runtime_password" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+    --username kovcheg_app --command="
+      SELECT * FROM kovcheg.create_text_message_for_session(
+        '$chat_id',
+        '$session_id',
+        '$operator_account_id',
+        '$persona_account_id',
+        'privacy-race-$race_name-after',
+        repeat('f', 64),
+        'Synthetic denied privacy race message',
+        'privacy-race-$race_name-after',
+        '2030-01-01 00:41:00+00'
+      );
+    " >"$denied_output" 2>&1; then
+    echo "The post-mutation $race_name action was authorized." >&2
+    exit 1
+  fi
+  if ! grep -q 'persona authorization failed' "$denied_output"; then
+    sed -n '1,120p' "$denied_output" >&2
+    echo "The post-mutation $race_name failure was not neutral." >&2
+    exit 1
+  fi
+
+  rm -f "$gate_fifo" "$gate_output" "$action_output" "$mutation_output" "$denied_output"
+}
+
+run_persona_privacy_race_tests() {
+  run_sql kovcheg_migrator "$migration_password" \
+    "$test_root/verify-persona-privacy-race-fixtures.sql"
+
+  run_persona_message_race \
+    grant \
+    '00000000-0000-4000-8000-000000009011' \
+    '00000000-0000-4000-8000-000000009111' \
+    '00000000-0000-4000-8000-000000009211' \
+    '00000000-0000-4000-8000-000000009411' \
+    781100 \
+    auth \
+    "SELECT kovcheg.admin_revoke_system_persona_operator(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000009011',
+      '00000000-0000-4000-8000-000000009111',
+      '2030-01-01 00:40:00+00',
+      'privacy-race-grant-mutation'
+    )"
+
+  run_persona_message_race \
+    operator \
+    '00000000-0000-4000-8000-000000009012' \
+    '00000000-0000-4000-8000-000000009112' \
+    '00000000-0000-4000-8000-000000009212' \
+    '00000000-0000-4000-8000-000000009412' \
+    781200 \
+    auth \
+    "SELECT * FROM kovcheg.admin_set_auth_account_status(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000009012',
+      'deactivated',
+      '2030-01-01 00:40:00+00',
+      'privacy-race-operator-mutation'
+    )"
+
+  run_persona_message_race \
+    persona \
+    '00000000-0000-4000-8000-000000009013' \
+    '00000000-0000-4000-8000-000000009113' \
+    '00000000-0000-4000-8000-000000009213' \
+    '00000000-0000-4000-8000-000000009413' \
+    781300 \
+    migration \
+    "UPDATE kovcheg.accounts
+     SET status = 'deactivated', deactivated_at = '2030-01-01 00:40:00+00'
+     WHERE id = '00000000-0000-4000-8000-000000009113'"
+
+  run_persona_message_race \
+    session \
+    '00000000-0000-4000-8000-000000009014' \
+    '00000000-0000-4000-8000-000000009114' \
+    '00000000-0000-4000-8000-000000009214' \
+    '00000000-0000-4000-8000-000000009414' \
+    781400 \
+    auth \
+    "SELECT kovcheg.admin_revoke_auth_session(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000009014',
+      '00000000-0000-4000-8000-000000009214',
+      '2030-01-01 00:40:00+00',
+      'privacy-race-session-mutation'
+    )"
+
+  run_sql kovcheg_migrator "$migration_password" \
+    "$test_root/verify-persona-privacy-race.sql"
+}
+
 run_persona_authorization_tests() {
   run_sql kovcheg_migrator "$migration_password" \
     "$test_root/verify-persona-authorization-fixtures.sql"
   run_sql kovcheg_app "$runtime_password" \
     "$test_root/verify-persona-authorization-runtime.sql"
+  run_persona_privacy_race_tests
   run_sql kovcheg_migrator "$migration_password" \
     "$test_root/revoke-persona-authorization-fixture.sql"
   run_sql kovcheg_app "$runtime_password" \
@@ -380,6 +628,10 @@ case "$scenario" in
   upgrade-v9)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v9.sql"
+    ;;
+  upgrade-v10)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v10.sql"
     ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
