@@ -7,8 +7,28 @@ import { createApplicationSessionAuthenticator } from './application-session.js'
 const correlationId = 'session-boundary-test' as CorrelationId;
 const sessionToken = 'a'.repeat(43);
 const activePrincipal = Object.freeze({
-  roles: ['student'],
+  accountAccess: 'member',
+  accountStatus: 'active',
+  administrativeCapabilities: Object.freeze({
+    canManageAccounts: false,
+    canManageDomainStatus: false,
+    canManageFunctionalGrants: false,
+    canManagePlatformAdministrators: false,
+  }),
+  contractVersion: 2,
+  diagnosticCapabilities: Object.freeze({
+    canReadBuildAndMigrationVersions: false,
+    canReadHealthAndReadiness: false,
+    canReadQueueAndTechnicalState: false,
+    canReadSanitizedDiagnostics: false,
+  }),
+  domainStatus: 'incubator_participant',
+  functionalGrants: Object.freeze([]),
+  isServerOwner: false,
+  materialCapabilities: Object.freeze([]),
+  sensitiveCapabilities: Object.freeze({ canPerformSensitiveActions: false }),
   sessionId: '00000000-0000-4000-8000-000000006101',
+  sessionStatus: 'active',
   userId: '00000000-0000-4000-8000-000000006001',
 });
 

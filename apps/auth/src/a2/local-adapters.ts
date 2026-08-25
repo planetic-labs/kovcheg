@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 
-import type { UserId, Uuid } from '@kovcheg/contracts';
+import { principalAuthorizationContractVersion } from '@kovcheg/contracts';
+import type { DomainStatus, FunctionalGrant, UserId, Uuid } from '@kovcheg/contracts';
 
 import {
   AuthRepositoryAuthorizationError,
@@ -9,7 +10,6 @@ import {
 } from './contracts.js';
 import type {
   AccountRecord,
-  AccountRole,
   AccountStatus,
   BootstrapAdministratorInput,
   ChallengeRecordInput,
@@ -31,8 +31,10 @@ import type {
 
 interface StoredAccount {
   displayName: string;
+  domainStatus: DomainStatus;
   email: string;
-  roles: AccountRole[];
+  functionalGrants: FunctionalGrant[];
+  isServerOwner: boolean;
   status: AccountStatus;
   userId: UserId;
 }
@@ -53,10 +55,42 @@ interface StoredSession extends SessionRecordInput {
 
 function cloneAccount(account: StoredAccount): AccountRecord {
   return Object.freeze({
+    accountAccess: 'member',
     displayName: account.displayName,
+    domainStatus: account.domainStatus,
     email: account.email,
-    roles: Object.freeze([...account.roles]),
+    functionalGrants: Object.freeze([...account.functionalGrants]),
     status: account.status,
+    userId: account.userId,
+  });
+}
+
+function sessionPrincipal(account: StoredAccount, session: StoredSession): SessionPrincipal {
+  const isAdministrator = account.functionalGrants.includes('platform_administrator');
+  const isTechnicalAdministrator = account.functionalGrants.includes('technical_administrator');
+  return Object.freeze({
+    accountAccess: 'member',
+    accountStatus: 'active',
+    administrativeCapabilities: Object.freeze({
+      canManageAccounts: isAdministrator,
+      canManageDomainStatus: isAdministrator,
+      canManageFunctionalGrants: isAdministrator,
+      canManagePlatformAdministrators: account.isServerOwner,
+    }),
+    contractVersion: principalAuthorizationContractVersion,
+    diagnosticCapabilities: Object.freeze({
+      canReadBuildAndMigrationVersions: isTechnicalAdministrator,
+      canReadHealthAndReadiness: isTechnicalAdministrator,
+      canReadQueueAndTechnicalState: isTechnicalAdministrator,
+      canReadSanitizedDiagnostics: isTechnicalAdministrator,
+    }),
+    domainStatus: account.domainStatus,
+    functionalGrants: Object.freeze([...account.functionalGrants]),
+    isServerOwner: account.isServerOwner,
+    materialCapabilities: Object.freeze([]),
+    sensitiveCapabilities: Object.freeze({ canPerformSensitiveActions: false }),
+    sessionId: session.sessionId,
+    sessionStatus: 'active',
     userId: account.userId,
   });
 }
@@ -114,11 +148,7 @@ export class LocalAuthRepository implements AuthRepository {
 
       session.lastSeenAt = now;
       session.idleExpiresAt = Math.min(session.absoluteExpiresAt, now + session.idleLifetimeMs);
-      return Object.freeze({
-        roles: Object.freeze([...account.roles]),
-        sessionId: session.sessionId,
-        userId: session.accountId,
-      });
+      return sessionPrincipal(account, session);
     });
   }
 
@@ -136,11 +166,7 @@ export class LocalAuthRepository implements AuthRepository {
       ) {
         return null;
       }
-      return Object.freeze({
-        roles: Object.freeze([...account.roles]),
-        sessionId: session.sessionId,
-        userId: session.accountId,
-      });
+      return sessionPrincipal(account, session);
     });
   }
 
@@ -163,11 +189,16 @@ export class LocalAuthRepository implements AuthRepository {
       if (this.accountsById.has(input.userId) || this.accountsByEmail.has(input.email)) {
         throw new AuthRepositoryConflictError();
       }
+      if (this.accountsById.size > 0 && this.bootstrapAccounts.size > 0) {
+        throw new AuthRepositoryConflictError();
+      }
 
       const account: StoredAccount = {
         displayName: input.displayName,
+        domainStatus: 'incubator_participant',
         email: input.email,
-        roles: ['administrator'],
+        functionalGrants: ['platform_administrator'],
+        isServerOwner: true,
         status: 'active',
         userId: input.userId,
       };
@@ -224,11 +255,7 @@ export class LocalAuthRepository implements AuthRepository {
       this.sessionsByVerifier.set(session.tokenVerifier, session);
       return {
         kind: 'authenticated',
-        principal: Object.freeze({
-          roles: Object.freeze([...account.roles]),
-          sessionId: session.sessionId,
-          userId: account.userId,
-        }),
+        principal: sessionPrincipal(account, session),
       };
     });
   }
@@ -243,8 +270,10 @@ export class LocalAuthRepository implements AuthRepository {
       }
       const account: StoredAccount = {
         displayName: input.displayName,
+        domainStatus: 'incubator_participant',
         email: input.email,
-        roles: ['student'],
+        functionalGrants: [],
+        isServerOwner: false,
         status: 'active',
         userId: input.userId,
       };
@@ -258,6 +287,22 @@ export class LocalAuthRepository implements AuthRepository {
     return this.queue.run(() => {
       const account = this.accountsById.get(userId);
       return account === undefined ? null : cloneAccount(account);
+    });
+  }
+
+  grantFunctionalGrantAsAdministrator(
+    input: Parameters<AuthRepository['grantFunctionalGrantAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    return this.queue.run(() => {
+      const actor = this.requireAdministrator(input.actorSessionVerifier, input.now);
+      if (input.grant === 'platform_administrator' && !actor.isServerOwner) {
+        throw new AuthRepositoryAuthorizationError();
+      }
+      const account = this.requireAccount(input.userId);
+      if (!account.functionalGrants.includes(input.grant)) {
+        account.functionalGrants.push(input.grant);
+      }
+      return cloneAccount(account);
     });
   }
 
@@ -337,6 +382,23 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
+  revokeFunctionalGrantAsAdministrator(
+    input: Parameters<AuthRepository['revokeFunctionalGrantAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    return this.queue.run(() => {
+      const actor = this.requireAdministrator(input.actorSessionVerifier, input.now);
+      if (input.grant === 'platform_administrator' && !actor.isServerOwner) {
+        throw new AuthRepositoryAuthorizationError();
+      }
+      const account = this.requireAccount(input.userId);
+      if (input.grant === 'platform_administrator' && account.isServerOwner) {
+        throw new AuthRepositoryConflictError();
+      }
+      account.functionalGrants = account.functionalGrants.filter((grant) => grant !== input.grant);
+      return cloneAccount(account);
+    });
+  }
+
   revokeSessionAsAdministrator(
     input: Parameters<AuthRepository['revokeSessionAsAdministrator']>[0],
   ): Promise<boolean> {
@@ -400,6 +462,17 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
+  setDomainStatusAsAdministrator(
+    input: Parameters<AuthRepository['setDomainStatusAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const account = this.requireAccount(input.userId);
+      account.domainStatus = input.domainStatus;
+      return cloneAccount(account);
+    });
+  }
+
   updateAccountAsAdministrator(
     input: Parameters<AuthRepository['updateAccountAsAdministrator']>[0],
   ): Promise<AccountRecord> {
@@ -436,12 +509,18 @@ export class LocalAuthRepository implements AuthRepository {
     if (
       account === undefined ||
       account.status !== 'active' ||
-      !account.roles.includes('administrator')
+      !account.functionalGrants.includes('platform_administrator')
     ) {
       throw new AuthRepositoryAuthorizationError();
     }
     session.lastSeenAt = now;
     session.idleExpiresAt = Math.min(session.absoluteExpiresAt, now + session.idleLifetimeMs);
+    return account;
+  }
+
+  private requireAccount(userId: UserId): StoredAccount {
+    const account = this.accountsById.get(userId);
+    if (account === undefined) throw new AuthRepositoryNotFoundError();
     return account;
   }
 }

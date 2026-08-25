@@ -1,4 +1,11 @@
-import type { AvailableChat, CorrelationId, TextMessage, UserId, Uuid } from '@kovcheg/contracts';
+import type {
+  AvailableChat,
+  ChatAdministrationResponse,
+  CorrelationId,
+  TextMessage,
+  UserId,
+  Uuid,
+} from '@kovcheg/contracts';
 
 import type { ApplicationPrincipal } from '../session/application-session.js';
 
@@ -18,6 +25,21 @@ export interface CreateTextMessageResult {
   readonly wasCreated: boolean;
 }
 
+interface CreateGroupChatCommand {
+  readonly chatId: Uuid;
+  readonly correlationId: CorrelationId;
+  readonly operatorPrincipal: ApplicationPrincipal;
+  readonly reason: string;
+}
+
+interface SetChatAdministratorCommand extends CreateGroupChatCommand {
+  readonly granted: boolean;
+  readonly targetAccountId: Uuid;
+  readonly version: number;
+}
+
+export type ChatAdministrationResult = Omit<ChatAdministrationResponse, 'contractVersion'>;
+
 export interface ReadMessageHistoryCommand {
   readonly chatId: Uuid;
   readonly cursor:
@@ -34,9 +56,11 @@ export interface ReadMessageHistoryResult {
 }
 
 export interface MessageFlowRepository {
+  createGroupChat(command: CreateGroupChatCommand): Promise<ChatAdministrationResult>;
   createTextMessage(command: CreateTextMessageCommand): Promise<CreateTextMessageResult>;
   listAvailableChats(userId: UserId): Promise<readonly AvailableChat[]>;
   readMessageHistory(command: ReadMessageHistoryCommand): Promise<ReadMessageHistoryResult>;
+  setChatAdministrator(command: SetChatAdministratorCommand): Promise<ChatAdministrationResult>;
 }
 
 export type MessageFlowRepositoryFailure =
@@ -50,6 +74,10 @@ export class MessageFlowRepositoryError extends Error {
 }
 
 export class UnavailableMessageFlowRepository implements MessageFlowRepository {
+  createGroupChat(): Promise<ChatAdministrationResult> {
+    return Promise.reject(new MessageFlowRepositoryError('unavailable'));
+  }
+
   createTextMessage(): Promise<CreateTextMessageResult> {
     return Promise.reject(new MessageFlowRepositoryError('unavailable'));
   }
@@ -59,6 +87,10 @@ export class UnavailableMessageFlowRepository implements MessageFlowRepository {
   }
 
   readMessageHistory(): Promise<ReadMessageHistoryResult> {
+    return Promise.reject(new MessageFlowRepositoryError('unavailable'));
+  }
+
+  setChatAdministrator(): Promise<ChatAdministrationResult> {
     return Promise.reject(new MessageFlowRepositoryError('unavailable'));
   }
 }

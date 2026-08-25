@@ -600,7 +600,7 @@ describe('A2 auth HTTP runtime', () => {
     await expect(statusResponse.json()).resolves.toMatchObject({ status: 'deactivated' });
   });
 
-  it('rejects missing, student, expired, revoked, and deactivated administrator sessions', async () => {
+  it('rejects missing, ordinary, expired, revoked, and deactivated administrator sessions', async () => {
     const missingFixture = await createFixture();
     const missing = await adminRequest(missingFixture, {
       body: { displayName: 'Denied', email: 'denied-missing@example.invalid' },
@@ -614,17 +614,17 @@ describe('A2 auth HTTP runtime', () => {
       error: 'auth.invalid-session',
     });
 
-    const studentSession = await loginThroughHttp(missingFixture, 'active-http@example.invalid');
-    const student = await adminRequest(missingFixture, {
-      body: { displayName: 'Denied', email: 'denied-student@example.invalid' },
-      cookie: studentSession.cookie,
-      correlationId: 'http-admin-student-session',
+    const ordinarySession = await loginThroughHttp(missingFixture, 'active-http@example.invalid');
+    const ordinary = await adminRequest(missingFixture, {
+      body: { displayName: 'Denied', email: 'denied-member@example.invalid' },
+      cookie: ordinarySession.cookie,
+      correlationId: 'http-admin-ordinary-session',
       method: 'POST',
       path: '/admin/accounts',
     });
-    expect(student.status).toBe(403);
-    await expect(student.json()).resolves.toEqual({
-      correlationId: 'http-admin-student-session',
+    expect(ordinary.status).toBe(403);
+    await expect(ordinary.json()).resolves.toEqual({
+      correlationId: 'http-admin-ordinary-session',
       error: 'auth.forbidden',
     });
 

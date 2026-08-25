@@ -111,7 +111,9 @@ describe('A2 administrator and account use cases', () => {
     expect(new Set(results.map((result) => result.account.userId))).toEqual(
       new Set([administratorId]),
     );
-    expect(results.every((result) => result.account.roles.includes('administrator'))).toBe(true);
+    expect(
+      results.every((result) => result.account.functionalGrants.includes('platform_administrator')),
+    ).toBe(true);
   });
 
   it('creates pre-authorized accounts and enforces admin-only status and session revocation', async () => {
@@ -126,15 +128,17 @@ describe('A2 administrator and account use cases', () => {
     const account = await fixture.service.createAccount(
       administratorSession.sessionToken,
       {
-        displayName: '  Test   Student  ',
-        email: '  STUDENT@example.invalid ',
+        displayName: '  Test   Member  ',
+        email: '  MEMBER@example.invalid ',
       },
       administrationCorrelationId,
     );
     expect(account).toMatchObject({
-      displayName: 'Test Student',
-      email: 'student@example.invalid',
-      roles: ['student'],
+      accountAccess: 'member',
+      displayName: 'Test Member',
+      domainStatus: 'incubator_participant',
+      email: 'member@example.invalid',
+      functionalGrants: [],
       status: 'active',
     });
 
@@ -143,16 +147,16 @@ describe('A2 administrator and account use cases', () => {
         administratorSession.sessionToken,
         {
           displayName: 'Duplicate',
-          email: 'student@example.invalid',
+          email: 'member@example.invalid',
         },
         administrationCorrelationId,
       ),
     ).rejects.toMatchObject({ code: 'auth.conflict' });
 
-    const studentSession = await login(fixture, account.email, 'student');
+    const memberSession = await login(fixture, account.email, 'member');
     await expect(
       fixture.service.createAccount(
-        studentSession.sessionToken,
+        memberSession.sessionToken,
         {
           displayName: 'Forbidden',
           email: 'forbidden@example.invalid',
@@ -168,7 +172,7 @@ describe('A2 administrator and account use cases', () => {
       administrationCorrelationId,
     );
     await expect(
-      fixture.service.authenticateSession(studentSession.sessionToken),
+      fixture.service.authenticateSession(memberSession.sessionToken),
     ).rejects.toMatchObject({ code: 'auth.invalid-session' });
 
     const deliveredBeforeInactiveRequest = (fixture.delivery as LocalEmailChallengeDelivery)
@@ -208,6 +212,77 @@ describe('A2 administrator and account use cases', () => {
     await expect(
       fixture.service.authenticateSession(administratorSession.sessionToken),
     ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+  });
+
+  it('keeps owner-only platform administration separate from delegated functional grants', async () => {
+    const fixture = createFixture();
+    await bootstrap(fixture);
+    const ownerSession = await login(fixture, 'administrator@example.invalid', 'owner');
+    const delegated = await fixture.service.createAccount(
+      ownerSession.sessionToken,
+      {
+        displayName: 'Delegated Administrator',
+        email: 'delegated-administrator@example.invalid',
+      },
+      administrationCorrelationId,
+    );
+    await fixture.service.grantFunctionalGrant(
+      ownerSession.sessionToken,
+      delegated.userId,
+      'platform_administrator',
+      { reason: 'owner-delegated', version: 2 },
+      administrationCorrelationId,
+    );
+    const delegatedSession = await login(fixture, delegated.email, 'delegated-administrator');
+    const specialist = await fixture.service.createAccount(
+      delegatedSession.sessionToken,
+      { displayName: 'Synthetic Specialist', email: 'specialist@example.invalid' },
+      administrationCorrelationId,
+    );
+
+    for (const [grant, version] of [
+      ['editor', 2],
+      ['chronicler', 3],
+      ['technical_administrator', 4],
+    ] as const) {
+      await fixture.service.grantFunctionalGrant(
+        delegatedSession.sessionToken,
+        specialist.userId,
+        grant,
+        { reason: 'delegated-assignment', version },
+        administrationCorrelationId,
+      );
+    }
+    await expect(
+      fixture.service.grantFunctionalGrant(
+        delegatedSession.sessionToken,
+        specialist.userId,
+        'platform_administrator',
+        { reason: 'delegated-denied', version: 5 },
+        administrationCorrelationId,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.forbidden' });
+
+    const specialistSession = await login(fixture, specialist.email, 'specialist');
+    await expect(
+      fixture.service.authenticateSession(specialistSession.sessionToken),
+    ).resolves.toMatchObject({
+      administrativeCapabilities: {
+        canManageAccounts: false,
+        canManageFunctionalGrants: false,
+        canManagePlatformAdministrators: false,
+      },
+      diagnosticCapabilities: {
+        canReadBuildAndMigrationVersions: true,
+        canReadHealthAndReadiness: true,
+        canReadQueueAndTechnicalState: true,
+        canReadSanitizedDiagnostics: true,
+      },
+      functionalGrants: ['editor', 'chronicler', 'technical_administrator'],
+      isServerOwner: false,
+      materialCapabilities: [],
+      sensitiveCapabilities: { canPerformSensitiveActions: false },
+    });
   });
 
   it('keeps browser sessions independent, logs out only the current one, and deactivation revokes all', async () => {

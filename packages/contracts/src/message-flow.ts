@@ -2,7 +2,8 @@ import type { CorrelationId, UserId, Uuid } from './foundation-types.js';
 
 export const messageFlowContractVersion = 2 as const;
 export const messageHistoryContractVersion = 3 as const;
-export const chatListContractVersion = 1 as const;
+export const chatListContractVersion = 2 as const;
+export const chatAdministrationContractVersion = 1 as const;
 
 export const messageFlowErrorCodes = Object.freeze([
   'message-flow.invalid-request',
@@ -19,8 +20,33 @@ export type ChatSequence = string;
 export type ChatKind = 'direct' | 'group';
 
 export interface AvailableChat {
+  readonly capabilities: ChatCapabilities;
   readonly id: Uuid;
   readonly kind: ChatKind;
+}
+
+interface ChatCapabilities {
+  readonly canRead: boolean;
+  readonly canWrite: boolean;
+}
+
+export interface CreateGroupChatRequest {
+  readonly chatId: Uuid;
+  readonly reason: string;
+}
+
+export interface SetChatAdministratorRequest {
+  readonly granted: boolean;
+  readonly reason: string;
+  readonly version: number;
+}
+
+export interface ChatAdministrationResponse {
+  readonly authorizationVersion: number;
+  readonly chatId: Uuid;
+  readonly contractVersion: typeof chatAdministrationContractVersion;
+  readonly isAdministrator: boolean;
+  readonly targetAccountId: Uuid;
 }
 
 export interface AvailableChatList {
@@ -70,10 +96,63 @@ const positiveChatSequenceSchema = Object.freeze({ pattern: '^[1-9][0-9]*$', typ
 export const availableChatJsonSchema = Object.freeze({
   additionalProperties: false,
   properties: {
+    capabilities: {
+      additionalProperties: false,
+      properties: {
+        canRead: { type: 'boolean' },
+        canWrite: { type: 'boolean' },
+      },
+      required: ['canRead', 'canWrite'],
+      type: 'object',
+    },
     id: uuidSchema,
     kind: { enum: ['direct', 'group'], type: 'string' },
   },
-  required: ['id', 'kind'],
+  required: ['capabilities', 'id', 'kind'],
+  type: 'object',
+});
+
+const authorizationReasonSchema = Object.freeze({
+  maxLength: 64,
+  minLength: 3,
+  pattern: '^[a-z][a-z0-9.-]{2,63}$',
+  type: 'string',
+});
+
+export const createGroupChatRequestJsonSchema = Object.freeze({
+  additionalProperties: false,
+  properties: { chatId: uuidSchema, reason: authorizationReasonSchema },
+  required: ['chatId', 'reason'],
+  type: 'object',
+});
+
+export const setChatAdministratorRequestJsonSchema = Object.freeze({
+  additionalProperties: false,
+  properties: {
+    granted: { type: 'boolean' },
+    reason: authorizationReasonSchema,
+    version: { minimum: 2, type: 'integer' },
+  },
+  required: ['granted', 'reason', 'version'],
+  type: 'object',
+});
+
+export const chatAdministrationResponseJsonSchema = Object.freeze({
+  additionalProperties: false,
+  properties: {
+    authorizationVersion: { minimum: 1, type: 'integer' },
+    chatId: uuidSchema,
+    contractVersion: { enum: [chatAdministrationContractVersion], type: 'integer' },
+    isAdministrator: { type: 'boolean' },
+    targetAccountId: uuidSchema,
+  },
+  required: [
+    'authorizationVersion',
+    'chatId',
+    'contractVersion',
+    'isAdministrator',
+    'targetAccountId',
+  ],
   type: 'object',
 });
 

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 
-import type { SessionId, UserId, Uuid } from '@kovcheg/contracts';
+import { functionalGrants, parseCurrentPrincipalAuthorization } from '@kovcheg/contracts';
+import type { FunctionalGrant, UserId, Uuid } from '@kovcheg/contracts';
 import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
 import type { PoolConfig, QueryResultRow } from 'pg';
 import { Pool } from 'pg';
@@ -11,7 +12,7 @@ import {
   AuthRepositoryConflictError,
   AuthRepositoryNotFoundError,
 } from './contracts.js';
-import type { AccountRecord, AccountRole, AccountStatus, SessionPrincipal } from './contracts.js';
+import type { AccountRecord, AccountStatus, SessionPrincipal } from './contracts.js';
 import type { OidcClientRepository, RegisteredOidcClient } from './oidc.js';
 import type {
   AuthRepository,
@@ -36,12 +37,14 @@ export interface AuthPostgresEnvironment {
 }
 
 interface AccountRow extends QueryResultRow {
+  readonly account_access: string;
   readonly account_id: string;
   readonly account_status: string;
-  readonly auth_role: string;
   readonly created?: boolean | undefined;
   readonly display_name: string;
+  readonly domain_status: string;
   readonly email: string;
+  readonly functional_grants: unknown;
 }
 
 interface ChallengeRow extends QueryResultRow {
@@ -52,10 +55,8 @@ interface ChallengeRow extends QueryResultRow {
 }
 
 interface SessionRow extends QueryResultRow {
-  readonly account_id: string | null;
-  readonly auth_roles: unknown;
   readonly outcome?: string | undefined;
-  readonly session_id: string | null;
+  readonly principal: unknown;
 }
 
 interface BooleanRow extends QueryResultRow {
@@ -118,13 +119,6 @@ async function query<Row extends QueryResultRow>(
   }
 }
 
-function accountRole(value: string): AccountRole {
-  if (value !== 'administrator' && value !== 'student') {
-    throw unavailable();
-  }
-  return value;
-}
-
 function accountStatus(value: string): AccountStatus {
   if (value !== 'active' && value !== 'deactivated') {
     throw unavailable();
@@ -139,33 +133,42 @@ function identifier<T extends string>(value: string | null): T {
   return value as T;
 }
 
-function roles(value: unknown): readonly AccountRole[] {
+function grants(value: unknown): readonly FunctionalGrant[] {
   const parsed =
     typeof value === 'string' &&
-    /^\{(?:administrator|student)(?:,(?:administrator|student))*\}$/.test(value)
+    /^\{(?:(?:warrior|platform_administrator|chronicler|editor|technical_administrator)(?:,(?:warrior|platform_administrator|chronicler|editor|technical_administrator))*)?\}$/.test(
+      value,
+    )
       ? value.slice(1, -1).split(',')
       : value;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.length < 1 ||
-    parsed.some((role) => typeof role !== 'string')
-  ) {
+  if (!Array.isArray(parsed) || parsed.some((grant) => typeof grant !== 'string')) {
     throw unavailable();
   }
-  return Object.freeze(parsed.map(accountRole));
+  if (parsed.length === 1 && parsed[0] === '') return Object.freeze([]);
+  if (parsed.some((grant) => !functionalGrants.includes(grant as FunctionalGrant))) {
+    throw unavailable();
+  }
+  return Object.freeze(parsed as FunctionalGrant[]);
 }
 
 function mapAccount(row: AccountRow | undefined): AccountRecord | null {
   if (row === undefined) {
     return null;
   }
-  if (typeof row.email !== 'string' || typeof row.display_name !== 'string') {
+  if (
+    row.account_access !== 'member' ||
+    typeof row.email !== 'string' ||
+    typeof row.display_name !== 'string' ||
+    (row.domain_status !== 'incubator_participant' && row.domain_status !== 'disciple')
+  ) {
     throw unavailable();
   }
   return Object.freeze({
+    accountAccess: 'member',
     displayName: row.display_name,
+    domainStatus: row.domain_status,
     email: row.email,
-    roles: Object.freeze([accountRole(row.auth_role)]),
+    functionalGrants: grants(row.functional_grants),
     status: accountStatus(row.account_status),
     userId: identifier<UserId>(row.account_id),
   });
@@ -179,35 +182,21 @@ export class PostgresAuthRepository implements AuthRepository {
   async authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null> {
     const rows = await query<SessionRow>(
       this.client,
-      `SELECT account_id, session_id, auth_roles
-       FROM kovcheg.authenticate_auth_session($1, $2)`,
+      `SELECT kovcheg.read_current_principal_authorization($1, $2, true) AS principal`,
       [tokenVerifier, new Date(now)],
     );
-    const row = rows[0];
-    if (row === undefined) {
-      return null;
-    }
-    return Object.freeze({
-      roles: roles(row.auth_roles),
-      sessionId: identifier<SessionId>(row.session_id),
-      userId: identifier<UserId>(row.account_id),
-    });
+    if (rows[0]?.principal === null) return null;
+    return parseCurrentPrincipalAuthorization(rows[0]?.principal) ?? null;
   }
 
   async validateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null> {
     const rows = await query<SessionRow>(
       this.client,
-      `SELECT account_id, session_id, auth_roles
-       FROM kovcheg.validate_auth_session($1, $2)`,
+      `SELECT kovcheg.read_current_principal_authorization($1, $2, false) AS principal`,
       [tokenVerifier, new Date(now)],
     );
-    const row = rows[0];
-    if (row === undefined) return null;
-    return Object.freeze({
-      roles: roles(row.auth_roles),
-      sessionId: identifier<SessionId>(row.session_id),
-      userId: identifier<UserId>(row.account_id),
-    });
+    if (rows[0]?.principal === null) return null;
+    return parseCurrentPrincipalAuthorization(rows[0]?.principal) ?? null;
   }
 
   async bootstrapAdministrator(
@@ -215,8 +204,9 @@ export class PostgresAuthRepository implements AuthRepository {
   ): Promise<BootstrapAdministratorResult> {
     const rows = await query<AccountRow>(
       this.client,
-      `SELECT account_id, email, display_name, auth_role, account_status, created
-       FROM kovcheg.bootstrap_auth_administrator($1, $2, $3, $4)`,
+      `SELECT account_id, email, display_name, account_access, account_status,
+              domain_status, functional_grants, created
+       FROM kovcheg.bootstrap_role_capable_administrator($1, $2, $3, $4)`,
       [input.bootstrapId, input.userId, input.email, input.displayName],
     );
     const row = rows[0];
@@ -232,8 +222,8 @@ export class PostgresAuthRepository implements AuthRepository {
   ): Promise<ConsumeChallengeResult> {
     const rows = await query<SessionRow>(
       this.client,
-      `SELECT outcome, account_id, session_id, auth_roles
-       FROM kovcheg.consume_auth_challenge_and_create_session(
+      `SELECT outcome, principal
+       FROM kovcheg.consume_challenge_and_read_principal(
          $1, $2, $3, $4, $5, $6, $7, $8
        )`,
       [
@@ -254,14 +244,9 @@ export class PostgresAuthRepository implements AuthRepository {
     if (row?.outcome !== 'authenticated') {
       throw unavailable();
     }
-    return Object.freeze({
-      kind: 'authenticated',
-      principal: Object.freeze({
-        roles: roles(row.auth_roles),
-        sessionId: identifier<SessionId>(row.session_id),
-        userId: identifier<UserId>(row.account_id),
-      }),
-    });
+    const principal = parseCurrentPrincipalAuthorization(row.principal);
+    if (principal === null) throw unavailable();
+    return Object.freeze({ kind: 'authenticated', principal });
   }
 
   async createAccountAsAdministrator(
@@ -273,9 +258,10 @@ export class PostgresAuthRepository implements AuthRepository {
          SELECT count(*) AS authenticated_session_count
          FROM kovcheg.authenticate_auth_session($1, $5)
        )
-       SELECT account_id, email, display_name, auth_role, account_status
+       SELECT account_id, email, display_name, account_access, account_status,
+              domain_status, functional_grants
        FROM session_activity
-       CROSS JOIN LATERAL kovcheg.admin_create_auth_account($1, $2, $3, $4, $5, $6)`,
+       CROSS JOIN LATERAL kovcheg.admin_create_role_capable_account($1, $2, $3, $4, $5, $6)`,
       [
         input.actorSessionVerifier,
         input.userId,
@@ -295,11 +281,18 @@ export class PostgresAuthRepository implements AuthRepository {
   async findAccountById(userId: UserId): Promise<AccountRecord | null> {
     const rows = await query<AccountRow>(
       this.client,
-      `SELECT account_id, email, display_name, auth_role, account_status
-       FROM kovcheg.find_auth_account_by_id($1)`,
+      `SELECT account_id, email, display_name, account_access, account_status,
+              domain_status, functional_grants
+       FROM kovcheg.read_role_capable_account($1)`,
       [userId],
     );
     return mapAccount(rows[0]);
+  }
+
+  async grantFunctionalGrantAsAdministrator(
+    input: Parameters<AuthRepository['grantFunctionalGrantAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    return this.authorizationMutation('kovcheg.admin_grant_functional_grant', input);
   }
 
   async invalidateChallenge(challengeId: Uuid, now: number): Promise<void> {
@@ -371,6 +364,12 @@ export class PostgresAuthRepository implements AuthRepository {
     return rows[0]?.result ?? 0;
   }
 
+  async revokeFunctionalGrantAsAdministrator(
+    input: Parameters<AuthRepository['revokeFunctionalGrantAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    return this.authorizationMutation('kovcheg.admin_revoke_functional_grant', input);
+  }
+
   async revokeSessionAsAdministrator(
     input: Parameters<AuthRepository['revokeSessionAsAdministrator']>[0],
   ): Promise<boolean> {
@@ -405,13 +404,9 @@ export class PostgresAuthRepository implements AuthRepository {
   ): Promise<AccountRecord> {
     const rows = await query<AccountRow>(
       this.client,
-      `WITH session_activity AS MATERIALIZED (
-         SELECT count(*) AS authenticated_session_count
-         FROM kovcheg.authenticate_auth_session($1, $4)
-       )
-       SELECT account_id, email, display_name, auth_role, account_status
-       FROM session_activity
-       CROSS JOIN LATERAL kovcheg.admin_set_auth_account_status($1, $2, $3, $4, $5)`,
+      `SELECT account_id, email, display_name, account_access, account_status,
+              domain_status, functional_grants
+       FROM kovcheg.admin_set_role_capable_account_status($1, $2, $3, $4, $5)`,
       [
         input.actorSessionVerifier,
         input.userId,
@@ -427,18 +422,37 @@ export class PostgresAuthRepository implements AuthRepository {
     return account;
   }
 
+  async setDomainStatusAsAdministrator(
+    input: Parameters<AuthRepository['setDomainStatusAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    const rows = await query<AccountRow>(
+      this.client,
+      `SELECT account_id, email, display_name, account_access, account_status,
+              domain_status, functional_grants
+       FROM kovcheg.admin_set_domain_status($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.domainStatus,
+        input.reason,
+        input.version,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const account = mapAccount(rows[0]);
+    if (account === null) throw unavailable();
+    return account;
+  }
+
   async updateAccountAsAdministrator(
     input: Parameters<AuthRepository['updateAccountAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     const rows = await query<AccountRow>(
       this.client,
-      `WITH session_activity AS MATERIALIZED (
-         SELECT count(*) AS authenticated_session_count
-         FROM kovcheg.authenticate_auth_session($1, $5)
-       )
-       SELECT account_id, email, display_name, auth_role, account_status
-       FROM session_activity
-       CROSS JOIN LATERAL kovcheg.admin_update_auth_account($1, $2, $3, $4, $5, $6)`,
+      `SELECT account_id, email, display_name, account_access, account_status,
+              domain_status, functional_grants
+       FROM kovcheg.admin_update_role_capable_account($1, $2, $3, $4, $5, $6)`,
       [
         input.actorSessionVerifier,
         input.userId,
@@ -452,6 +466,32 @@ export class PostgresAuthRepository implements AuthRepository {
     if (account === null) {
       throw unavailable();
     }
+    return account;
+  }
+
+  private async authorizationMutation(
+    name: 'kovcheg.admin_grant_functional_grant' | 'kovcheg.admin_revoke_functional_grant',
+    input:
+      | Parameters<AuthRepository['grantFunctionalGrantAsAdministrator']>[0]
+      | Parameters<AuthRepository['revokeFunctionalGrantAsAdministrator']>[0],
+  ): Promise<AccountRecord> {
+    const rows = await query<AccountRow>(
+      this.client,
+      `SELECT account_id, email, display_name, account_access, account_status,
+              domain_status, functional_grants
+       FROM ${name}($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.actorSessionVerifier,
+        input.userId,
+        input.grant,
+        input.reason,
+        input.version,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const account = mapAccount(rows[0]);
+    if (account === null) throw unavailable();
     return account;
   }
 

@@ -1,4 +1,11 @@
-import type { CorrelationId, SessionId, UserId, Uuid } from '@kovcheg/contracts';
+import type {
+  CorrelationId,
+  DomainStatus,
+  FunctionalGrant,
+  SessionId,
+  UserId,
+  Uuid,
+} from '@kovcheg/contracts';
 
 import {
   AuthError,
@@ -11,6 +18,7 @@ import {
 import type {
   AccountRecord,
   AccountStatus,
+  AuthorizationMutationInput,
   AuthenticatedSession,
   AuthPolicy,
   BootstrapAdministratorInput,
@@ -86,6 +94,21 @@ function normalizeRateLimitDimension(name: string, value: string): string {
   }
 
   return normalized;
+}
+
+function normalizeAuthorizationReason(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z][a-z0-9.-]{2,63}$/u.test(normalized)) {
+    throw new AuthError('auth.invalid-input', 'A technical authorization reason is required');
+  }
+  return normalized;
+}
+
+function normalizeAuthorizationVersion(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new AuthError('auth.invalid-input', 'A positive authorization version is required');
+  }
+  return value;
 }
 
 export class AuthService {
@@ -177,6 +200,26 @@ export class AuthService {
     );
   }
 
+  async grantFunctionalGrant(
+    administratorSessionToken: string,
+    userId: UserId,
+    grant: FunctionalGrant,
+    input: AuthorizationMutationInput,
+    correlationId: CorrelationId,
+  ): Promise<AccountRecord> {
+    try {
+      return await this.dependencies.repository.grantFunctionalGrantAsAdministrator({
+        ...this.administrativeContext(administratorSessionToken, correlationId),
+        grant,
+        reason: normalizeAuthorizationReason(input.reason),
+        userId,
+        version: normalizeAuthorizationVersion(input.version),
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
+    }
+  }
+
   async requestEmailChallenge(input: ChallengeRequestInput): Promise<ChallengeRequestAccepted> {
     const now = this.dependencies.clock.now();
     const email = normalizeEmail(input.email);
@@ -243,6 +286,26 @@ export class AuthService {
     }
   }
 
+  async revokeFunctionalGrant(
+    administratorSessionToken: string,
+    userId: UserId,
+    grant: FunctionalGrant,
+    input: AuthorizationMutationInput,
+    correlationId: CorrelationId,
+  ): Promise<AccountRecord> {
+    try {
+      return await this.dependencies.repository.revokeFunctionalGrantAsAdministrator({
+        ...this.administrativeContext(administratorSessionToken, correlationId),
+        grant,
+        reason: normalizeAuthorizationReason(input.reason),
+        userId,
+        version: normalizeAuthorizationVersion(input.version),
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
+    }
+  }
+
   private async deliverChallenge(message: EmailChallengeMessage, issuedAt: number): Promise<void> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -295,6 +358,26 @@ export class AuthService {
         ...this.administrativeContext(administratorSessionToken, correlationId),
         status,
         userId,
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
+    }
+  }
+
+  async setDomainStatus(
+    administratorSessionToken: string,
+    userId: UserId,
+    domainStatus: DomainStatus,
+    input: AuthorizationMutationInput,
+    correlationId: CorrelationId,
+  ): Promise<AccountRecord> {
+    try {
+      return await this.dependencies.repository.setDomainStatusAsAdministrator({
+        ...this.administrativeContext(administratorSessionToken, correlationId),
+        domainStatus,
+        reason: normalizeAuthorizationReason(input.reason),
+        userId,
+        version: normalizeAuthorizationVersion(input.version),
       });
     } catch (error) {
       this.mapAdministrativeError(error);

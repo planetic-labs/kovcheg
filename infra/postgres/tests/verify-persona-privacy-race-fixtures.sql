@@ -1,3 +1,14 @@
+CREATE FUNCTION pg_temp.ordinary_auth_role()
+RETURNS kovcheg.auth_account_role
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT role
+  FROM pg_catalog.unnest(pg_catalog.enum_range(NULL::kovcheg.auth_account_role)) AS role
+  WHERE role <> 'administrator'
+  LIMIT 1;
+$$;
+
 INSERT INTO kovcheg.accounts (
   id,
   kind,
@@ -23,10 +34,10 @@ INSERT INTO kovcheg.account_auth_profiles (
   created_at,
   updated_at
 ) VALUES
-  ('00000000-0000-4000-8000-000000009011', 'privacy-operator-one@identity.invalid', 'Privacy Operator One', 'student', '2030-01-01 00:00:00+00', '2030-01-01 00:00:00+00'),
-  ('00000000-0000-4000-8000-000000009012', 'privacy-operator-two@identity.invalid', 'Privacy Operator Two', 'student', '2030-01-01 00:00:00+00', '2030-01-01 00:00:00+00'),
-  ('00000000-0000-4000-8000-000000009013', 'privacy-operator-three@identity.invalid', 'Privacy Operator Three', 'student', '2030-01-01 00:00:00+00', '2030-01-01 00:00:00+00'),
-  ('00000000-0000-4000-8000-000000009014', 'privacy-operator-four@identity.invalid', 'Privacy Operator Four', 'student', '2030-01-01 00:00:00+00', '2030-01-01 00:00:00+00');
+  ('00000000-0000-4000-8000-000000009011', 'privacy-operator-one@identity.invalid', 'Privacy Operator One', pg_temp.ordinary_auth_role(), '2030-01-01 00:00:00+00', '2030-01-01 00:00:00+00'),
+  ('00000000-0000-4000-8000-000000009012', 'privacy-operator-two@identity.invalid', 'Privacy Operator Two', pg_temp.ordinary_auth_role(), '2030-01-01 00:00:00+00', '2030-01-01 00:00:00+00'),
+  ('00000000-0000-4000-8000-000000009013', 'privacy-operator-three@identity.invalid', 'Privacy Operator Three', pg_temp.ordinary_auth_role(), '2030-01-01 00:00:00+00', '2030-01-01 00:00:00+00'),
+  ('00000000-0000-4000-8000-000000009014', 'privacy-operator-four@identity.invalid', 'Privacy Operator Four', pg_temp.ordinary_auth_role(), '2030-01-01 00:00:00+00', '2030-01-01 00:00:00+00');
 
 INSERT INTO kovcheg.auth_sessions (
   id,

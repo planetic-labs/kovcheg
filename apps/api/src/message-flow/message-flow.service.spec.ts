@@ -44,9 +44,32 @@ function createSessionAuthenticator(
 
 function createRepository(overrides: Partial<MessageFlowRepository> = {}): MessageFlowRepository {
   return {
+    createGroupChat: (command) =>
+      Promise.resolve({
+        authorizationVersion: 1,
+        chatId: command.chatId,
+        isAdministrator: true,
+        targetAccountId: command.operatorPrincipal.userId,
+      }),
     createTextMessage: () => Promise.resolve({ message, wasCreated: true }),
-    listAvailableChats: () => Promise.resolve(Object.freeze([{ id: chatId, kind: 'direct' }])),
+    listAvailableChats: () =>
+      Promise.resolve(
+        Object.freeze([
+          {
+            capabilities: Object.freeze({ canRead: true, canWrite: true }),
+            id: chatId,
+            kind: 'direct' as const,
+          },
+        ]),
+      ),
     readMessageHistory: () => Promise.resolve({ hasMore: false, items: [message] }),
+    setChatAdministrator: (command) =>
+      Promise.resolve({
+        authorizationVersion: command.version,
+        chatId: command.chatId,
+        isAdministrator: command.granted,
+        targetAccountId: command.targetAccountId,
+      }),
     ...overrides,
   };
 }
@@ -173,8 +196,14 @@ describe('MessageFlowService', () => {
   it('returns a versioned active chat list and permits zero chats', async () => {
     const listed = new MessageFlowService(createSessionAuthenticator(), createRepository());
     await expect(listed.listAvailableChats(activeCookie, correlationId)).resolves.toEqual({
-      contractVersion: 1,
-      items: [{ id: chatId, kind: 'direct' }],
+      contractVersion: 2,
+      items: [
+        {
+          capabilities: { canRead: true, canWrite: true },
+          id: chatId,
+          kind: 'direct',
+        },
+      ],
     });
 
     const empty = new MessageFlowService(
@@ -182,9 +211,51 @@ describe('MessageFlowService', () => {
       createRepository({ listAvailableChats: () => Promise.resolve(Object.freeze([])) }),
     );
     await expect(empty.listAvailableChats(activeCookie, correlationId)).resolves.toEqual({
-      contractVersion: 1,
+      contractVersion: 2,
       items: [],
     });
+  });
+
+  it('binds group creation and scoped administrator changes to the personal session', async () => {
+    const createGroupChat = vi.fn<MessageFlowRepository['createGroupChat']>().mockResolvedValue({
+      authorizationVersion: 1,
+      chatId,
+      isAdministrator: true,
+      targetAccountId: syntheticUserIds.activePrimary,
+    });
+    const setChatAdministrator = vi
+      .fn<MessageFlowRepository['setChatAdministrator']>()
+      .mockResolvedValue({
+        authorizationVersion: 2,
+        chatId,
+        isAdministrator: true,
+        targetAccountId: syntheticUserIds.activeSecondary,
+      });
+    const service = new MessageFlowService(
+      createSessionAuthenticator(),
+      createRepository({ createGroupChat, setChatAdministrator }),
+    );
+
+    await expect(
+      service.createGroupChat(activeCookie, { chatId, reason: 'group-created' }, correlationId),
+    ).resolves.toMatchObject({ contractVersion: 1, isAdministrator: true });
+    await expect(
+      service.setChatAdministrator(
+        chatId,
+        syntheticUserIds.activeSecondary,
+        activeCookie,
+        { granted: true, reason: 'creator-assigned', version: 2 },
+        correlationId,
+      ),
+    ).resolves.toMatchObject({ contractVersion: 1, isAdministrator: true });
+    expect(createGroupChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operatorPrincipal: expect.objectContaining({ userId: syntheticUserIds.activePrimary }),
+      }),
+    );
+    expect(setChatAdministrator).toHaveBeenCalledWith(
+      expect.objectContaining({ targetAccountId: syntheticUserIds.activeSecondary, version: 2 }),
+    );
   });
 
   it('validates exact message and pagination inputs', async () => {

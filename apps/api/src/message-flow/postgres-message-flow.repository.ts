@@ -41,15 +41,48 @@ interface AuthorizationRow extends QueryResultRow {
 }
 
 interface ChatRow extends QueryResultRow {
+  readonly can_read: boolean;
+  readonly can_write: boolean;
   readonly id: string;
   readonly kind: string;
+}
+
+interface ChatAdministrationRow extends QueryResultRow {
+  readonly authorization_version: string;
+  readonly chat_id: string;
+  readonly is_administrator: boolean;
+  readonly target_account_id: string;
 }
 
 function mapChat(row: ChatRow): AvailableChat {
   if (row.kind !== 'direct' && row.kind !== 'group') {
     throw new MessageFlowRepositoryError('internal');
   }
-  return Object.freeze({ id: row.id as Uuid, kind: row.kind as ChatKind });
+  if (row.can_read !== true || typeof row.can_write !== 'boolean') {
+    throw new MessageFlowRepositoryError('internal');
+  }
+  return Object.freeze({
+    capabilities: Object.freeze({ canRead: row.can_read, canWrite: row.can_write }),
+    id: row.id as Uuid,
+    kind: row.kind as ChatKind,
+  });
+}
+
+function mapChatAdministration(row: ChatAdministrationRow) {
+  const authorizationVersion = Number.parseInt(row.authorization_version, 10);
+  if (
+    !Number.isSafeInteger(authorizationVersion) ||
+    authorizationVersion < 1 ||
+    typeof row.is_administrator !== 'boolean'
+  ) {
+    throw new MessageFlowRepositoryError('internal');
+  }
+  return Object.freeze({
+    authorizationVersion,
+    chatId: row.chat_id as Uuid,
+    isAdministrator: row.is_administrator,
+    targetAccountId: row.target_account_id as Uuid,
+  });
 }
 
 function mapMessage(row: MessageRow): TextMessage {
@@ -78,6 +111,9 @@ function mapPostgresError(error: unknown): MessageFlowRepositoryError {
     postgresError.constraint === 'messages_idempotency_unique'
   ) {
     return new MessageFlowRepositoryError('idempotency-key-reused');
+  }
+  if (postgresError.code === '23505' || postgresError.code === 'P0002') {
+    return new MessageFlowRepositoryError('invalid-request');
   }
   if (
     postgresError.code === '22001' ||
@@ -112,6 +148,28 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
 
   onModuleDestroy(): Promise<void> {
     return this.close();
+  }
+
+  async createGroupChat(command: Parameters<MessageFlowRepository['createGroupChat']>[0]) {
+    try {
+      const result = await this.pool.query<ChatAdministrationRow>(
+        `SELECT chat_id, target_account_id, is_administrator, authorization_version
+         FROM kovcheg.create_group_chat_for_session($1, $2, $3, $4, $5, $6)`,
+        [
+          command.chatId,
+          command.operatorPrincipal.sessionId,
+          command.operatorPrincipal.userId,
+          command.reason,
+          this.clock(),
+          command.correlationId,
+        ],
+      );
+      const row = result.rows[0];
+      if (row === undefined) throw new MessageFlowRepositoryError('unavailable');
+      return mapChatAdministration(row);
+    } catch (error) {
+      throw mapPostgresError(error);
+    }
   }
 
   async createTextMessage(command: CreateTextMessageCommand): Promise<CreateTextMessageResult> {
@@ -152,14 +210,8 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
   async listAvailableChats(userId: UserId): Promise<readonly AvailableChat[]> {
     try {
       const result = await this.pool.query<ChatRow>(
-        `SELECT chat.id, chat.kind
-         FROM kovcheg.chat_memberships AS membership
-         JOIN kovcheg.chats AS chat ON chat.id = membership.chat_id
-         JOIN kovcheg.accounts AS account ON account.id = membership.account_id
-         WHERE membership.account_id = $1
-           AND membership.status = 'active'
-           AND account.status = 'active'
-         ORDER BY chat.created_at ASC, chat.id ASC`,
+        `SELECT id, kind, can_read, can_write
+         FROM kovcheg.list_account_chat_capabilities($1)`,
         [userId],
       );
       return Object.freeze(result.rows.map(mapChat));
@@ -185,13 +237,13 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
         command.cursor.direction === 'latest'
           ? ''
           : command.cursor.direction === 'after'
-            ? 'AND message.chat_sequence > $3::bigint'
-            : 'AND message.chat_sequence < $3::bigint';
-      const limitParameter = command.cursor.direction === 'latest' ? '$3' : '$4';
+            ? 'AND message.chat_sequence > $2::bigint'
+            : 'AND message.chat_sequence < $2::bigint';
+      const limitParameter = command.cursor.direction === 'latest' ? '$2' : '$3';
       const parameters =
         command.cursor.direction === 'latest'
-          ? [command.userId, command.chatId, command.limit + 1]
-          : [command.userId, command.chatId, command.cursor.sequence, command.limit + 1];
+          ? [command.chatId, command.limit + 1]
+          : [command.chatId, command.cursor.sequence, command.limit + 1];
       const order = descending ? 'DESC' : 'ASC';
       const result = await client.query<MessageRow>(
         `SELECT
@@ -203,22 +255,8 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
            message.body,
            message.created_at
          FROM kovcheg.messages AS message
-         JOIN kovcheg.chat_memberships AS membership
-           ON membership.chat_id = message.chat_id
-          AND membership.account_id = $1
-          AND membership.status = 'active'
-         WHERE message.chat_id = $2
+         WHERE message.chat_id = $1
            ${cursorPredicate}
-           AND EXISTS (
-             SELECT 1
-             FROM kovcheg.chat_membership_periods AS period
-             WHERE period.membership_id = membership.id
-               AND message.chat_sequence > period.joined_after_sequence
-               AND (
-                 period.revoked_after_sequence IS NULL
-                 OR message.chat_sequence <= period.revoked_after_sequence
-               )
-           )
          ORDER BY message.chat_sequence ${order}, message.id ${order}
          LIMIT ${limitParameter}`,
         parameters,
@@ -237,6 +275,35 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository, OnM
       throw mapPostgresError(error);
     } finally {
       client.release();
+    }
+  }
+
+  async setChatAdministrator(
+    command: Parameters<MessageFlowRepository['setChatAdministrator']>[0],
+  ) {
+    try {
+      const result = await this.pool.query<ChatAdministrationRow>(
+        `SELECT chat_id, target_account_id, is_administrator, authorization_version
+         FROM kovcheg.set_chat_administrator_for_session(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9
+         )`,
+        [
+          command.chatId,
+          command.operatorPrincipal.sessionId,
+          command.operatorPrincipal.userId,
+          command.targetAccountId,
+          command.granted,
+          command.reason,
+          command.version,
+          this.clock(),
+          command.correlationId,
+        ],
+      );
+      const row = result.rows[0];
+      if (row === undefined) throw new MessageFlowRepositoryError('unavailable');
+      return mapChatAdministration(row);
+    } catch (error) {
+      throw mapPostgresError(error);
     }
   }
 

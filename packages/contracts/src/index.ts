@@ -2,6 +2,25 @@ import { messageFlowErrorCodes } from './message-flow.js';
 import type { CorrelationId, SessionId, UserId, Uuid } from './foundation-types.js';
 
 export type { CorrelationId, SessionId, UserId, Uuid } from './foundation-types.js';
+export {
+  currentPrincipalAuthorizationJsonSchema,
+  domainStatuses,
+  functionalGrants,
+  materialCapabilityActions,
+  parseCurrentPrincipalAuthorization,
+  principalAuthorizationContractVersion,
+} from './principal-authorization.js';
+export type {
+  AdministrativeCapabilities,
+  CurrentPrincipalAuthorization,
+  DiagnosticCapabilities,
+  DomainStatus,
+  FunctionalGrant,
+  MaterialCapability,
+  MaterialCapabilityAction,
+  MaterialCapabilityType,
+  SensitiveCapabilities,
+} from './principal-authorization.js';
 
 export const foundationContractVersion = 1 as const;
 export const buildMetadataContractVersion = foundationContractVersion;
@@ -304,25 +323,32 @@ export const serviceHealthJsonSchema = {
 export {
   availableChatJsonSchema,
   availableChatListJsonSchema,
+  chatAdministrationContractVersion,
+  chatAdministrationResponseJsonSchema,
   chatListContractVersion,
+  createGroupChatRequestJsonSchema,
   createTextMessageRequestJsonSchema,
   createTextMessageResponseJsonSchema,
   messageFlowContractVersion,
   messageFlowErrorCodes,
   messageHistoryContractVersion,
   messageHistoryPageJsonSchema,
+  setChatAdministratorRequestJsonSchema,
   textMessageJsonSchema,
 } from './message-flow.js';
 export type {
   AvailableChat,
   AvailableChatList,
+  ChatAdministrationResponse,
   ChatKind,
   ChatSequence,
   CreateTextMessageRequest,
   CreateTextMessageResponse,
+  CreateGroupChatRequest,
   MessageFlowErrorCode,
   MessageFlowRequestContext,
   MessageHistoryPage,
+  SetChatAdministratorRequest,
   TextMessage,
 } from './message-flow.js';
 export {

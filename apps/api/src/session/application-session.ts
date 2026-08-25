@@ -1,11 +1,9 @@
-import type { CorrelationId, SessionId, UserId } from '@kovcheg/contracts';
+import { parseCurrentPrincipalAuthorization } from '@kovcheg/contracts';
+import type { CorrelationId, CurrentPrincipalAuthorization } from '@kovcheg/contracts';
 
 export const applicationSessionAuthenticatorToken = Symbol('applicationSessionAuthenticator');
 
-export interface ApplicationPrincipal {
-  readonly sessionId: SessionId;
-  readonly userId: UserId;
-}
+export type ApplicationPrincipal = Pick<CurrentPrincipalAuthorization, 'sessionId' | 'userId'>;
 
 export interface ApplicationSessionAuthenticator {
   authenticate(
@@ -32,18 +30,10 @@ export interface ApplicationSessionEnvironment {
   readonly AUTH_SESSION_VALIDATION_URL?: string | undefined;
 }
 
-interface SessionValidationResponse {
-  readonly sessionId: SessionId;
-  readonly userId: UserId;
-}
-
 type RuntimeEnvironment = 'development' | 'production' | 'test';
 type Fetch = typeof fetch;
 
 const sessionTokenExpression = /^[A-Za-z0-9_-]{32,512}$/u;
-const uuidExpression =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-
 function parseSessionCookie(
   header: string | undefined,
   environment: RuntimeEnvironment,
@@ -60,23 +50,11 @@ function parseSessionCookie(
   return null;
 }
 
-function parsePrincipal(value: unknown): SessionValidationResponse | null {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  const candidate = value as Readonly<Record<string, unknown>>;
-  if (
-    typeof candidate.sessionId !== 'string' ||
-    !uuidExpression.test(candidate.sessionId) ||
-    typeof candidate.userId !== 'string' ||
-    !uuidExpression.test(candidate.userId)
-  ) {
-    return null;
-  }
-  return Object.freeze({
-    sessionId: candidate.sessionId as SessionId,
-    userId: candidate.userId as UserId,
-  });
+function parsePrincipal(value: unknown): ApplicationPrincipal | null {
+  const principal = parseCurrentPrincipalAuthorization(value);
+  return principal === null
+    ? null
+    : Object.freeze({ sessionId: principal.sessionId, userId: principal.userId });
 }
 
 function parseValidationUrl(

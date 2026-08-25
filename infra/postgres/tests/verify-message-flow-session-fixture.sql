@@ -1,3 +1,14 @@
+CREATE FUNCTION pg_temp.ordinary_auth_role()
+RETURNS kovcheg.auth_account_role
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT role
+  FROM pg_catalog.unnest(pg_catalog.enum_range(NULL::kovcheg.auth_account_role)) AS role
+  WHERE role <> 'administrator'
+  LIMIT 1;
+$$;
+
 DO $$
 DECLARE
   account_id uuid;
@@ -31,7 +42,7 @@ INSERT INTO kovcheg.account_auth_profiles (
     '00000000-0000-4000-8000-000000002001',
     'message-flow-operator-one@identity.invalid',
     'Message Flow Operator One',
-    'student',
+    pg_temp.ordinary_auth_role(),
     '2030-01-01 00:00:00+00',
     '2030-01-01 00:00:00+00'
   ),
@@ -39,7 +50,7 @@ INSERT INTO kovcheg.account_auth_profiles (
     '00000000-0000-4000-8000-000000002002',
     'message-flow-operator-two@identity.invalid',
     'Message Flow Operator Two',
-    'student',
+    pg_temp.ordinary_auth_role(),
     '2030-01-01 00:00:00+00',
     '2030-01-01 00:00:00+00'
   );

@@ -41,12 +41,12 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   has_function_privilege(
     current_user,
-    'kovcheg.bootstrap_auth_administrator(text,uuid,text,text)',
+    'kovcheg.bootstrap_role_capable_administrator(text,uuid,text,text)',
     'EXECUTE'
   )
   AND has_function_privilege(
     current_user,
-    'kovcheg.admin_create_auth_account(text,uuid,text,text,timestamp with time zone,character varying)',
+    'kovcheg.admin_create_role_capable_account(text,uuid,text,text,timestamp with time zone,character varying)',
     'EXECUTE'
   )
   AND has_function_privilege(
@@ -111,9 +111,11 @@ SELECT pg_temp.assert_true(
   (
     SELECT created
       AND account_id = '00000000-0000-4000-8000-000000003001'
-      AND auth_role = 'administrator'
+      AND account_access = 'member'
       AND account_status = 'active'
-    FROM kovcheg.bootstrap_auth_administrator(
+      AND domain_status = 'incubator_participant'
+      AND functional_grants @> ARRAY['platform_administrator']
+    FROM kovcheg.bootstrap_role_capable_administrator(
       'synthetic-bootstrap-0001',
       '00000000-0000-4000-8000-000000003001',
       'synthetic-administrator@auth.invalid',
@@ -128,7 +130,7 @@ SELECT pg_temp.assert_true(
     SELECT NOT created
       AND account_id = '00000000-0000-4000-8000-000000003001'
       AND display_name = 'Synthetic Administrator'
-    FROM kovcheg.bootstrap_auth_administrator(
+    FROM kovcheg.bootstrap_role_capable_administrator(
       'synthetic-bootstrap-0001',
       '00000000-0000-4000-8000-000000003001',
       'synthetic-administrator@auth.invalid',
@@ -142,7 +144,7 @@ DO $$
 BEGIN
   BEGIN
     PERFORM *
-    FROM kovcheg.bootstrap_auth_administrator(
+    FROM kovcheg.bootstrap_role_capable_administrator(
       'synthetic-bootstrap-0001',
       '00000000-0000-4000-8000-000000003099',
       'synthetic-conflict@auth.invalid',
@@ -193,26 +195,28 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT account_id = '00000000-0000-4000-8000-000000003002'
-      AND email = 'synthetic-student@auth.invalid'
-      AND auth_role = 'student'
+      AND email = 'synthetic-member@auth.invalid'
+      AND account_access = 'member'
       AND account_status = 'active'
-    FROM kovcheg.admin_create_auth_account(
+      AND domain_status = 'incubator_participant'
+      AND functional_grants = ARRAY[]::text[]
+    FROM kovcheg.admin_create_role_capable_account(
       repeat('m', 43),
       '00000000-0000-4000-8000-000000003002',
-      'Synthetic-Student@Auth.Invalid',
-      'Synthetic Student',
+      'Synthetic-Member@Auth.Invalid',
+      'Synthetic Member',
       '2030-01-01 00:00:00+00',
       'auth-admin-create-001'
     )
   ),
-  'authorized account creation must normalize and provision one active student atomically'
+  'authorized account creation must normalize and provision one active member atomically'
 );
 
 DO $$
 BEGIN
   BEGIN
     PERFORM *
-    FROM kovcheg.admin_create_auth_account(
+    FROM kovcheg.admin_create_role_capable_account(
       repeat('m', 43),
       '00000000-0000-4000-8000-000000003098',
       repeat('x', 250) || '@auth.invalid',
@@ -239,13 +243,13 @@ SELECT pg_temp.assert_true(
 
 SELECT pg_temp.assert_true(
   (
-    SELECT email = 'synthetic-student@auth.invalid'
-      AND display_name = 'Synthetic Student Updated'
+    SELECT email = 'synthetic-member@auth.invalid'
+      AND display_name = 'Synthetic Member Updated'
     FROM kovcheg.admin_update_auth_account(
       repeat('m', 43),
       '00000000-0000-4000-8000-000000003002',
-      'Synthetic-Student@Auth.Invalid',
-      '  Synthetic Student Updated  ',
+      'Synthetic-Member@Auth.Invalid',
+      '  Synthetic Member Updated  ',
       '2030-01-01 00:00:02+00',
       'auth-admin-update-001'
     )
@@ -256,7 +260,7 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT account_id = '00000000-0000-4000-8000-000000003003'
-    FROM kovcheg.admin_create_auth_account(
+    FROM kovcheg.admin_create_role_capable_account(
       repeat('m', 43),
       '00000000-0000-4000-8000-000000003003',
       'synthetic-secondary@auth.invalid',
@@ -275,7 +279,7 @@ BEGIN
     FROM kovcheg.admin_update_auth_account(
       repeat('m', 43),
       '00000000-0000-4000-8000-000000003003',
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       'Must Roll Back',
       '2030-01-01 00:00:04+00',
       'auth-admin-failed-update-conflict'
@@ -352,9 +356,9 @@ SELECT pg_temp.assert_true(
     SELECT outcome = 'issued'
       AND account_id = '00000000-0000-4000-8000-000000003002'
       AND challenge_id = '00000000-0000-4000-8000-000000003102'
-      AND recipient = 'synthetic-student@auth.invalid'
+      AND recipient = 'synthetic-member@auth.invalid'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003102',
       repeat('a', 43),
       '2030-01-01 00:00:00+00',
@@ -370,7 +374,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'neutral'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003103',
       repeat('b', 43),
       '2030-01-01 00:00:30+00',
@@ -386,7 +390,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003104',
       repeat('c', 43),
       '2030-01-01 00:01:01+00',
@@ -437,7 +441,8 @@ SELECT pg_temp.assert_true(
     SELECT outcome = 'authenticated'
       AND account_id = '00000000-0000-4000-8000-000000003002'
       AND session_id = '00000000-0000-4000-8000-000000003203'
-      AND auth_roles = ARRAY['student'::kovcheg.auth_account_role]
+      AND cardinality(auth_roles) = 1
+      AND auth_roles[1] <> 'administrator'
     FROM kovcheg.consume_auth_challenge_and_create_session(
       '00000000-0000-4000-8000-000000003104',
       repeat('c', 43),
@@ -513,7 +518,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003105',
       repeat('d', 43),
       '2030-01-01 00:03:00+00',
@@ -551,7 +556,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003106',
       repeat('e', 43),
       '2030-01-01 00:05:00+00',
@@ -584,7 +589,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003107',
       repeat('f', 43),
       '2030-01-01 00:07:00+00',
@@ -620,7 +625,7 @@ SELECT pg_temp.assert_true(
   AND (
     SELECT outcome = 'neutral'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003108',
       repeat('g', 43),
       '2030-01-01 00:08:30+00',
@@ -724,7 +729,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003121',
       repeat('o', 43),
       '2030-01-01 00:10:00+00',
@@ -746,7 +751,7 @@ SELECT pg_temp.assert_true(
       '2030-01-01 00:40:01+00'
     )
   ),
-  'the student authorization-negative fixture must have a current session'
+  'the ordinary account authorization-negative fixture must have a current session'
 );
 
 DO $$
@@ -757,11 +762,11 @@ BEGIN
       repeat('o', 43),
       '00000000-0000-4000-8000-000000003003',
       'synthetic-secondary@auth.invalid',
-      'Unauthorized Student Update',
+      'Unauthorized Member Update',
       '2030-01-01 00:10:02+00',
-      'auth-admin-failed-student'
+      'auth-admin-failed-ordinary'
     );
-    RAISE EXCEPTION 'a student session performed an administrative update';
+    RAISE EXCEPTION 'an ordinary session performed an administrative update';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
@@ -775,7 +780,7 @@ SELECT pg_temp.assert_true(
       '00000000-0000-4000-8000-000000003003'
     )
   ),
-  'a student acting session must fail without mutating the target account'
+  'an ordinary acting session must fail without mutating the target account'
 );
 
 SELECT pg_temp.assert_true(
@@ -811,7 +816,7 @@ DO $$
 BEGIN
   BEGIN
     PERFORM *
-    FROM kovcheg.admin_create_auth_account(
+    FROM kovcheg.admin_create_role_capable_account(
       repeat('p', 43),
       '00000000-0000-4000-8000-000000003096',
       'synthetic-expired-actor@auth.invalid',
@@ -917,16 +922,30 @@ SELECT pg_temp.assert_true(
 
 SELECT pg_temp.assert_true(
   (
-    SELECT created
-      AND auth_role = 'administrator'
-    FROM kovcheg.bootstrap_auth_administrator(
-      'synthetic-bootstrap-0002',
+    SELECT account_access = 'member'
+      AND functional_grants = ARRAY[]::text[]
+    FROM kovcheg.admin_create_role_capable_account(
+      repeat('m', 43),
       '00000000-0000-4000-8000-000000003004',
       'synthetic-administrator-two@auth.invalid',
-      'Synthetic Administrator Two'
+      'Synthetic Administrator Two',
+      '2030-01-01 00:12:06+00',
+      'role-followup-create-delegated'
+    )
+  )
+  AND (
+    SELECT functional_grants @> ARRAY['platform_administrator']
+    FROM kovcheg.admin_grant_functional_grant(
+      repeat('m', 43),
+      '00000000-0000-4000-8000-000000003004',
+      'platform_administrator',
+      'owner-delegated',
+      2,
+      '2030-01-01 00:12:07+00',
+      'role-followup-grant-platform-administrator'
     )
   ),
-  'a second administrator fixture must be bootstrapped independently'
+  'only the established owner may explicitly delegate platform administration'
 );
 
 SELECT pg_temp.assert_true(
@@ -1018,7 +1037,7 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT account_id = '00000000-0000-4000-8000-000000003005'
-    FROM kovcheg.admin_create_auth_account(
+    FROM kovcheg.admin_create_role_capable_account(
       repeat('m', 43),
       '00000000-0000-4000-8000-000000003005',
       'synthetic-revoke-all@auth.invalid',
@@ -1173,7 +1192,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003126',
       repeat('u', 43),
       '2030-01-01 00:16:00+00',
@@ -1202,7 +1221,8 @@ SELECT pg_temp.assert_true(
   (
     SELECT account_id = '00000000-0000-4000-8000-000000003002'
       AND session_id = '00000000-0000-4000-8000-000000003226'
-      AND auth_roles = ARRAY['student'::kovcheg.auth_account_role]
+      AND cardinality(auth_roles) = 1
+      AND auth_roles[1] <> 'administrator'
     FROM kovcheg.validate_auth_session(
       repeat('x', 43),
       '2030-01-01 00:16:59+00'
@@ -1241,7 +1261,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
     FROM kovcheg.issue_auth_challenge_for_active_account(
-      'synthetic-student@auth.invalid',
+      'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003109',
       repeat('k', 43),
       '2030-01-01 00:20:00+00',
@@ -1262,9 +1282,9 @@ BEGIN
       '00000000-0000-4000-8000-000000003002',
       '00000000-0000-4000-8000-000000001001',
       '2030-01-01 00:20:30+00',
-      'persona-grant-failed-student'
+      'persona-grant-failed-ordinary'
     );
-    RAISE EXCEPTION 'a student session granted system persona authority';
+    RAISE EXCEPTION 'an ordinary session granted system persona authority';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
@@ -1329,9 +1349,9 @@ BEGIN
       '00000000-0000-4000-8000-000000003003',
       '00000000-0000-4000-8000-000000001001',
       '2030-01-01 00:21:02+00',
-      'persona-revoke-failed-student'
+      'persona-revoke-failed-ordinary'
     );
-    RAISE EXCEPTION 'a student session revoked system persona authority';
+    RAISE EXCEPTION 'an ordinary session revoked system persona authority';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;

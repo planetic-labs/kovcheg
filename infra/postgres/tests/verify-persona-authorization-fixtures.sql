@@ -1,3 +1,14 @@
+CREATE FUNCTION pg_temp.ordinary_auth_role()
+RETURNS kovcheg.auth_account_role
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT role
+  FROM pg_catalog.unnest(pg_catalog.enum_range(NULL::kovcheg.auth_account_role)) AS role
+  WHERE role <> 'administrator'
+  LIMIT 1;
+$$;
+
 INSERT INTO kovcheg.accounts (
   id,
   kind,
@@ -67,7 +78,7 @@ INSERT INTO kovcheg.account_auth_profiles (
     '00000000-0000-4000-8000-000000009001',
     'authorization-operator-one@identity.invalid',
     'Authorization Operator One',
-    'student',
+    pg_temp.ordinary_auth_role(),
     '2030-01-01 00:00:00+00',
     '2030-01-01 00:00:00+00'
   ),
@@ -75,7 +86,7 @@ INSERT INTO kovcheg.account_auth_profiles (
     '00000000-0000-4000-8000-000000009002',
     'authorization-operator-two@identity.invalid',
     'Authorization Operator Two',
-    'student',
+    pg_temp.ordinary_auth_role(),
     '2030-01-01 00:00:00+00',
     '2030-01-01 00:00:00+00'
   ),
@@ -83,7 +94,7 @@ INSERT INTO kovcheg.account_auth_profiles (
     '00000000-0000-4000-8000-000000009003',
     'authorization-inactive-operator@identity.invalid',
     'Inactive Authorization Operator',
-    'student',
+    pg_temp.ordinary_auth_role(),
     '2030-01-01 00:00:00+00',
     '2030-01-01 00:00:00+00'
   );

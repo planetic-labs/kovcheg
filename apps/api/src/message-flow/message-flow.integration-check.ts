@@ -278,11 +278,16 @@ async function main(): Promise<void> {
     });
     assert(chatList.status === 200, 'An active session must list its chats');
     const chatListPayload = await readJson(chatList);
-    assert(chatListPayload.contractVersion === 1, 'The chat list must be versioned');
+    assert(chatListPayload.contractVersion === 2, 'The chat list must be versioned');
+    assert(Array.isArray(chatListPayload.items), 'The chat list must return an item array');
+    const availableChat = (chatListPayload.items as Record<string, unknown>[]).find(
+      (item) => item.id === chatId,
+    );
+    assert(availableChat !== undefined, 'The chat list must contain the active membership');
     assert(
-      Array.isArray(chatListPayload.items) &&
-        chatListPayload.items.some((item) => (item as Record<string, unknown>).id === chatId),
-      'The chat list must contain the active membership',
+      (availableChat.capabilities as Record<string, unknown>).canRead === true &&
+        (availableChat.capabilities as Record<string, unknown>).canWrite === true,
+      'The chat list must expose server-authoritative read and write capabilities',
     );
 
     const raceBody = JSON.stringify({

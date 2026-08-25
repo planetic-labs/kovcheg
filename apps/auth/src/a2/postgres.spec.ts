@@ -38,42 +38,51 @@ class QueryFixture implements AuthPostgresClient {
 }
 
 describe('A2 PostgreSQL auth repository', () => {
-  it('maps the PostgreSQL custom enum array returned by session functions', async () => {
-    const client = new QueryFixture([
-      [
-        {
-          account_id: '00000000-0000-4000-8000-000000000050',
-          auth_roles: '{administrator}',
-          session_id: '00000000-0000-4000-8000-000000000054',
-        },
-      ],
-    ]);
+  const principal = Object.freeze({
+    accountAccess: 'member',
+    accountStatus: 'active',
+    administrativeCapabilities: Object.freeze({
+      canManageAccounts: true,
+      canManageDomainStatus: true,
+      canManageFunctionalGrants: true,
+      canManagePlatformAdministrators: true,
+    }),
+    contractVersion: 2,
+    diagnosticCapabilities: Object.freeze({
+      canReadBuildAndMigrationVersions: false,
+      canReadHealthAndReadiness: false,
+      canReadQueueAndTechnicalState: false,
+      canReadSanitizedDiagnostics: false,
+    }),
+    domainStatus: 'incubator_participant',
+    functionalGrants: ['platform_administrator'],
+    isServerOwner: true,
+    materialCapabilities: [],
+    sensitiveCapabilities: Object.freeze({ canPerformSensitiveActions: false }),
+    sessionId: '00000000-0000-4000-8000-000000000054',
+    sessionStatus: 'active',
+    userId: '00000000-0000-4000-8000-000000000050',
+  });
+
+  it('maps the versioned PostgreSQL authorization principal', async () => {
+    const client = new QueryFixture([[{ principal }]]);
     const repository = new PostgresAuthRepository(client);
-    await expect(repository.authenticateSession('v'.repeat(43), Date.now())).resolves.toEqual({
-      roles: ['administrator'],
-      sessionId: '00000000-0000-4000-8000-000000000054',
-      userId: '00000000-0000-4000-8000-000000000050',
-    });
+    await expect(repository.authenticateSession('v'.repeat(43), Date.now())).resolves.toEqual(
+      principal,
+    );
   });
 
   it('uses the non-touch database function for background session validation', async () => {
-    const client = new QueryFixture([
-      [
-        {
-          account_id: '00000000-0000-4000-8000-000000000050',
-          auth_roles: '{administrator}',
-          session_id: '00000000-0000-4000-8000-000000000054',
-        },
-      ],
-    ]);
+    const client = new QueryFixture([[{ principal }]]);
     const repository = new PostgresAuthRepository(client);
 
     await expect(repository.validateSession('v'.repeat(43), Date.now())).resolves.toMatchObject({
       sessionId: '00000000-0000-4000-8000-000000000054',
       userId: '00000000-0000-4000-8000-000000000050',
     });
-    expect(client.calls[0]?.text).toContain('kovcheg.validate_auth_session');
-    expect(client.calls[0]?.text).not.toContain('kovcheg.authenticate_auth_session');
+    expect(client.calls[0]?.text).toContain('read_current_principal_authorization');
+    expect(client.calls[0]?.values[2]).toBeUndefined();
+    expect(client.calls[0]?.values).toHaveLength(2);
   });
 
   it('maps durable neutral and active-account challenge outcomes without direct table access', async () => {
@@ -131,13 +140,15 @@ describe('A2 PostgreSQL auth repository', () => {
     ).rejects.toBeInstanceOf(AuthRepositoryConflictError);
   });
 
-  it('uses only actor-verified 0006 wrappers for every administrative mutation', async () => {
+  it('uses only actor-verified protected wrappers for every administrative mutation', async () => {
     const account = {
+      account_access: 'member',
       account_id: '00000000-0000-4000-8000-000000000053',
       account_status: 'active',
-      auth_role: 'student',
       display_name: 'Synthetic Account',
+      domain_status: 'incubator_participant',
       email: 'synthetic-account@example.invalid',
+      functional_grants: '{}',
     };
     const client = new QueryFixture([
       [account],
@@ -178,9 +189,9 @@ describe('A2 PostgreSQL auth repository', () => {
 
     expect(client.calls.map((call) => call.text)).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('kovcheg.admin_create_auth_account'),
-        expect.stringContaining('kovcheg.admin_update_auth_account'),
-        expect.stringContaining('kovcheg.admin_set_auth_account_status'),
+        expect.stringContaining('kovcheg.admin_create_role_capable_account'),
+        expect.stringContaining('kovcheg.admin_update_role_capable_account'),
+        expect.stringContaining('kovcheg.admin_set_role_capable_account_status'),
         expect.stringContaining('kovcheg.admin_revoke_auth_session'),
         expect.stringContaining('kovcheg.admin_revoke_all_auth_sessions'),
       ]),
