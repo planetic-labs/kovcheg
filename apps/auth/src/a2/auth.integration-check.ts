@@ -268,9 +268,12 @@ async function main(): Promise<void> {
       assert(httpUpdate.status === 200, 'The protected HTTP API must update an account');
       const httpUpdatedAccount = await readJson(httpUpdate);
       assert(
-        httpUpdatedAccount.email === httpManagedEmail &&
-          httpUpdatedAccount.displayName === 'Synthetic HTTP Managed Account Updated',
-        'The protected HTTP update must normalize identity fields',
+        httpUpdatedAccount.email === httpManagedEmail,
+        'The protected HTTP update must normalize the email',
+      );
+      assert(
+        httpUpdatedAccount.displayName === 'Synthetic HTTP Managed Account Updated',
+        'The protected HTTP update must normalize the display name',
       );
 
       const httpConflict = await administrativeRequest({

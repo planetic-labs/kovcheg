@@ -54,8 +54,10 @@ assert.equal(spoofedIdentity.status, 401, 'Browser identity hints must not authe
 const chatListResponse = await request('/api/chats', { headers: { cookie } });
 assert.equal(chatListResponse.status, 200, 'A valid A2 session must authenticate REST');
 const chatList = await chatListResponse.json();
-assert.equal(chatList.contractVersion, 1);
+assert.equal(chatList.contractVersion, 2);
 assert.ok(Array.isArray(chatList.items) && chatList.items.length > 0);
+assert.equal(chatList.items[0]?.capabilities?.canRead, true);
+assert.equal(chatList.items[0]?.capabilities?.canWrite, true);
 const chatId = chatList.items[0]?.id;
 assert.match(chatId ?? '', /^[0-9a-f-]{36}$/iu);
 

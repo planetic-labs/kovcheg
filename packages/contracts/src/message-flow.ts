@@ -2,7 +2,7 @@ import type { CorrelationId, UserId, Uuid } from './foundation-types.js';
 
 export const messageFlowContractVersion = 2 as const;
 export const messageHistoryContractVersion = 3 as const;
-export const chatListContractVersion = 1 as const;
+export const chatListContractVersion = 2 as const;
 
 export const messageFlowErrorCodes = Object.freeze([
   'message-flow.invalid-request',
@@ -19,8 +19,14 @@ export type ChatSequence = string;
 export type ChatKind = 'direct' | 'group';
 
 export interface AvailableChat {
+  readonly capabilities: ChatCapabilities;
   readonly id: Uuid;
   readonly kind: ChatKind;
+}
+
+interface ChatCapabilities {
+  readonly canRead: boolean;
+  readonly canWrite: boolean;
 }
 
 export interface AvailableChatList {
@@ -70,10 +76,19 @@ const positiveChatSequenceSchema = Object.freeze({ pattern: '^[1-9][0-9]*$', typ
 export const availableChatJsonSchema = Object.freeze({
   additionalProperties: false,
   properties: {
+    capabilities: {
+      additionalProperties: false,
+      properties: {
+        canRead: { type: 'boolean' },
+        canWrite: { type: 'boolean' },
+      },
+      required: ['canRead', 'canWrite'],
+      type: 'object',
+    },
     id: uuidSchema,
     kind: { enum: ['direct', 'group'], type: 'string' },
   },
-  required: ['id', 'kind'],
+  required: ['capabilities', 'id', 'kind'],
   type: 'object',
 });
 

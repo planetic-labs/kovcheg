@@ -40,7 +40,12 @@ BEGIN
       '00000000-0000-4000-8000-000000001001',
       'system-persona@identity.invalid',
       'System Persona',
-      'student'
+      (
+        SELECT role
+        FROM pg_catalog.unnest(pg_catalog.enum_range(NULL::kovcheg.auth_account_role)) AS role
+        WHERE role <> 'administrator'
+        LIMIT 1
+      )
     );
     RAISE EXCEPTION 'a system persona received an auth profile';
   EXCEPTION WHEN check_violation THEN
@@ -226,9 +231,9 @@ SELECT pg_temp.assert_true(
     SELECT 1
     FROM kovcheg.audit_events AS event
     WHERE event.correlation_id IN (
-      'persona-grant-failed-student',
+      'persona-grant-failed-ordinary',
       'persona-grant-failed-duplicate',
-      'persona-revoke-failed-student',
+      'persona-revoke-failed-ordinary',
       'persona-revoke-missing-retry'
     )
   ),

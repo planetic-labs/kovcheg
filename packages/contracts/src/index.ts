@@ -2,6 +2,19 @@ import { messageFlowErrorCodes } from './message-flow.js';
 import type { CorrelationId, SessionId, UserId, Uuid } from './foundation-types.js';
 
 export type { CorrelationId, SessionId, UserId, Uuid } from './foundation-types.js';
+export {
+  currentPrincipalAuthorizationJsonSchema,
+  domainStatuses,
+  functionalGrants,
+  parseCurrentPrincipalAuthorization,
+  principalAuthorizationContractVersion,
+} from './principal-authorization.js';
+export type {
+  AdministrativeCapabilities,
+  CurrentPrincipalAuthorization,
+  DomainStatus,
+  FunctionalGrant,
+} from './principal-authorization.js';
 
 export const foundationContractVersion = 1 as const;
 export const buildMetadataContractVersion = foundationContractVersion;

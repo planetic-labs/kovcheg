@@ -12,14 +12,17 @@ import {
 
 describe('message-flow contracts', () => {
   it('publishes a stable chat-list contract that permits an empty result', () => {
-    expect(chatListContractVersion).toBe(1);
+    expect(chatListContractVersion).toBe(2);
     expect(availableChatListJsonSchema).toMatchObject({
       additionalProperties: false,
       properties: {
-        contractVersion: { enum: [1], type: 'integer' },
+        contractVersion: { enum: [2], type: 'integer' },
         items: { type: 'array' },
       },
       required: ['contractVersion', 'items'],
+    });
+    expect(availableChatListJsonSchema.properties.items.items).toMatchObject({
+      required: ['capabilities', 'id', 'kind'],
     });
   });
 

@@ -150,8 +150,8 @@ verify_latest_migration_state() {
       FROM kovcheg_meta.schema_migrations
     "
   )
-  if [ "$latest_state" != '0011:11' ]; then
-    echo 'The complete eleven-migration chain was not recorded.' >&2
+  if [ "$latest_state" != '0012:12' ]; then
+    echo 'The complete twelve-migration chain was not recorded.' >&2
     exit 1
   fi
 }
@@ -583,6 +583,8 @@ case "$scenario" in
     run_message_flow_tests
     verify_latest_migration_state
     run_auth_tests
+    run_sql kovcheg_migrator "$migration_password" \
+      "$test_root/verify-server-role-capabilities.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-persona-data-owner.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     run_persona_authorization_tests
@@ -633,10 +635,16 @@ case "$scenario" in
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v10.sql"
     ;;
+  upgrade-v11)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v11.sql"
+    ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     verify_latest_migration_state
     run_auth_tests
+    run_sql kovcheg_migrator "$migration_password" \
+      "$test_root/verify-server-role-capabilities.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-persona-data-owner.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-query-plans.sql"
     run_persona_authorization_tests

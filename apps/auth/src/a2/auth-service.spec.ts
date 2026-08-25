@@ -111,7 +111,9 @@ describe('A2 administrator and account use cases', () => {
     expect(new Set(results.map((result) => result.account.userId))).toEqual(
       new Set([administratorId]),
     );
-    expect(results.every((result) => result.account.roles.includes('administrator'))).toBe(true);
+    expect(
+      results.every((result) => result.account.functionalGrants.includes('platform_administrator')),
+    ).toBe(true);
   });
 
   it('creates pre-authorized accounts and enforces admin-only status and session revocation', async () => {
@@ -126,15 +128,17 @@ describe('A2 administrator and account use cases', () => {
     const account = await fixture.service.createAccount(
       administratorSession.sessionToken,
       {
-        displayName: '  Test   Student  ',
-        email: '  STUDENT@example.invalid ',
+        displayName: '  Test   Member  ',
+        email: '  MEMBER@example.invalid ',
       },
       administrationCorrelationId,
     );
     expect(account).toMatchObject({
-      displayName: 'Test Student',
-      email: 'student@example.invalid',
-      roles: ['student'],
+      accountAccess: 'member',
+      displayName: 'Test Member',
+      domainStatus: 'incubator_participant',
+      email: 'member@example.invalid',
+      functionalGrants: [],
       status: 'active',
     });
 
@@ -143,16 +147,16 @@ describe('A2 administrator and account use cases', () => {
         administratorSession.sessionToken,
         {
           displayName: 'Duplicate',
-          email: 'student@example.invalid',
+          email: 'member@example.invalid',
         },
         administrationCorrelationId,
       ),
     ).rejects.toMatchObject({ code: 'auth.conflict' });
 
-    const studentSession = await login(fixture, account.email, 'student');
+    const memberSession = await login(fixture, account.email, 'member');
     await expect(
       fixture.service.createAccount(
-        studentSession.sessionToken,
+        memberSession.sessionToken,
         {
           displayName: 'Forbidden',
           email: 'forbidden@example.invalid',
@@ -168,7 +172,7 @@ describe('A2 administrator and account use cases', () => {
       administrationCorrelationId,
     );
     await expect(
-      fixture.service.authenticateSession(studentSession.sessionToken),
+      fixture.service.authenticateSession(memberSession.sessionToken),
     ).rejects.toMatchObject({ code: 'auth.invalid-session' });
 
     const deliveredBeforeInactiveRequest = (fixture.delivery as LocalEmailChallengeDelivery)

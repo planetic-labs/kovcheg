@@ -1,4 +1,11 @@
-import type { CorrelationId, SessionId, UserId, Uuid } from '@kovcheg/contracts';
+import type {
+  CorrelationId,
+  DomainStatus,
+  FunctionalGrant,
+  SessionId,
+  UserId,
+  Uuid,
+} from '@kovcheg/contracts';
 
 import type {
   AccountRecord,
@@ -47,6 +54,15 @@ export interface AuthRepository {
     readonly now: number;
     readonly userId: UserId;
   }): Promise<AccountRecord>;
+  grantFunctionalGrantAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly grant: FunctionalGrant;
+    readonly now: number;
+    readonly reason: string;
+    readonly userId: UserId;
+    readonly version: number;
+  }): Promise<AccountRecord>;
   findAccountById(userId: UserId): Promise<AccountRecord | null>;
   invalidateChallenge(challengeId: Uuid, now: number): Promise<void>;
   isReady(): Promise<boolean>;
@@ -61,6 +77,15 @@ export interface AuthRepository {
     readonly now: number;
     readonly userId: UserId;
   }): Promise<number>;
+  revokeFunctionalGrantAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly grant: FunctionalGrant;
+    readonly now: number;
+    readonly reason: string;
+    readonly userId: UserId;
+    readonly version: number;
+  }): Promise<AccountRecord>;
   revokeSessionAsAdministrator(input: {
     readonly actorSessionVerifier: string;
     readonly correlationId: CorrelationId;
@@ -75,6 +100,15 @@ export interface AuthRepository {
     readonly now: number;
     readonly status: AccountStatus;
     readonly userId: UserId;
+  }): Promise<AccountRecord>;
+  setDomainStatusAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly domainStatus: DomainStatus;
+    readonly now: number;
+    readonly reason: string;
+    readonly userId: UserId;
+    readonly version: number;
   }): Promise<AccountRecord>;
   updateAccountAsAdministrator(input: {
     readonly actorSessionVerifier: string;

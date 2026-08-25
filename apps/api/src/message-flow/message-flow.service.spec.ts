@@ -45,7 +45,16 @@ function createSessionAuthenticator(
 function createRepository(overrides: Partial<MessageFlowRepository> = {}): MessageFlowRepository {
   return {
     createTextMessage: () => Promise.resolve({ message, wasCreated: true }),
-    listAvailableChats: () => Promise.resolve(Object.freeze([{ id: chatId, kind: 'direct' }])),
+    listAvailableChats: () =>
+      Promise.resolve(
+        Object.freeze([
+          {
+            capabilities: Object.freeze({ canRead: true, canWrite: true }),
+            id: chatId,
+            kind: 'direct' as const,
+          },
+        ]),
+      ),
     readMessageHistory: () => Promise.resolve({ hasMore: false, items: [message] }),
     ...overrides,
   };
@@ -173,8 +182,14 @@ describe('MessageFlowService', () => {
   it('returns a versioned active chat list and permits zero chats', async () => {
     const listed = new MessageFlowService(createSessionAuthenticator(), createRepository());
     await expect(listed.listAvailableChats(activeCookie, correlationId)).resolves.toEqual({
-      contractVersion: 1,
-      items: [{ id: chatId, kind: 'direct' }],
+      contractVersion: 2,
+      items: [
+        {
+          capabilities: { canRead: true, canWrite: true },
+          id: chatId,
+          kind: 'direct',
+        },
+      ],
     });
 
     const empty = new MessageFlowService(
@@ -182,7 +197,7 @@ describe('MessageFlowService', () => {
       createRepository({ listAvailableChats: () => Promise.resolve(Object.freeze([])) }),
     );
     await expect(empty.listAvailableChats(activeCookie, correlationId)).resolves.toEqual({
-      contractVersion: 1,
+      contractVersion: 2,
       items: [],
     });
   });

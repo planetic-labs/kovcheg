@@ -1,12 +1,21 @@
-import type { SessionId, UserId, Uuid } from '@kovcheg/contracts';
+import type {
+  CurrentPrincipalAuthorization,
+  DomainStatus,
+  FunctionalGrant,
+  SessionId,
+  UserId,
+  Uuid,
+} from '@kovcheg/contracts';
 
-export type AccountRole = 'administrator' | 'student';
+type AccountAccess = 'member';
 export type AccountStatus = 'active' | 'deactivated';
 
 export interface AccountRecord {
+  readonly accountAccess: AccountAccess;
   readonly displayName: string;
+  readonly domainStatus: DomainStatus;
   readonly email: string;
-  readonly roles: readonly AccountRole[];
+  readonly functionalGrants: readonly FunctionalGrant[];
   readonly status: AccountStatus;
   readonly userId: UserId;
 }
@@ -41,10 +50,11 @@ export interface SessionRecordInput {
   readonly tokenVerifier: string;
 }
 
-export interface SessionPrincipal {
-  readonly roles: readonly AccountRole[];
-  readonly sessionId: SessionId;
-  readonly userId: UserId;
+export type SessionPrincipal = CurrentPrincipalAuthorization;
+
+export interface AuthorizationMutationInput {
+  readonly reason: string;
+  readonly version: number;
 }
 
 export interface AuthenticatedSession {

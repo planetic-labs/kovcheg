@@ -121,12 +121,7 @@ describe('PostgresMessageFlowRepository', () => {
     ).resolves.toMatchObject({ hasMore: true, items: [{ chatSequence: '9' }] });
     expect(query.mock.calls[0]?.[0]).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence ASC');
-    expect(query.mock.calls[2]?.[1]).toEqual([
-      command.operatorPrincipal.userId,
-      command.chatId,
-      '8',
-      2,
-    ]);
+    expect(query.mock.calls[2]?.[1]).toEqual([command.chatId, '8', 2]);
     expect(query.mock.calls[3]?.[0]).toBe('COMMIT');
     expect(release).toHaveBeenCalledOnce();
   });
@@ -161,9 +156,9 @@ describe('PostgresMessageFlowRepository', () => {
       items: [{ chatSequence: '10' }, { chatSequence: '11' }],
     });
     expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence DESC');
-    expect(query.mock.calls[2]?.[0]).not.toContain('message.chat_sequence < $3');
-    expect(query.mock.calls[2]?.[0]).not.toContain('message.chat_sequence > $3');
-    expect(query.mock.calls[2]?.[1]).toEqual([command.operatorPrincipal.userId, command.chatId, 3]);
+    expect(query.mock.calls[2]?.[0]).not.toContain('message.chat_sequence < $2');
+    expect(query.mock.calls[2]?.[0]).not.toContain('message.chat_sequence > $2');
+    expect(query.mock.calls[2]?.[1]).toEqual([command.chatId, 3]);
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -192,34 +187,62 @@ describe('PostgresMessageFlowRepository', () => {
         userId: command.operatorPrincipal.userId,
       }),
     ).resolves.toMatchObject({ hasMore: true, items: [{ chatSequence: '8' }] });
-    expect(query.mock.calls[2]?.[0]).toContain('message.chat_sequence < $3::bigint');
+    expect(query.mock.calls[2]?.[0]).toContain('message.chat_sequence < $2::bigint');
     expect(query.mock.calls[2]?.[0]).toContain('ORDER BY message.chat_sequence DESC');
-    expect(query.mock.calls[2]?.[1]).toEqual([
-      command.operatorPrincipal.userId,
-      command.chatId,
-      '9',
-      2,
-    ]);
+    expect(query.mock.calls[2]?.[1]).toEqual([command.chatId, '9', 2]);
     expect(release).toHaveBeenCalledOnce();
   });
 
   it('lists only PostgreSQL-selected active memberships in stable order', async () => {
     const query = vi.fn().mockResolvedValue({
       rows: [
-        { id: command.chatId, kind: 'direct' },
-        { id: '00000000-0000-4000-8000-000000004002', kind: 'group' },
+        { can_read: true, can_write: true, id: command.chatId, kind: 'direct' },
+        {
+          can_read: true,
+          can_write: false,
+          id: '00000000-0000-4000-8000-000000004002',
+          kind: 'group',
+        },
       ],
     });
     const repository = new PostgresMessageFlowRepository({ query } as unknown as Pool);
 
     await expect(repository.listAvailableChats(command.operatorPrincipal.userId)).resolves.toEqual([
-      { id: command.chatId, kind: 'direct' },
-      { id: '00000000-0000-4000-8000-000000004002', kind: 'group' },
+      {
+        capabilities: { canRead: true, canWrite: true },
+        id: command.chatId,
+        kind: 'direct',
+      },
+      {
+        capabilities: { canRead: true, canWrite: false },
+        id: '00000000-0000-4000-8000-000000004002',
+        kind: 'group',
+      },
     ]);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("membership.status = 'active'"), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('list_account_chat_capabilities'), [
       command.operatorPrincipal.userId,
     ]);
-    expect(query.mock.calls[0]?.[0]).toContain('ORDER BY chat.created_at ASC, chat.id ASC');
+  });
+
+  it('returns full history for current read capability without a join-period cutoff', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ allowed: true }] })
+      .mockResolvedValueOnce({ rows: [messageRow] })
+      .mockResolvedValueOnce({ rows: [] });
+    const release = vi.fn();
+    const repository = new PostgresMessageFlowRepository({
+      connect: vi.fn().mockResolvedValue({ query, release } as unknown as PoolClient),
+    } as unknown as Pool);
+
+    await repository.readMessageHistory({
+      chatId: command.chatId,
+      cursor: { direction: 'latest' },
+      limit: 10,
+      userId: command.operatorPrincipal.userId,
+    });
+    expect(query.mock.calls[2]?.[0]).not.toContain('chat_membership_periods');
   });
 
   it('fails closed when PostgreSQL configuration is incomplete', async () => {

@@ -1,4 +1,11 @@
-import type { CorrelationId, SessionId, UserId } from '@kovcheg/contracts';
+import { domainStatuses, functionalGrants } from '@kovcheg/contracts';
+import type {
+  CorrelationId,
+  DomainStatus,
+  FunctionalGrant,
+  SessionId,
+  UserId,
+} from '@kovcheg/contracts';
 import {
   Body,
   Controller,
@@ -10,6 +17,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Req,
 } from '@nestjs/common';
 import {
@@ -41,13 +49,23 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const accountSchema = Object.freeze({
   additionalProperties: false,
   properties: {
+    accountAccess: { enum: ['member'], type: 'string' },
     displayName: { maxLength: 120, minLength: 1, type: 'string' },
+    domainStatus: { enum: [...domainStatuses], type: 'string' },
     email: { format: 'email', maxLength: 254, type: 'string' },
-    roles: { items: { enum: ['administrator', 'student'] }, minItems: 1, type: 'array' },
+    functionalGrants: { items: { enum: [...functionalGrants] }, type: 'array' },
     status: { enum: ['active', 'deactivated'] },
     userId: { format: 'uuid', type: 'string' },
   },
-  required: ['displayName', 'email', 'roles', 'status', 'userId'],
+  required: [
+    'accountAccess',
+    'displayName',
+    'domainStatus',
+    'email',
+    'functionalGrants',
+    'status',
+    'userId',
+  ],
   type: 'object',
 });
 
@@ -126,6 +144,54 @@ function accountStatus(value: unknown, request: AdministrationRequest): AccountS
     throw authHttpException('auth.invalid-input', correlationId(request));
   }
   return record.status;
+}
+
+function authorizationMutationInput(
+  value: unknown,
+  request: AdministrationRequest,
+): Readonly<{ reason: string; version: number }> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw authHttpException('auth.invalid-input', correlationId(request));
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).sort().join(',') !== 'reason,version' ||
+    typeof record.reason !== 'string' ||
+    typeof record.version !== 'number'
+  ) {
+    throw authHttpException('auth.invalid-input', correlationId(request));
+  }
+  return Object.freeze({ reason: record.reason, version: record.version });
+}
+
+function domainStatusInput(
+  value: unknown,
+  request: AdministrationRequest,
+): Readonly<{ domainStatus: DomainStatus; reason: string; version: number }> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw authHttpException('auth.invalid-input', correlationId(request));
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).sort().join(',') !== 'domainStatus,reason,version' ||
+    !domainStatuses.includes(record.domainStatus as DomainStatus) ||
+    typeof record.reason !== 'string' ||
+    typeof record.version !== 'number'
+  ) {
+    throw authHttpException('auth.invalid-input', correlationId(request));
+  }
+  return Object.freeze({
+    domainStatus: record.domainStatus as DomainStatus,
+    reason: record.reason,
+    version: record.version,
+  });
+}
+
+function functionalGrant(value: string, request: AdministrationRequest): FunctionalGrant {
+  if (!functionalGrants.includes(value as FunctionalGrant)) {
+    throw authHttpException('auth.invalid-input', correlationId(request));
+  }
+  return value as FunctionalGrant;
 }
 
 @ApiTags('auth administration')
@@ -222,6 +288,77 @@ export class AuthAdministrationController {
         this.administratorSessionToken(request),
         userId(accountId, request),
         accountStatus(body, request),
+        correlationId(request),
+      );
+    } catch (error) {
+      toAuthHttpException(error, correlationId(request));
+    }
+  }
+
+  @ApiParam(accountIdParameter)
+  @ApiOkResponse({ schema: accountSchema })
+  @Patch(':accountId/domain-status')
+  @Header('Cache-Control', 'no-store')
+  async setDomainStatus(
+    @Param('accountId') accountId: string,
+    @Body() body: unknown,
+    @Req() request: AdministrationRequest,
+  ): Promise<AccountRecord> {
+    const input = domainStatusInput(body, request);
+    try {
+      return await this.runtime.authService.setDomainStatus(
+        this.administratorSessionToken(request),
+        userId(accountId, request),
+        input.domainStatus,
+        input,
+        correlationId(request),
+      );
+    } catch (error) {
+      toAuthHttpException(error, correlationId(request));
+    }
+  }
+
+  @ApiParam(accountIdParameter)
+  @ApiParam({ enum: [...functionalGrants], name: 'grant', type: 'string' })
+  @ApiOkResponse({ schema: accountSchema })
+  @Put(':accountId/functional-grants/:grant')
+  @Header('Cache-Control', 'no-store')
+  async grantFunctionalGrant(
+    @Param('accountId') accountId: string,
+    @Param('grant') grant: string,
+    @Body() body: unknown,
+    @Req() request: AdministrationRequest,
+  ): Promise<AccountRecord> {
+    try {
+      return await this.runtime.authService.grantFunctionalGrant(
+        this.administratorSessionToken(request),
+        userId(accountId, request),
+        functionalGrant(grant, request),
+        authorizationMutationInput(body, request),
+        correlationId(request),
+      );
+    } catch (error) {
+      toAuthHttpException(error, correlationId(request));
+    }
+  }
+
+  @ApiParam(accountIdParameter)
+  @ApiParam({ enum: [...functionalGrants], name: 'grant', type: 'string' })
+  @ApiOkResponse({ schema: accountSchema })
+  @Delete(':accountId/functional-grants/:grant')
+  @Header('Cache-Control', 'no-store')
+  async revokeFunctionalGrant(
+    @Param('accountId') accountId: string,
+    @Param('grant') grant: string,
+    @Body() body: unknown,
+    @Req() request: AdministrationRequest,
+  ): Promise<AccountRecord> {
+    try {
+      return await this.runtime.authService.revokeFunctionalGrant(
+        this.administratorSessionToken(request),
+        userId(accountId, request),
+        functionalGrant(grant, request),
+        authorizationMutationInput(body, request),
         correlationId(request),
       );
     } catch (error) {

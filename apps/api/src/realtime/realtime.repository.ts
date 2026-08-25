@@ -129,25 +129,11 @@ export class PostgresRealtimeRepository implements RealtimeRepository, OnModuleD
            message.body,
            message.created_at
          FROM kovcheg.messages AS message
-         JOIN kovcheg.chat_memberships AS membership
-           ON membership.chat_id = message.chat_id
-          AND membership.account_id = $1
-          AND membership.status = 'active'
-         WHERE message.chat_id = $2
-           AND message.chat_sequence > $3::bigint
-           AND EXISTS (
-             SELECT 1
-             FROM kovcheg.chat_membership_periods AS period
-             WHERE period.membership_id = membership.id
-               AND message.chat_sequence > period.joined_after_sequence
-               AND (
-                 period.revoked_after_sequence IS NULL
-                 OR message.chat_sequence <= period.revoked_after_sequence
-               )
-           )
+         WHERE message.chat_id = $1
+           AND message.chat_sequence > $2::bigint
          ORDER BY message.chat_sequence ASC, message.id ASC
-         LIMIT $4`,
-        [command.userId, command.chatId, command.afterSequence, command.limit],
+         LIMIT $3`,
+        [command.chatId, command.afterSequence, command.limit],
       );
       await client.query('COMMIT');
       return Object.freeze({ history: Object.freeze(result.rows.map(mapMessage)) });

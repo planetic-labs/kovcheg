@@ -11,6 +11,8 @@
     "dist/foundation-types.js",
     "dist/message-flow.d.ts",
     "dist/message-flow.js",
+    "dist/principal-authorization.d.ts",
+    "dist/principal-authorization.js",
     "dist/realtime.d.ts",
     "dist/realtime.js"
   ],

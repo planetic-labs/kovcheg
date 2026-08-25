@@ -12,8 +12,9 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import { ApiExcludeEndpoint } from '@nestjs/swagger';
+import { ApiExcludeEndpoint, ApiOkResponse } from '@nestjs/swagger';
 
+import { currentPrincipalAuthorizationJsonSchema } from '@kovcheg/contracts';
 import type { CorrelationId, Uuid } from '@kovcheg/contracts';
 
 import { authHttpException, toAuthHttpException } from './http-errors.js';
@@ -114,6 +115,7 @@ export class AuthSessionController {
 
   @Get('session')
   @Header('Cache-Control', 'no-store')
+  @ApiOkResponse({ schema: currentPrincipalAuthorizationJsonSchema })
   async getSession(@Req() request: AuthHttpRequest) {
     const token = this.runtime.sessionCookie.read(cookieHeader(request));
     if (token === null) {

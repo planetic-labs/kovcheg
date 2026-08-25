@@ -10,6 +10,113 @@ END;
 $$;
 
 DO $$
+DECLARE
+  protected_function regprocedure;
+BEGIN
+  IF to_regclass('kovcheg.account_domain_statuses') IS NULL THEN
+    RETURN;
+  END IF;
+
+  PERFORM pg_temp.assert_true(
+    has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.read_current_principal_authorization(text,timestamp with time zone,boolean)',
+      'EXECUTE'
+    )
+    AND has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.admin_set_domain_status(text,uuid,kovcheg.domain_status,character varying,bigint,timestamp with time zone,character varying)',
+      'EXECUTE'
+    )
+    AND has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.admin_grant_functional_grant(text,uuid,kovcheg.platform_role,character varying,bigint,timestamp with time zone,character varying)',
+      'EXECUTE'
+    )
+    AND has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.admin_revoke_functional_grant(text,uuid,kovcheg.platform_role,character varying,bigint,timestamp with time zone,character varying)',
+      'EXECUTE'
+    )
+    AND NOT has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.bootstrap_auth_administrator(text,uuid,text,text)',
+      'EXECUTE'
+    )
+    AND NOT has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.admin_create_auth_account(text,uuid,text,text,timestamp with time zone,character varying)',
+      'EXECUTE'
+    ),
+    'auth runtime must use only role-capable protected entrypoints'
+  );
+
+  PERFORM pg_temp.assert_true(
+    has_function_privilege(
+      'kovcheg_app',
+      'kovcheg.list_account_chat_capabilities(uuid)',
+      'EXECUTE'
+    )
+    AND NOT has_function_privilege(
+      'kovcheg_app',
+      'kovcheg.admin_set_domain_status(text,uuid,kovcheg.domain_status,character varying,bigint,timestamp with time zone,character varying)',
+      'EXECUTE'
+    )
+    AND NOT has_function_privilege(
+      'kovcheg_app',
+      'kovcheg.read_current_principal_authorization(text,timestamp with time zone,boolean)',
+      'EXECUTE'
+    ),
+    'general runtime must receive chat capabilities without administrative or auth readback access'
+  );
+
+  PERFORM pg_temp.assert_true(
+    NOT has_table_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.account_domain_statuses',
+      'SELECT,INSERT,UPDATE,DELETE'
+    )
+    AND NOT has_table_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.chat_domain_capability_rules',
+      'SELECT,INSERT,UPDATE,DELETE'
+    )
+    AND NOT has_table_privilege(
+      'kovcheg_app',
+      'kovcheg.account_domain_statuses',
+      'SELECT,INSERT,UPDATE,DELETE'
+    )
+    AND NOT has_table_privilege(
+      'kovcheg_app',
+      'kovcheg.chat_domain_capability_rules',
+      'SELECT,INSERT,UPDATE,DELETE'
+    ),
+    'runtime logins must not receive direct domain-policy DML'
+  );
+
+  FOREACH protected_function IN ARRAY ARRAY[
+    'kovcheg.read_current_principal_authorization(text,timestamp with time zone,boolean)'::regprocedure,
+    'kovcheg.admin_set_domain_status(text,uuid,kovcheg.domain_status,character varying,bigint,timestamp with time zone,character varying)'::regprocedure,
+    'kovcheg.admin_grant_functional_grant(text,uuid,kovcheg.platform_role,character varying,bigint,timestamp with time zone,character varying)'::regprocedure,
+    'kovcheg.admin_revoke_functional_grant(text,uuid,kovcheg.platform_role,character varying,bigint,timestamp with time zone,character varying)'::regprocedure,
+    'kovcheg.list_account_chat_capabilities(uuid)'::regprocedure
+  ] LOOP
+    PERFORM pg_temp.assert_true(
+      (
+        SELECT procedure.prosecdef
+          AND procedure.proconfig = ARRAY['search_path=pg_catalog, kovcheg']
+          AND owner.rolname = 'kovcheg_migration'
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_roles AS owner ON owner.oid = procedure.proowner
+        WHERE procedure.oid = protected_function
+      ),
+      'role-capability functions must be migration-owned security definers with fixed search paths'
+    );
+  END LOOP;
+END;
+$$;
+
+DO $$
 BEGIN
   IF to_regclass('kovcheg.system_persona_operator_grants') IS NOT NULL THEN
     PERFORM pg_temp.assert_true(
@@ -278,10 +385,35 @@ BEGIN
       AND procedure.proname = 'admin_create_auth_account'
   ) THEN
     PERFORM pg_temp.assert_true(
-      has_function_privilege(
-        'kovcheg_auth_app',
-        'kovcheg.admin_create_auth_account(text,uuid,text,text,timestamp with time zone,character varying)',
-        'EXECUTE'
+      (
+        CASE WHEN to_regclass('kovcheg.account_domain_statuses') IS NULL THEN
+          has_function_privilege(
+            'kovcheg_auth_app',
+            'kovcheg.admin_create_auth_account(text,uuid,text,text,timestamp with time zone,character varying)',
+            'EXECUTE'
+          )
+        ELSE
+          has_function_privilege(
+            'kovcheg_auth_app',
+            'kovcheg.admin_create_role_capable_account(text,uuid,text,text,timestamp with time zone,character varying)',
+            'EXECUTE'
+          )
+          AND NOT has_function_privilege(
+            'kovcheg_auth_app',
+            'kovcheg.admin_create_auth_account(text,uuid,text,text,timestamp with time zone,character varying)',
+            'EXECUTE'
+          )
+          AND has_function_privilege(
+            'kovcheg_auth_app',
+            'kovcheg.admin_update_role_capable_account(text,uuid,text,text,timestamp with time zone,character varying)',
+            'EXECUTE'
+          )
+          AND has_function_privilege(
+            'kovcheg_auth_app',
+            'kovcheg.admin_set_role_capable_account_status(text,uuid,kovcheg.account_status,timestamp with time zone,character varying)',
+            'EXECUTE'
+          )
+        END
       )
       AND has_function_privilege(
         'kovcheg_auth_app',
