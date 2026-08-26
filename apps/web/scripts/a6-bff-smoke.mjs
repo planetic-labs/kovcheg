@@ -1,12 +1,44 @@
 /* global Headers, URL, fetch, process */
 
 import assert from 'node:assert/strict';
+import { request as httpRequest } from 'node:http';
 
 const baseUrl = new URL(process.argv[2] ?? 'http://127.0.0.1:3400');
 assert.ok(
   ['127.0.0.1', '::1', 'localhost'].includes(baseUrl.hostname),
   'The A6 BFF smoke target must be loopback-only',
 );
+const syntheticApiUrl = new URL(
+  process.env.KOVCHEG_SYNTHETIC_API_ORIGIN ?? 'http://127.0.0.1:4301',
+);
+assert.equal(syntheticApiUrl.protocol, 'http:');
+assert.equal(syntheticApiUrl.hostname, '127.0.0.1');
+assert.equal(syntheticApiUrl.username, '');
+assert.equal(syntheticApiUrl.password, '');
+assert.equal(syntheticApiUrl.pathname, '/');
+assert.equal(syntheticApiUrl.search, '');
+assert.equal(syntheticApiUrl.hash, '');
+const syntheticApiPort = Number.parseInt(syntheticApiUrl.port, 10);
+assert.ok(Number.isSafeInteger(syntheticApiPort));
+
+function rawSyntheticRequest(requestTarget) {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        hostname: '127.0.0.1',
+        method: 'GET',
+        path: requestTarget,
+        port: syntheticApiPort,
+      },
+      (response) => {
+        response.resume();
+        response.once('end', () => resolve(response.statusCode));
+      },
+    );
+    request.once('error', reject);
+    request.end();
+  });
+}
 
 function setCookieValues(response) {
   return response.headers.getSetCookie?.() ?? [response.headers.get('set-cookie')].filter(Boolean);
@@ -63,6 +95,15 @@ async function rejectedIdentity(email) {
 const manifest = await fetch(new URL('/manifest.webmanifest', baseUrl));
 assert.equal(manifest.status, 200);
 assert.equal((await manifest.json()).display, 'standalone');
+
+assert.equal(await rawSyntheticRequest('/manifest.webmanifest?source=ssrf-check'), 200);
+for (const requestTarget of [
+  'http://example.invalid/manifest.webmanifest',
+  '//example.invalid/manifest.webmanifest',
+  '/\\example.invalid/manifest.webmanifest',
+]) {
+  assert.equal(await rawSyntheticRequest(requestTarget), 400);
+}
 
 const cookieJar = new Map();
 await challenge(cookieJar, 'administrator@example.invalid');

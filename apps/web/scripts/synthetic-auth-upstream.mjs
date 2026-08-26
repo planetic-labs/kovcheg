@@ -1,6 +1,6 @@
 /* global Buffer, URL, process */
 
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { Server as SocketIoServer } from 'socket.io';
 
 function port(name, fallback) {
@@ -13,7 +13,46 @@ function port(name, fallback) {
 
 const authPort = port('SYNTHETIC_AUTH_PORT', '4302');
 const apiPort = port('SYNTHETIC_API_PORT', '4301');
-const webOrigin = new URL(process.env.SYNTHETIC_WEB_ORIGIN ?? 'http://127.0.0.1:3400');
+
+function syntheticWebOrigin(value) {
+  let configured;
+  try {
+    configured = new URL(value);
+  } catch {
+    throw new Error('SYNTHETIC_WEB_ORIGIN must be a valid URL');
+  }
+  if (
+    configured.protocol !== 'http:' ||
+    configured.username !== '' ||
+    configured.password !== '' ||
+    configured.pathname !== '/' ||
+    configured.search !== '' ||
+    configured.hash !== ''
+  ) {
+    throw new Error('SYNTHETIC_WEB_ORIGIN must be a credential-free HTTP origin');
+  }
+  let hostname;
+  switch (configured.hostname) {
+    case '127.0.0.1':
+      hostname = '127.0.0.1';
+      break;
+    case 'localhost':
+      hostname = 'localhost';
+      break;
+    case '[::1]':
+      hostname = '::1';
+      break;
+    default:
+      throw new Error('SYNTHETIC_WEB_ORIGIN must use a loopback hostname');
+  }
+  const configuredPort = configured.port === '' ? 80 : Number.parseInt(configured.port, 10);
+  if (!Number.isSafeInteger(configuredPort) || configuredPort < 1 || configuredPort > 65_535) {
+    throw new Error('SYNTHETIC_WEB_ORIGIN must use a valid port');
+  }
+  return Object.freeze({ hostname, port: configuredPort });
+}
+
+const webOrigin = syntheticWebOrigin(process.env.SYNTHETIC_WEB_ORIGIN ?? 'http://127.0.0.1:3400');
 const sessionCookie = 'kovcheg_session=synthetic-local-session';
 const administrator = Object.freeze({
   accountAccess: 'member',
@@ -83,31 +122,85 @@ async function readBody(request) {
   }
 }
 
+function proxyTarget(requestTarget) {
+  const hasUnsafeCharacter =
+    typeof requestTarget === 'string' &&
+    [...requestTarget].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x20 || codePoint === 0x7f;
+    });
+  if (
+    typeof requestTarget !== 'string' ||
+    !requestTarget.startsWith('/') ||
+    requestTarget.startsWith('//') ||
+    requestTarget.includes('\\') ||
+    hasUnsafeCharacter
+  ) {
+    return null;
+  }
+  let incoming;
+  try {
+    incoming = new URL(requestTarget, 'http://synthetic.invalid');
+  } catch {
+    return null;
+  }
+  if (incoming.origin !== 'http://synthetic.invalid' || incoming.hash !== '') {
+    return null;
+  }
+  let segments;
+  try {
+    segments = incoming.pathname.split('/').map((segment) => decodeURIComponent(segment));
+  } catch {
+    return null;
+  }
+  if (segments.some((segment) => segment === '.' || segment === '..')) return null;
+  const pathname = segments.map((segment) => encodeURIComponent(segment)).join('/');
+  const query = incoming.searchParams.toString();
+  return query === '' ? pathname : `${pathname}?${query}`;
+}
+
 async function proxyWeb(request, response) {
-  const headers = new globalThis.Headers();
+  const headers = {};
   for (const [name, value] of Object.entries(request.headers)) {
     if (
       value !== undefined &&
       !['connection', 'content-length', 'host', 'transfer-encoding'].includes(name)
     ) {
-      headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+      headers[name] = value;
     }
   }
   const method = request.method ?? 'GET';
   const body = method === 'GET' || method === 'HEAD' ? undefined : await readRawBody(request);
-  const incoming = new URL(request.url ?? '/', 'http://synthetic.invalid');
-  const target = new URL(`${incoming.pathname}${incoming.search}`, webOrigin);
-  const upstream = await globalThis.fetch(target, { body, headers, method });
-  const downstreamHeaders = {};
-  for (const [name, value] of upstream.headers) {
-    if (!['content-encoding', 'content-length', 'set-cookie', 'transfer-encoding'].includes(name)) {
-      downstreamHeaders[name] = value;
-    }
+  const target = proxyTarget(request.url);
+  if (target === null) {
+    json(response, 400, { error: 'synthetic.invalid-proxy-target' });
+    return;
   }
-  const setCookies = upstream.headers.getSetCookie?.() ?? [];
-  if (setCookies.length > 0) downstreamHeaders['set-cookie'] = setCookies;
-  response.writeHead(upstream.status, downstreamHeaders);
-  response.end(Buffer.from(await upstream.arrayBuffer()));
+  await new Promise((resolve, reject) => {
+    const upstreamRequest = httpRequest(
+      {
+        headers,
+        hostname: webOrigin.hostname,
+        method,
+        path: target,
+        port: webOrigin.port,
+      },
+      (upstreamResponse) => {
+        const downstreamHeaders = {};
+        for (const [name, value] of Object.entries(upstreamResponse.headers)) {
+          if (value !== undefined && !['connection', 'transfer-encoding'].includes(name)) {
+            downstreamHeaders[name] = value;
+          }
+        }
+        response.writeHead(upstreamResponse.statusCode ?? 502, downstreamHeaders);
+        upstreamResponse.once('error', reject);
+        upstreamResponse.once('end', resolve);
+        upstreamResponse.pipe(response);
+      },
+    );
+    upstreamRequest.once('error', reject);
+    upstreamRequest.end(body);
+  });
 }
 
 async function readRawBody(request) {
