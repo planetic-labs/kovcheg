@@ -3,13 +3,13 @@
   "profiles": [
     {
       "id": "ux-accessibility",
-      "status": "NOT_APPLICABLE",
-      "reason": "The A6 client is not integrated."
+      "status": "INFORMATIONAL",
+      "reason": "A developer-owned A6 source, keyboard, focus, and local rendered baseline exists; independent cross-browser and assistive-technology acceptance is still pending."
     },
     {
       "id": "playwright-axe-lighthouse-visual-regression",
       "status": "NOT_APPLICABLE",
-      "reason": "This is a separate future package after A6 integration."
+      "reason": "Independent cross-browser, assistive-technology, visual-regression, and installed-PWA acceptance is outside this local remediation."
     },
     {
       "id": "k6-performance-load",

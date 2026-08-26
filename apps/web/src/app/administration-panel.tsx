@@ -139,12 +139,28 @@ function AccountForm({
       email: String(data.get('email') ?? ''),
     });
   }
+  const idPrefix = mode === 'create' ? 'account-create' : 'account-update';
   return (
     <form className="admin-card" onSubmit={submit}>
       <h2>{mode === 'create' ? 'Создать пользователя' : 'Изменить пользователя'}</h2>
-      {mode === 'update' && <Field label="ID пользователя" name="accountId" required />}
-      <Field label="Имя" maxLength={120} name="displayName" required />
-      <Field label="Email" maxLength={254} name="email" required type="email" />
+      {mode === 'update' && (
+        <Field id={`${idPrefix}-account-id`} label="ID пользователя" name="accountId" required />
+      )}
+      <Field
+        id={`${idPrefix}-display-name`}
+        label="Имя"
+        maxLength={120}
+        name="displayName"
+        required
+      />
+      <Field
+        id={`${idPrefix}-email`}
+        label="Email"
+        maxLength={254}
+        name="email"
+        required
+        type="email"
+      />
       <button className="secondary-button" disabled={busy} type="submit">
         {mode === 'create' ? 'Создать' : 'Сохранить'}
       </button>
@@ -170,7 +186,7 @@ function StatusForm({
   return (
     <form className="admin-card" onSubmit={submit}>
       <h2>Статус доступа</h2>
-      <Field label="ID пользователя" name="accountId" required />
+      <Field id="account-status-account-id" label="ID пользователя" name="accountId" required />
       <label htmlFor="account-status">Статус</label>
       <select defaultValue="active" id="account-status" name="status">
         <option value="active">Активен</option>
@@ -203,7 +219,7 @@ function DomainStatusForm({
   return (
     <form className="admin-card" onSubmit={submit}>
       <h2>Доменный статус</h2>
-      <Field label="ID пользователя" name="accountId" required />
+      <Field id="domain-status-account-id" label="ID пользователя" name="accountId" required />
       <label htmlFor="domain-status">Новый статус</label>
       <select defaultValue={domainStatuses[0]} id="domain-status" name="domainStatus">
         {domainStatuses.map((status) => (
@@ -212,7 +228,7 @@ function DomainStatusForm({
           </option>
         ))}
       </select>
-      <AuthorizationFields />
+      <AuthorizationFields idPrefix="domain-status" />
       <button className="secondary-button" disabled={busy} type="submit">
         Изменить статус
       </button>
@@ -254,7 +270,7 @@ function FunctionalGrantForm({
   return (
     <form className="admin-card" onSubmit={submit}>
       <h2>Функциональное право</h2>
-      <Field label="ID пользователя" name="accountId" required />
+      <Field id="functional-grant-account-id" label="ID пользователя" name="accountId" required />
       <label htmlFor="functional-grant">Право</label>
       <select defaultValue={available[0]} id="functional-grant" name="grant">
         {available.map((grant) => (
@@ -268,7 +284,7 @@ function FunctionalGrantForm({
         <option value="grant">Назначить</option>
         <option value="revoke">Отозвать</option>
       </select>
-      <AuthorizationFields />
+      <AuthorizationFields idPrefix="functional-grant" />
       <button className="secondary-button" disabled={busy} type="submit">
         Применить право
       </button>
@@ -276,12 +292,13 @@ function FunctionalGrantForm({
   );
 }
 
-function AuthorizationFields() {
+function AuthorizationFields({ idPrefix }: Readonly<{ idPrefix: string }>) {
+  const versionId = `${idPrefix}-version`;
   return (
     <>
-      <Field label="Причина" maxLength={64} name="reason" required />
-      <label htmlFor="authorization-version">Следующая версия права</label>
-      <input id="authorization-version" min={2} name="version" required type="number" />
+      <Field id={`${idPrefix}-reason`} label="Причина" maxLength={64} name="reason" required />
+      <label htmlFor={versionId}>Следующая версия права</label>
+      <input id={versionId} min={2} name="version" required type="number" />
     </>
   );
 }
@@ -303,8 +320,13 @@ function SessionRevocationForm({
   return (
     <form className="admin-card" onSubmit={submit}>
       <h2>Отозвать сеансы</h2>
-      <Field label="ID пользователя" name="accountId" required />
-      <Field label="ID одного сеанса" name="sessionId" required />
+      <Field id="session-revocation-account-id" label="ID пользователя" name="accountId" required />
+      <Field
+        id="session-revocation-session-id"
+        label="ID одного сеанса"
+        name="sessionId"
+        required
+      />
       <div className="button-row">
         <button className="secondary-button" disabled={busy} type="submit">
           Отозвать один
@@ -328,19 +350,20 @@ function SessionRevocationForm({
 }
 
 function Field({
+  id,
   label,
   maxLength,
   name,
   required,
   type = 'text',
 }: Readonly<{
+  id: string;
   label: string;
   maxLength?: number;
   name: string;
   required?: boolean;
   type?: 'email' | 'text';
 }>) {
-  const id = `field-${name}-${label.replace(/\s+/gu, '-').toLowerCase()}`;
   return (
     <>
       <label htmlFor={id}>{label}</label>

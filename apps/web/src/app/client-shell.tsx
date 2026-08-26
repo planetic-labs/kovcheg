@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { parseSessionPrincipal } from '../a6/contracts';
@@ -20,6 +20,7 @@ async function jsonOrNull(response: Response): Promise<unknown> {
 export function ClientShell() {
   const [session, setSession] = useState<SessionState>('loading');
   const [sessionError, setSessionError] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   const refreshSession = useCallback(async () => {
     setSessionError(false);
@@ -49,7 +50,7 @@ export function ClientShell() {
   if (session === 'loading') {
     return (
       <main className="center-stage">
-        <div aria-live="polite" className="loading-card">
+        <div aria-atomic="true" aria-live="polite" className="loading-card" role="status">
           Подключаем защищённый сеанс…
         </div>
       </main>
@@ -57,10 +58,28 @@ export function ClientShell() {
   }
 
   if (session === null) {
-    return <LoginPanel onAuthenticated={refreshSession} sessionUnavailable={sessionError} />;
+    return (
+      <LoginPanel
+        onAuthenticated={refreshSession}
+        sessionExpired={sessionExpired}
+        sessionUnavailable={sessionError}
+      />
+    );
   }
 
-  return <Workspace principal={session} onLoggedOut={() => setSession(null)} />;
+  return (
+    <Workspace
+      onLoggedOut={() => {
+        setSessionExpired(false);
+        setSession(null);
+      }}
+      onSessionInvalid={() => {
+        setSessionExpired(true);
+        setSession(null);
+      }}
+      principal={session}
+    />
+  );
 }
 
 function Brand() {
@@ -79,21 +98,28 @@ function Brand() {
 
 function LoginPanel({
   onAuthenticated,
+  sessionExpired,
   sessionUnavailable,
-}: Readonly<{ onAuthenticated: () => Promise<void>; sessionUnavailable: boolean }>) {
+}: Readonly<{
+  onAuthenticated: () => Promise<void>;
+  sessionExpired: boolean;
+  sessionUnavailable: boolean;
+}>) {
   const [step, setStep] = useState<'code' | 'email'>('email');
-  const [email, setEmail] = useState('');
-  const [digits, setDigits] = useState<readonly string[]>(Object.freeze(Array(6).fill('')));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const emailInput = useRef<HTMLInputElement>(null);
+  const verifyingCode = useRef(false);
+  const statusId = 'authentication-status';
 
   async function requestCode(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    const submittedEmail = String(new FormData(event.currentTarget).get('email') ?? '');
     setBusy(true);
     setError(null);
     try {
       const response = await fetch('/bff/auth/challenge', {
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: submittedEmail }),
         headers: { 'content-type': 'application/json' },
         method: 'POST',
       });
@@ -106,13 +132,13 @@ function LoginPanel({
     }
   }
 
-  async function verifyCode(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    const code = digits.join('');
+  async function verifyCode(nextDigits: readonly string[]): Promise<void> {
+    const code = nextDigits.join('');
     if (!/^\d{6}$/u.test(code)) {
-      setError('Введите все шесть цифр кода.');
       return;
     }
+    if (verifyingCode.current) return;
+    verifyingCode.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -129,90 +155,114 @@ function LoginPanel({
     } catch {
       setError('Не удалось проверить код. Попробуйте снова.');
     } finally {
+      verifyingCode.current = false;
       setBusy(false);
     }
   }
 
+  function updateDigits(nextDigits: readonly string[]): void {
+    if (nextDigits.every((digit) => /^\d$/u.test(digit))) {
+      void verifyCode(nextDigits);
+    }
+  }
+
+  const statusMessage =
+    error ??
+    (sessionUnavailable
+      ? 'Сервис входа временно недоступен. Попробуйте ещё раз.'
+      : sessionExpired
+        ? 'Сеанс завершён. Войдите снова.'
+        : busy
+          ? step === 'email'
+            ? 'Проверяем адрес и отправляем код.'
+            : 'Проверяем код.'
+          : '');
+  const authState = error !== null || sessionUnavailable ? 'error' : busy ? 'busy' : 'ready';
+
   return (
     <main className="login-layout">
-      <section className="login-intro">
-        <Brand />
-        <div>
-          <p className="eyebrow">Минимальный PWA-клиент</p>
-          <h1>Разговоры группы в одном спокойном пространстве</h1>
-          <p className="lead">
-            Вход доступен только заранее созданным активным участникам. Паролей и саморегистрации
-            нет.
-          </p>
-        </div>
-        <p className="security-note">Сеанс хранится только в защищённой HTTP-only cookie.</p>
-      </section>
-
-      <section aria-labelledby="login-title" className="login-card">
-        <p className="step-label">{step === 'email' ? 'Шаг 1 из 2' : 'Шаг 2 из 2'}</p>
-        <h2 id="login-title">{step === 'email' ? 'Войти по email' : 'Введите код'}</h2>
-        {step === 'email' ? (
-          <form onSubmit={(event) => void requestCode(event)}>
-            <label htmlFor="email">Email</label>
-            <input
-              autoComplete="email"
-              id="email"
-              maxLength={254}
-              onChange={(event) => setEmail(event.currentTarget.value)}
-              placeholder="name@example.com"
-              required
-              type="email"
-              value={email}
+      <section aria-label="Вход" className="login-card">
+        <form
+          aria-busy={busy}
+          className="auth-control"
+          data-state={authState}
+          hidden={step !== 'email'}
+          onSubmit={(event) => void requestCode(event)}
+        >
+          <label className="visually-hidden" htmlFor="email">
+            Email
+          </label>
+          <input
+            aria-describedby={statusId}
+            aria-invalid={authState === 'error'}
+            autoComplete="email"
+            autoFocus
+            disabled={busy}
+            id="email"
+            maxLength={254}
+            name="email"
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+            ref={emailInput}
+            required
+            type="email"
+          />
+        </form>
+        {step === 'code' && (
+          <div aria-busy={busy} className="auth-control" data-state={authState}>
+            <CodeInput
+              descriptionId={statusId}
+              disabled={busy}
+              invalid={authState === 'error'}
+              onChange={updateDigits}
             />
-            <button className="primary-button" disabled={busy} type="submit">
-              {busy ? 'Отправляем…' : 'Получить код'}
-            </button>
-            <p className="neutral-copy">
-              Если аккаунт активен, шестизначный код придёт на указанную почту.
-            </p>
-          </form>
-        ) : (
-          <form onSubmit={(event) => void verifyCode(event)}>
-            <p className="neutral-copy">
-              Если аккаунт активен, письмо уже отправлено. Ответ одинаков для любого email.
-            </p>
-            <CodeInput disabled={busy} onChange={setDigits} />
-            <button className="primary-button" disabled={busy} type="submit">
-              {busy ? 'Проверяем…' : 'Продолжить'}
-            </button>
             <button
-              className="text-button"
+              aria-label="Вернуться к вводу email"
+              className="auth-back"
               disabled={busy}
               onClick={() => {
-                setDigits(Object.freeze(Array(6).fill('')));
                 setError(null);
                 setStep('email');
+                requestAnimationFrame(() => emailInput.current?.focus());
               }}
               type="button"
             >
-              Указать другой email
+              <span aria-hidden="true">←</span>
             </button>
-          </form>
+          </div>
         )}
-        {(sessionUnavailable || error !== null) && (
-          <p aria-live="polite" className="error-banner">
-            {error ?? 'Сервис входа временно недоступен. Попробуйте ещё раз.'}
-          </p>
-        )}
-        <div className="login-help">
-          <ProblemReportEntry
-            context={sessionUnavailable ? { errorCode: 'SESSION_UNAVAILABLE' } : undefined}
-          />
-        </div>
+        <p
+          aria-atomic="true"
+          aria-live={authState === 'error' || sessionExpired ? 'assertive' : 'polite'}
+          className="visually-hidden"
+          id={statusId}
+          role="status"
+        >
+          {statusMessage}
+        </p>
       </section>
+      <div className="auth-help">
+        <ProblemReportEntry
+          context={sessionUnavailable ? { errorCode: 'SESSION_UNAVAILABLE' } : undefined}
+        />
+      </div>
     </main>
   );
 }
 
 function Workspace({
   onLoggedOut,
+  onSessionInvalid,
   principal,
-}: Readonly<{ onLoggedOut: () => void; principal: SessionPrincipal }>) {
+}: Readonly<{
+  onLoggedOut: () => void;
+  onSessionInvalid: () => void;
+  principal: SessionPrincipal;
+}>) {
   const hasAdministrativeAccess = Object.values(principal.administrativeCapabilities).some(Boolean);
   const [view, setView] = useState<WorkspaceView>('chats');
   const [logoutBusy, setLogoutBusy] = useState(false);
@@ -229,6 +279,9 @@ function Workspace({
 
   return (
     <main className="app-shell">
+      <a className="skip-link" href="#workspace-content">
+        К основному содержимому
+      </a>
       <header className="app-header">
         <Brand />
         <nav aria-label="Основная навигация" className="main-nav">
@@ -256,11 +309,13 @@ function Workspace({
           </button>
         </div>
       </header>
-      {view === 'users' && hasAdministrativeAccess ? (
-        <AdministrationPanel onSessionInvalid={onLoggedOut} principal={principal} />
-      ) : (
-        <ChatPanel onSessionInvalid={onLoggedOut} principalUserId={principal.userId} />
-      )}
+      <div className="workspace-content" id="workspace-content" tabIndex={-1}>
+        {view === 'users' && hasAdministrativeAccess ? (
+          <AdministrationPanel onSessionInvalid={onSessionInvalid} principal={principal} />
+        ) : (
+          <ChatPanel onSessionInvalid={onSessionInvalid} principalUserId={principal.userId} />
+        )}
+      </div>
     </main>
   );
 }

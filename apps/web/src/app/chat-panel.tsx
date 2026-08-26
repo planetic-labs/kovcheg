@@ -25,6 +25,7 @@ import {
 } from '../a6/message-state';
 import type { MessageTimelineState, TimelineItem } from '../a6/message-state';
 import { acceptRealtimeEvent, emptyRealtimeProjection } from '../a6/realtime-state';
+import { shouldSubmitComposerKey } from './composer-keyboard';
 
 const zeroChatMarker = 'kovcheg:a6-zero-chat-seen';
 const maximumRenderedItems = 400;
@@ -68,6 +69,8 @@ export function ChatPanel({
   const [nextBeforeSequence, setNextBeforeSequence] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [draft, setDraft] = useState('');
+  const chatButtonRefs = useRef(new Map<Uuid, HTMLButtonElement>());
+  const mobileBackRef = useRef<HTMLButtonElement>(null);
   const timelineRef = useRef(timeline);
   const realtimeProjectionRef = useRef(emptyRealtimeProjection());
 
@@ -325,10 +328,30 @@ export function ChatPanel({
     void sendMessage(`web:${crypto.randomUUID()}`, text, true);
   }
 
+  function openConversation(chatId: Uuid): void {
+    setSelectedChatId(chatId);
+    if (globalThis.matchMedia('(max-width: 820px)').matches) {
+      setMobileConversation(true);
+      requestAnimationFrame(() => mobileBackRef.current?.focus());
+    }
+  }
+
+  function returnToChatList(): void {
+    setMobileConversation(false);
+    requestAnimationFrame(() => {
+      if (selectedChatId !== null) chatButtonRefs.current.get(selectedChatId)?.focus();
+    });
+  }
+
   if (listState !== 'ready') {
     return (
       <section className="workspace-stage">
-        <div className="startup-panel">
+        <div
+          aria-atomic="true"
+          aria-live={listState === 'error' ? 'assertive' : 'polite'}
+          className="startup-panel"
+          role={listState === 'error' ? 'alert' : 'status'}
+        >
           <p className="eyebrow">Чаты</p>
           <h1>
             {listState === 'checking'
@@ -361,24 +384,25 @@ export function ChatPanel({
           <p className="eyebrow">Чаты</p>
           <h1>Разговоры</h1>
         </header>
-        <div className="chat-list" role="list">
+        <ul className="chat-list">
           {chats.map((chat) => (
-            <button
-              aria-current={chat.id === selectedChatId ? 'page' : undefined}
-              className="chat-list-item"
-              key={chat.id}
-              onClick={() => {
-                setSelectedChatId(chat.id);
-                setMobileConversation(true);
-              }}
-              role="listitem"
-              type="button"
-            >
-              <strong>{chatLabel(chat)}</strong>
-              <span>{chat.capabilities.canWrite ? 'Чтение и запись' : 'Только чтение'}</span>
-            </button>
+            <li key={chat.id}>
+              <button
+                aria-current={chat.id === selectedChatId ? 'page' : undefined}
+                className="chat-list-item"
+                onClick={() => openConversation(chat.id)}
+                ref={(element) => {
+                  if (element === null) chatButtonRefs.current.delete(chat.id);
+                  else chatButtonRefs.current.set(chat.id, element);
+                }}
+                type="button"
+              >
+                <strong>{chatLabel(chat)}</strong>
+                <span>{chat.capabilities.canWrite ? 'Чтение и запись' : 'Только чтение'}</span>
+              </button>
+            </li>
           ))}
-        </div>
+        </ul>
       </aside>
 
       <article className="conversation-panel">
@@ -388,14 +412,15 @@ export function ChatPanel({
               <button
                 aria-label="Вернуться к списку чатов"
                 className="mobile-back"
-                onClick={() => setMobileConversation(false)}
+                onClick={returnToChatList}
+                ref={mobileBackRef}
                 type="button"
               >
                 ←
               </button>
               <div>
                 <h2>{chatLabel(selectedChat)}</h2>
-                <p aria-live="polite">
+                <p aria-atomic="true" aria-live="polite" role="status">
                   {connection === 'connected'
                     ? 'Обновления подключены'
                     : connection === 'connecting'
@@ -405,7 +430,13 @@ export function ChatPanel({
               </div>
             </header>
 
-            <div aria-busy={historyLoading} aria-live="polite" className="message-list">
+            <div
+              aria-busy={historyLoading}
+              aria-live="polite"
+              aria-relevant="additions text"
+              className="message-list"
+              role="log"
+            >
               {hasOlder && (
                 <button
                   className="history-button"
@@ -443,11 +474,20 @@ export function ChatPanel({
                   Текст сообщения
                 </label>
                 <textarea
+                  aria-describedby="composer-keyboard-hint"
                   id="message-draft"
                   maxLength={20_000}
                   onChange={(event) => setDraft(event.currentTarget.value)}
                   onKeyDown={(event) => {
-                    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                    const isComposing = event.nativeEvent.isComposing || event.keyCode === 229;
+                    if (
+                      shouldSubmitComposerKey({
+                        finePointer: globalThis.matchMedia('(pointer: fine)').matches,
+                        isComposing,
+                        key: event.key,
+                        shiftKey: event.shiftKey,
+                      })
+                    ) {
                       event.preventDefault();
                       event.currentTarget.form?.requestSubmit();
                     }
@@ -456,7 +496,9 @@ export function ChatPanel({
                   rows={2}
                   value={draft}
                 />
-                <span className="composer-hint">Ctrl/⌘ + Enter</span>
+                <span className="composer-hint" id="composer-keyboard-hint">
+                  Enter — отправить · Shift+Enter — новая строка
+                </span>
                 <button
                   aria-label="Отправить сообщение"
                   className="send-button"
@@ -465,7 +507,9 @@ export function ChatPanel({
                 />
               </form>
             ) : (
-              <p className="read-only-notice">В этом чате доступно только чтение.</p>
+              <p aria-live="polite" className="read-only-notice" role="status">
+                В этом чате доступно только чтение.
+              </p>
             )}
           </>
         )}
@@ -489,7 +533,10 @@ function MessageBubble({
       : item.message.senderAccountId === principalUserId;
   const text = item.kind === 'optimistic' ? item.text : item.message.body;
   return (
-    <div className={`message-row${outgoing ? ' outgoing' : ''}`}>
+    <article
+      aria-label={outgoing ? 'Исходящее сообщение' : 'Входящее сообщение'}
+      className={`message-row${outgoing ? ' outgoing' : ''}`}
+    >
       <div className={`message-bubble${item.kind === 'optimistic' ? ` ${item.status}` : ''}`}>
         <p>{text}</p>
         <small>
@@ -508,6 +555,6 @@ function MessageBubble({
           </button>
         )}
       </div>
-    </div>
+    </article>
   );
 }
