@@ -253,6 +253,132 @@ textarea {
   border: 0;
 }
 
+.login-help {
+  border-top: 1px solid var(--line);
+  margin-top: 28px;
+  padding-top: 18px;
+}
+
+.header-actions {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-self: end;
+  min-width: 0;
+}
+
+.problem-report-entry {
+  position: relative;
+}
+
+.problem-report-entry details > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.88rem;
+  list-style: none;
+  padding: 10px 0;
+  white-space: nowrap;
+}
+
+.problem-report-entry details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.problem-report-entry details > summary:focus-visible {
+  outline: 3px solid rgb(185 101 62 / 35%);
+  outline-offset: 2px;
+}
+
+.help-menu-popover {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 8px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  width: min(250px, calc(100vw - 40px));
+  z-index: 20;
+}
+
+.help-menu-popover button {
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  color: var(--green);
+  font-weight: 680;
+  padding: 11px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.help-menu-popover button:hover {
+  background: var(--green-soft);
+}
+
+.problem-report-backdrop {
+  align-items: center;
+  background: rgb(28 40 37 / 42%);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 100;
+}
+
+.problem-report-dialog {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+  max-height: calc(100dvh - 40px);
+  max-width: 520px;
+  overflow: hidden auto;
+  padding: clamp(24px, 5vw, 36px);
+  width: 100%;
+}
+
+.problem-report-dialog h2 {
+  font-size: clamp(1.6rem, 5vw, 2.2rem);
+  margin-bottom: 16px;
+}
+
+.problem-report-dialog > p:not(.eyebrow) {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.problem-report-context {
+  background: var(--canvas);
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
+  margin: 22px 0 0;
+  padding: 16px;
+}
+
+.problem-report-context div {
+  min-width: 0;
+}
+
+.problem-report-context dt {
+  color: var(--muted);
+  font-size: 0.76rem;
+  margin-bottom: 4px;
+}
+
+.problem-report-context dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.problem-report-dialog .secondary-button {
+  margin-top: 24px;
+}
+
 .text-button {
   color: var(--green);
   font-weight: 680;
@@ -718,6 +844,11 @@ textarea {
   }
 
   .session-button {
+    max-width: 112px;
+    text-align: right;
+  }
+
+  .header-actions {
     grid-column: 2;
     grid-row: 1;
   }
@@ -815,9 +946,26 @@ textarea {
     height: 38px;
   }
 
+  .header-actions {
+    gap: 9px;
+  }
+
+  .header-actions .help-menu-popover {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+  }
+
+  .login-help .help-menu-popover {
+    bottom: calc(100% + 4px);
+    left: 0;
+    right: auto;
+    top: auto;
+  }
+
+  .problem-report-entry details > summary,
   .session-button {
-    max-width: 112px;
-    text-align: right;
+    font-size: 0.8rem;
   }
 
   .main-nav button {
