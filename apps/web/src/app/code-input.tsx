@@ -4,13 +4,20 @@ import { useRef } from 'react';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 
 interface CodeInputProps {
+  readonly descriptionId?: string;
   readonly disabled?: boolean;
+  readonly invalid?: boolean;
   readonly onChange: (digits: readonly string[]) => void;
 }
 
 const codeLength = 6;
 
-export function CodeInput({ disabled = false, onChange }: CodeInputProps) {
+export function CodeInput({
+  descriptionId,
+  disabled = false,
+  invalid = false,
+  onChange,
+}: CodeInputProps) {
   const inputs = useRef<Array<HTMLInputElement | null>>([]);
 
   function currentDigits(): readonly string[] {
@@ -55,10 +62,19 @@ export function CodeInput({ disabled = false, onChange }: CodeInputProps) {
   }
 
   return (
-    <div aria-label="Шестизначный код" className="code-grid" role="group">
+    <div
+      aria-busy={disabled}
+      aria-describedby={descriptionId}
+      aria-label="Шестизначный код"
+      className="code-grid"
+      role="group"
+    >
       {Array.from({ length: codeLength }, (_, index) => (
         <input
+          aria-describedby={descriptionId}
+          aria-invalid={invalid}
           aria-label={`Цифра ${index + 1}`}
+          autoFocus={index === 0}
           autoComplete="off"
           className="code-slot"
           disabled={disabled}
