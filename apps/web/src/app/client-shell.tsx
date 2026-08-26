@@ -8,6 +8,7 @@ import type { SessionPrincipal } from '../a6/contracts';
 import { AdministrationPanel } from './administration-panel';
 import { ChatPanel } from './chat-panel';
 import { CodeInput } from './code-input';
+import { ProblemReportEntry } from './problem-report-entry';
 
 type SessionState = 'loading' | SessionPrincipal | null;
 type WorkspaceView = 'chats' | 'users';
@@ -198,6 +199,11 @@ function LoginPanel({
             {error ?? 'Сервис входа временно недоступен. Попробуйте ещё раз.'}
           </p>
         )}
+        <div className="login-help">
+          <ProblemReportEntry
+            context={sessionUnavailable ? { errorCode: 'SESSION_UNAVAILABLE' } : undefined}
+          />
+        </div>
       </section>
     </main>
   );
@@ -243,9 +249,12 @@ function Workspace({
             </button>
           )}
         </nav>
-        <button className="session-button" disabled={logoutBusy} onClick={() => void logout()}>
-          {logoutBusy ? 'Завершаем…' : 'Завершить сеанс'}
-        </button>
+        <div className="header-actions">
+          <ProblemReportEntry />
+          <button className="session-button" disabled={logoutBusy} onClick={() => void logout()}>
+            {logoutBusy ? 'Завершаем…' : 'Завершить сеанс'}
+          </button>
+        </div>
       </header>
       {view === 'users' && hasAdministrativeAccess ? (
         <AdministrationPanel onSessionInvalid={onLoggedOut} principal={principal} />
