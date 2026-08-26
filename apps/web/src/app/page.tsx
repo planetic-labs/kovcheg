@@ -1,12 +1,9 @@
 import { connection } from 'next/server';
 
-export default async function FoundationPage() {
+import { ClientShell } from './client-shell';
+
+export default async function HomePage() {
   await connection();
 
-  return (
-    <main>
-      <h1>Kovcheg</h1>
-      <p>Alpha-0 technical foundation</p>
-    </main>
-  );
+  return <ClientShell />;
 }

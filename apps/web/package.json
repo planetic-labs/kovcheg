@@ -7,7 +7,9 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev",
+    "smoke:bff": "node scripts/a6-bff-smoke.mjs",
     "start": "next start",
+    "synthetic:auth": "node scripts/synthetic-auth-upstream.mjs",
     "test": "vitest run",
     "typecheck": "next typegen && tsc --noEmit"
   },
@@ -16,10 +18,12 @@
     "@kovcheg/contracts": "workspace:*",
     "next": "16.3.2",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "socket.io-client": "4.8.3"
   },
   "devDependencies": {
     "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.4"
+    "@types/react-dom": "19.2.4",
+    "socket.io": "4.8.3"
   }
 }
