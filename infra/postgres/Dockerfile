@@ -1,4 +1,4 @@
-FROM postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3 AS runtime
+FROM postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0 AS runtime
 
 ARG BUILD_COMMIT_SHA=""
 
@@ -16,4 +16,7 @@ RUN chmod 0555 /opt/kovcheg/migrate.sh /opt/kovcheg/deploy-migrate.sh \
     /opt/kovcheg/restore-smoke.sh /opt/kovcheg/tests/verify.sh \
   && find /opt/kovcheg/migrations /opt/kovcheg/tests -type f -exec chmod 0444 {} + \
   && mkdir -p /workspace/infra/postgres \
-  && ln -s /opt/kovcheg/tests /workspace/infra/postgres/tests
+  && ln -s /opt/kovcheg/tests /workspace/infra/postgres/tests \
+  && rm -f /usr/local/bin/gosu
+
+USER 999:999

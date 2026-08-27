@@ -50,7 +50,7 @@ x-api-environment: &api-environment
 
 services:
   postgres:
-    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
     command: ['postgres', '-c', 'password_encryption=scram-sha-256']
     environment:
       POSTGRES_DB: kovcheg
@@ -78,7 +78,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   migrate:
-    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
     command: ['/workspace/infra/postgres/migrate.sh']
     depends_on:
       postgres:
@@ -98,7 +98,7 @@ services:
       - ./infra/postgres:/workspace/infra/postgres:ro
 
   database-test:
-    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
     command: ['/workspace/infra/postgres/tests/verify.sh']
     depends_on:
       postgres:
@@ -349,7 +349,7 @@ services:
     stop_grace_period: 10s
 
   edge:
-    image: traefik:v3.7.7@sha256:1cb3845d7a05e1473c9086351426597e911db49db382b6e4769f9b0744962ac8
+    image: traefik:v3.7.12@sha256:ef751c695afd26e2be41009047f651153dc1e61ace03e6d13f299d8c4be842b8
     command: ['--configFile=/etc/traefik/traefik.yaml']
     depends_on:
       api-1:
