@@ -96,6 +96,6 @@ test('PostgreSQL deployment image removes the unused vulnerable privilege helper
 test('container security scans exact saved images without Docker runtime volumes', async () => {
   const source = await readFile('verification/container-security.sh', 'utf8');
   assert.match(source, /docker image save --output/u);
-  assert.match(source, /trivy image \\\n+    --input/u);
-  assert.doesNotMatch(source, /trivy image \\\n+    --scanners/u);
+  assert.match(source, /trivy image \\\n+ {4}--input/u);
+  assert.doesNotMatch(source, /trivy image \\\n+ {4}--scanners/u);
 });
