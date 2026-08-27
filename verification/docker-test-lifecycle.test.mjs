@@ -53,6 +53,11 @@ test('deployment amd64 builds use Buildx and load exact local images', async () 
   assert.match(source, /docker buildx version/u);
 });
 
+test('web container build uses the supported webpack fallback under amd64 emulation', async () => {
+  const source = await readFile('apps/web/Dockerfile', 'utf8');
+  assert.match(source, /next build --webpack/u);
+});
+
 test('lifecycle helper defaults to 20 GiB and supports diagnostic image retention', async () => {
   const source = await readFile('infra/scripts/docker-test-lifecycle.sh', 'utf8');
   assert.match(source, /KOVCHEG_DOCKER_MIN_FREE_GIB:-20/u);

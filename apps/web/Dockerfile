@@ -19,7 +19,7 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-RUN pnpm --filter @kovcheg/web... build
+RUN pnpm --filter @kovcheg/web exec next build --webpack
 RUN find /workspace/apps/web/.next/standalone -type f \( -name '*.map' -o -name '*.ts' -o -name '*.md' \) -delete
 
 FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
