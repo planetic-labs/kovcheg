@@ -209,7 +209,6 @@ services:
       AUTH_OIDC_COOKIE_KEYS_JSON_FILE: /run/secrets/auth_oidc_cookie_keys
       AUTH_OIDC_ISSUER: https://auth.invalid
       AUTH_OIDC_JWKS_JSON_FILE: /run/secrets/auth_oidc_jwks
-      AUTH_PERSONAL_GATE_PEPPER_FILE: /run/secrets/auth_personal_gate_pepper
       AUTH_RATE_LIMIT_PEPPER_FILE: /run/secrets/auth_rate_limit_pepper
       AUTH_RUNTIME_ENABLED: 'true'
       AUTH_SESSION_PEPPER_FILE: /run/secrets/auth_session_pepper
@@ -255,7 +254,6 @@ services:
       - auth_oidc_clients
       - auth_oidc_cookie_keys
       - auth_oidc_jwks
-      - auth_personal_gate_pepper
       - auth_rate_limit_pepper
       - auth_session_pepper
       - postgres_auth_password
@@ -397,8 +395,6 @@ secrets:
     file: ${KOVCHEG_AUTH_OIDC_CLIENTS_FILE:?local auth OIDC clients file is required}
   auth_oidc_jwks:
     file: ${KOVCHEG_AUTH_OIDC_JWKS_FILE:?local auth OIDC JWKS file is required}
-  auth_personal_gate_pepper:
-    file: ${KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE:?local auth personal-gate pepper file is required}
   auth_rate_limit_pepper:
     file: ${KOVCHEG_AUTH_RATE_LIMIT_PEPPER_FILE:?local auth rate-limit pepper file is required}
   auth_session_pepper:
