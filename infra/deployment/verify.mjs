@@ -192,6 +192,20 @@ for (const requiredName of [
   if (!schemaNames.has(requiredName)) finding('env-schema-key-missing', requiredName);
 }
 
+if (
+  Object.hasOwn(authEnvironment, 'AUTH_PERSONAL_GATE_PEPPER_FILE') ||
+  services.auth?.secrets?.includes('auth_personal_gate_pepper') ||
+  compose.secrets?.auth_personal_gate_pepper !== undefined ||
+  schemaNames.has('KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE')
+) {
+  finding('retired-personal-gate-secret-present', {
+    authEnvironment: Object.hasOwn(authEnvironment, 'AUTH_PERSONAL_GATE_PEPPER_FILE'),
+    authSecretMount: services.auth?.secrets?.includes('auth_personal_gate_pepper') ?? false,
+    composeSecret: compose.secrets?.auth_personal_gate_pepper !== undefined,
+    environmentSchema: schemaNames.has('KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE'),
+  });
+}
+
 const forbiddenPatterns = [
   { label: 'absolute-workstation-path', pattern: /\/(?:Users|home)\//u },
   {
@@ -218,7 +232,6 @@ const composeEnvironment = {
   KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE: '/dev/null',
   KOVCHEG_AUTH_OIDC_ISSUER: 'https://auth-deployment.invalid',
   KOVCHEG_AUTH_OIDC_JWKS_FILE: '/dev/null',
-  KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE: '/dev/null',
   KOVCHEG_AUTH_RATE_LIMIT_PEPPER_FILE: '/dev/null',
   KOVCHEG_AUTH_SESSION_PEPPER_FILE: '/dev/null',
   KOVCHEG_AUTH_WEBAUTHN_ORIGINS_JSON: '["https://auth-deployment.invalid"]',
