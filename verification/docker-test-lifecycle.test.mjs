@@ -49,9 +49,12 @@ test('nested realtime restarts retain the lifecycle ownership override', async (
 
 test('deployment amd64 builds use Buildx and load exact local images', async () => {
   const source = await readFile('infra/deployment/smoke.sh', 'utf8');
-  const buildCommands = source.match(/docker buildx build --load --platform linux\/amd64/gu) ?? [];
-  assert.equal(buildCommands.length, 6);
+  const imageSetBuilds = source.match(/build_image "\$1"/gu) ?? [];
+  assert.equal(imageSetBuilds.length, 6);
   assert.match(source, /docker buildx version/u);
+  assert.match(source, /docker buildx build --load --platform "\$platform"/u);
+  assert.match(source, /build_image_set linux\/amd64/u);
+  assert.match(source, /"\$architecture" != 'amd64'/u);
 });
 
 test('web container cross-build compiles natively with x64 runtime dependencies', async () => {
