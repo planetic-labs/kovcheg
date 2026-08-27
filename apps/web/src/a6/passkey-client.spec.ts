@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   attemptConditionalPasskey,
+  cancelPasskeyCeremony,
   registerPasskey,
   type PasskeyBrowserAdapter,
 } from './passkey-client';
@@ -60,6 +61,12 @@ function adapter(overrides?: Partial<PasskeyBrowserAdapter>): PasskeyBrowserAdap
 }
 
 describe('A6 browser passkey client', () => {
+  it('cancels a pending conditional ceremony when the user chooses email fallback', () => {
+    const cancel = vi.fn();
+    cancelPasskeyCeremony(cancel);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it('runs one conditional options/credential/verify sequence and authenticates', async () => {
     const passkeys = adapter();
     const fetcher = vi

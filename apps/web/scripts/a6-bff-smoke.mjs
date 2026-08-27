@@ -76,7 +76,11 @@ async function challenge(cookieJar, email) {
     method: 'POST',
   });
   assert.equal(response.status, 202);
-  assert.deepEqual(await response.json(), { status: 'accepted' });
+  assert.deepEqual(await response.json(), {
+    email: email.trim(),
+    next: 'code',
+    status: 'accepted',
+  });
   assert.ok(cookieJar.has('kovcheg_login_challenge'));
 }
 
@@ -106,7 +110,7 @@ for (const requestTarget of [
 }
 
 const cookieJar = new Map();
-await challenge(cookieJar, 'administrator@example.invalid');
+await challenge(cookieJar, '  ADMINISTRATOR@example.invalid  ');
 const verification = await request(cookieJar, '/bff/auth/challenge/verify', {
   body: JSON.stringify({ code: '246810' }),
   headers: { 'content-type': 'application/json' },

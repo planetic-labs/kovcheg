@@ -39,7 +39,7 @@ describe('A6 passkey same-origin BFF', () => {
     const response = await registrationOptions(
       request('/bff/auth/passkeys/registration/options', {
         headers: {
-          cookie: 'kovcheg_gate=private-gate; kovcheg_session=synthetic-session; unrelated=value',
+          cookie: 'retired_entry=unrelated; kovcheg_session=synthetic-session; unrelated=value',
         },
         method: 'POST',
       }),
@@ -59,10 +59,10 @@ describe('A6 passkey same-origin BFF', () => {
     );
     const headers = upstream.mock.calls[0]?.[1]?.headers as Headers;
     expect(headers.get('cookie')).toBe('kovcheg_session=synthetic-session');
-    expect(headers.get('cookie')).not.toContain('kovcheg_gate');
+    expect(headers.get('cookie')).not.toContain('retired_entry');
   });
 
-  it('starts discoverable authentication without forwarding gate or session cookies', async () => {
+  it('starts discoverable authentication without forwarding any browser cookies', async () => {
     const upstream = vi.fn().mockResolvedValue(
       jsonResponse({
         ceremonyId,
@@ -74,7 +74,7 @@ describe('A6 passkey same-origin BFF', () => {
 
     const response = await authenticationOptions(
       request('/bff/auth/passkeys/authentication/options', {
-        headers: { cookie: 'kovcheg_gate=private-gate; kovcheg_session=synthetic-session' },
+        headers: { cookie: 'retired_entry=unrelated; kovcheg_session=synthetic-session' },
         method: 'POST',
       }),
     );
@@ -105,7 +105,7 @@ describe('A6 passkey same-origin BFF', () => {
       request('/bff/auth/passkeys/authentication/verify', {
         body: JSON.stringify({ ceremonyId, response: { id: 'synthetic-credential' } }),
         headers: {
-          cookie: 'kovcheg_gate=private-gate',
+          cookie: 'retired_entry=unrelated',
           'content-type': 'application/json',
         },
         method: 'POST',

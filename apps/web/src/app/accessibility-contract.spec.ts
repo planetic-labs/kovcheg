@@ -39,8 +39,10 @@ describe('A6 developer-owned accessibility baseline', () => {
       /Минимальный PWA-клиент|Войти по email|Введите код|Указать другой email|placeholder=/u,
     );
     expect(clientShell).toContain('className="visually-hidden" htmlFor="email"');
+    expect(clientShell).toContain('aria-label="Продолжить"');
     expect(clientShell).toContain('aria-label="Вернуться к вводу email"');
-    expect(clientShell).toContain('className="auth-back"');
+    expect(clientShell).toContain('className="auth-arrow auth-back"');
+    expect(clientShell).toContain('className="auth-email-display"');
     expect(clientShell).toContain('event.currentTarget.form?.requestSubmit()');
     expect(clientShell).toContain('aria-describedby="passkey-registration-status"');
     expect(clientShell.match(/id="passkey-registration-status"/gu)).toHaveLength(1);

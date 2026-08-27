@@ -3,12 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { POST as requestChallenge } from '../../app/bff/auth/challenge/route';
 import { POST as verifyChallenge } from '../../app/bff/auth/challenge/verify/route';
-import { GET as readGate, POST as activateGate } from '../../app/bff/auth/gate/route';
-import {
-  DELETE as adminDelete,
-  POST as createAccount,
-  PUT as adminPut,
-} from '../../app/bff/admin/accounts/[[...path]]/route';
+import { POST as createAccount } from '../../app/bff/admin/accounts/[[...path]]/route';
 import { GET as readChats } from '../../app/bff/chats/route';
 import { DELETE as logout } from '../../app/bff/session/route';
 
@@ -57,38 +52,63 @@ function principal(canManageAccounts: boolean) {
 describe('A6 same-origin auth BFF', () => {
   it('keeps the external challenge response neutral and the challenge ID HTTP-only', async () => {
     const upstream = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ challengeId, next: 'code', status: 'accepted' }), {
-        headers: { 'content-type': 'application/json' },
-        status: 202,
-      }),
+      new Response(
+        JSON.stringify({
+          challengeId,
+          email: 'member@example.invalid',
+          next: 'code',
+          status: 'accepted',
+        }),
+        {
+          headers: { 'content-type': 'application/json' },
+          status: 202,
+        },
+      ),
     );
     vi.stubGlobal('fetch', upstream);
 
     const response = await requestChallenge(
       request('/bff/auth/challenge', {
         body: JSON.stringify({ email: 'member@example.invalid' }),
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          cookie: 'kovcheg_session=unrelated-session; retired_entry=unrelated-value',
+          'content-type': 'application/json',
+        },
         method: 'POST',
       }),
     );
 
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({ next: 'code', status: 'accepted' });
+    expect(await response.json()).toEqual({
+      email: 'member@example.invalid',
+      next: 'code',
+      status: 'accepted',
+    });
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
     expect(upstream).toHaveBeenCalledWith(
       'http://auth:3002/session/challenges',
       expect.objectContaining({ body: JSON.stringify({ email: 'member@example.invalid' }) }),
     );
+    const upstreamHeaders = upstream.mock.calls[0]?.[1]?.headers as Headers;
+    expect(upstreamHeaders.has('cookie')).toBe(false);
   });
 
   it('marks the BFF challenge cookie Secure behind a trusted HTTPS edge', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ challengeId, next: 'code', status: 'accepted' }), {
-          headers: { 'content-type': 'application/json' },
-          status: 202,
-        }),
+        new Response(
+          JSON.stringify({
+            challengeId,
+            email: 'member@example.invalid',
+            next: 'code',
+            status: 'accepted',
+          }),
+          {
+            headers: { 'content-type': 'application/json' },
+            status: 202,
+          },
+        ),
       ),
     );
 
@@ -106,79 +126,44 @@ describe('A6 same-origin auth BFF', () => {
     expect(response.headers.get('set-cookie')).toContain('Secure');
   });
 
-  it('never creates a challenge cookie when a wrong email remains at email entry', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ next: 'email', status: 'accepted' }), {
+  it.each(['unknown', 'deactivated', 'throttled'])(
+    'keeps the %s outcome on the same neutral code transition',
+    async (outcome) => {
+      const email = `${outcome}@example.invalid`;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ challengeId, email, next: 'code', status: 'accepted' }), {
+            headers: { 'content-type': 'application/json' },
+            status: 202,
+          }),
+        ),
+      );
+      const response = await requestChallenge(
+        request('/bff/auth/challenge', {
+          body: JSON.stringify({ email }),
           headers: { 'content-type': 'application/json' },
-          status: 202,
-        }),
-      ),
-    );
-    const response = await requestChallenge(
-      request('/bff/auth/challenge', {
-        body: JSON.stringify({ email: 'wrong@example.invalid' }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }),
-    );
-    expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({ next: 'email', status: 'accepted' });
-    expect(response.headers.has('set-cookie')).toBe(false);
-  });
-
-  it('exchanges a body-only gate code for the strict upstream host cookie', async () => {
-    const upstream = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ status: 'required' }), {
-          headers: { 'content-type': 'application/json' },
-          status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ next: 'email', status: 'accepted' }), {
-          headers: {
-            'content-type': 'application/json',
-            'set-cookie':
-              '__Host-kovcheg_gate=synthetic-gate-token; Path=/; HttpOnly; Secure; SameSite=Strict',
-          },
-          status: 202,
+          method: 'POST',
         }),
       );
-    vi.stubGlobal('fetch', upstream);
-    await expect(
-      readGate(request('/bff/auth/gate')).then(async (response) => response.json()),
-    ).resolves.toEqual({
-      status: 'required',
-    });
-    const response = await activateGate(
-      request('/bff/auth/gate', {
-        body: JSON.stringify({
-          clientIdempotencyKey: 'synthetic-browser-0001',
-          code: '0123-4567',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }),
-    );
-    expect(response.status).toBe(202);
-    expect(response.headers.get('set-cookie')).toContain('__Host-kovcheg_gate=');
-    expect(response.headers.get('set-cookie')).toContain('SameSite=Strict');
-    expect(upstream.mock.calls[1]?.[0]).toBe('http://auth:3002/personal-gate/activate');
-    expect(upstream.mock.calls[1]?.[0]).not.toContain('0123-4567');
-  });
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({ email, next: 'code', status: 'accepted' });
+      expect(response.headers.get('set-cookie')).toContain('kovcheg_login_challenge=');
+    },
+  );
 
   it('verifies the six digits server-side and forwards only the A2 session cookie', async () => {
+    const headers = new Headers({ 'content-type': 'application/json' });
+    headers.append(
+      'set-cookie',
+      'kovcheg_session=synthetic-session; Path=/; HttpOnly; SameSite=Lax',
+    );
+    headers.append('set-cookie', 'upstream_debug=unrelated; Path=/');
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ sessionId, userId }), {
-          headers: {
-            'content-type': 'application/json',
-            'set-cookie': 'kovcheg_session=synthetic-session; Path=/; HttpOnly; SameSite=Lax',
-          },
+          headers,
           status: 200,
         }),
       ),
@@ -199,6 +184,43 @@ describe('A6 same-origin auth BFF', () => {
     expect(await response.json()).toEqual({ authenticated: true });
     expect(response.headers.get('set-cookie')).toContain('kovcheg_session=synthetic-session');
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
+    expect(response.headers.get('set-cookie')).not.toContain('upstream_debug');
+    const upstream = vi.mocked(fetch);
+    const upstreamHeaders = upstream.mock.calls[0]?.[1]?.headers as Headers;
+    expect(upstreamHeaders.has('cookie')).toBe(false);
+  });
+
+  it('keeps missing, invalid, and expired challenge states externally neutral', async () => {
+    const missing = await verifyChallenge(
+      request('/bff/auth/challenge/verify', {
+        body: JSON.stringify({ code: '123456' }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      }),
+    );
+    expect(missing.status).toBe(401);
+    await expect(missing.json()).resolves.toEqual({ code: 'a6.unauthenticated', status: 401 });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'auth.invalid-or-expired-challenge' }), {
+          status: 401,
+        }),
+      ),
+    );
+    const invalid = await verifyChallenge(
+      request('/bff/auth/challenge/verify', {
+        body: JSON.stringify({ code: '123456' }),
+        headers: {
+          cookie: `kovcheg_login_challenge=${challengeId}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      }),
+    );
+    expect(invalid.status).toBe(401);
+    await expect(invalid.json()).resolves.toEqual({ code: 'a6.unauthenticated', status: 401 });
   });
 
   it('logs out only through A2 current-session DELETE and clears its cookie', async () => {
@@ -302,71 +324,17 @@ describe('A6 administrative BFF gate', () => {
     expect(body).not.toContain('group');
   });
 
-  it('whitelists only UUID-scoped personal-gate administration for an administrator', async () => {
+  it('rejects the retired personal-gate administration path before upstream access', async () => {
     const accountId = '00000000-0000-4000-8000-000000000604';
-    const familyId = '00000000-0000-4000-8000-000000000605';
-    const upstream = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify(principal(true)), {
-          headers: { 'content-type': 'application/json' },
-          status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: '0123-4567', familyId }), {
-          headers: { 'content-type': 'application/json' },
-          status: 201,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify(principal(true)), {
-          headers: { 'content-type': 'application/json' },
-          status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: '89AB-CDEF', familyId }), {
-          headers: { 'content-type': 'application/json' },
-          status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify(principal(true)), {
-          headers: { 'content-type': 'application/json' },
-          status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ revokedGateSessionCount: 1 }), {
-          headers: { 'content-type': 'application/json' },
-          status: 200,
-        }),
-      );
+    const upstream = vi.fn();
     vi.stubGlobal('fetch', upstream);
 
-    await createAccount(
+    const response = await createAccount(
       request(`/bff/admin/accounts/${accountId}/personal-gate`, { method: 'POST' }),
       { params: Promise.resolve({ path: [accountId, 'personal-gate'] }) },
     );
-    await adminPut(request(`/bff/admin/accounts/${accountId}/personal-gate`, { method: 'PUT' }), {
-      params: Promise.resolve({ path: [accountId, 'personal-gate'] }),
-    });
-    await adminDelete(
-      request(`/bff/admin/accounts/${accountId}/personal-gate/${familyId}`, {
-        method: 'DELETE',
-      }),
-      { params: Promise.resolve({ path: [accountId, 'personal-gate', familyId] }) },
-    );
-    expect(
-      upstream.mock.calls
-        .filter((call) => String(call[0]).includes('personal-gate'))
-        .map((call) => call[0]),
-    ).toEqual([
-      `http://auth:3002/admin/accounts/${accountId}/personal-gate`,
-      `http://auth:3002/admin/accounts/${accountId}/personal-gate`,
-      `http://auth:3002/admin/accounts/${accountId}/personal-gate/${familyId}`,
-    ]);
+    expect(response.status).toBe(400);
+    expect(upstream).not.toHaveBeenCalled();
   });
 });
 

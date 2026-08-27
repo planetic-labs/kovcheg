@@ -2,6 +2,7 @@ import {
   browserSupportsWebAuthnAutofill,
   startAuthentication,
   startRegistration,
+  WebAuthnAbortService,
 } from '@simplewebauthn/browser';
 import type {
   AuthenticationResponseJSON,
@@ -20,6 +21,12 @@ export interface PasskeyBrowserAdapter {
   authenticate(options: PublicKeyCredentialRequestOptionsJSON): Promise<AuthenticationResponseJSON>;
   register(options: PublicKeyCredentialCreationOptionsJSON): Promise<RegistrationResponseJSON>;
   supportsConditionalMediation(): Promise<boolean>;
+}
+
+export function cancelPasskeyCeremony(
+  cancel: () => void = () => WebAuthnAbortService.cancelCeremony(),
+): void {
+  cancel();
 }
 
 type PasskeyFetch = (input: string, init: RequestInit) => Promise<Response>;
