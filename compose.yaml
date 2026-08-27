@@ -200,12 +200,12 @@ services:
       args:
         BUILD_COMMIT_SHA: ${BUILD_COMMIT_SHA:-}
     environment:
-      AUTH_ADMIN_BOOTSTRAP_JSON: '{"bootstrapId":"local-bootstrap-administrator","displayName":"Synthetic Local Administrator","email":"synthetic-local-administrator@auth.invalid","userId":"00000000-0000-4000-8000-000000009801"}'
+      AUTH_ADMIN_BOOTSTRAP_JSON_FILE: /run/secrets/auth_admin_bootstrap
       AUTH_CHALLENGE_PEPPER_FILE: /run/secrets/auth_challenge_pepper
       AUTH_EMAIL_DELIVERY_ADAPTER: resend
       AUTH_EMAIL_FROM_ADDRESS: sender@auth.invalid
       AUTH_EMAIL_FROM_NAME: Synthetic Local Sender
-      AUTH_OIDC_CLIENTS_JSON: '[{"clientId":"kovcheg-local","redirectUris":["https://client.invalid/auth/callback"],"scopes":["openid"],"tokenEndpointAuthMethod":"none"}]'
+      AUTH_OIDC_CLIENTS_JSON_FILE: /run/secrets/auth_oidc_clients
       AUTH_OIDC_COOKIE_KEYS_JSON_FILE: /run/secrets/auth_oidc_cookie_keys
       AUTH_OIDC_ISSUER: https://auth.invalid
       AUTH_OIDC_JWKS_JSON_FILE: /run/secrets/auth_oidc_jwks
@@ -213,8 +213,9 @@ services:
       AUTH_RATE_LIMIT_PEPPER_FILE: /run/secrets/auth_rate_limit_pepper
       AUTH_RUNTIME_ENABLED: 'true'
       AUTH_SESSION_PEPPER_FILE: /run/secrets/auth_session_pepper
-      AUTH_WEBAUTHN_ORIGINS_JSON: '["https://auth.m6z.ru"]'
-      AUTH_WEBAUTHN_RP_ID: auth.m6z.ru
+      AUTH_WEBAUTHN_ORIGINS_JSON: '["https://auth-local.invalid"]'
+      AUTH_WEBAUTHN_PRODUCTION_RP_ID: auth-local.invalid
+      AUTH_WEBAUTHN_RP_ID: auth-local.invalid
       AUTH_WEBAUTHN_RP_NAME: Kovcheg
       BUILD_IMAGE_DIGEST: ${BUILD_IMAGE_DIGEST:-}
       HOST: 0.0.0.0
@@ -249,7 +250,9 @@ services:
     networks:
       - local
     secrets:
+      - auth_admin_bootstrap
       - auth_challenge_pepper
+      - auth_oidc_clients
       - auth_oidc_cookie_keys
       - auth_oidc_jwks
       - auth_personal_gate_pepper
@@ -384,10 +387,14 @@ networks:
     internal: true
 
 secrets:
+  auth_admin_bootstrap:
+    file: ${KOVCHEG_AUTH_ADMIN_BOOTSTRAP_FILE:?local auth administrator bootstrap file is required}
   auth_challenge_pepper:
     file: ${KOVCHEG_AUTH_CHALLENGE_PEPPER_FILE:?local auth challenge pepper file is required}
   auth_oidc_cookie_keys:
     file: ${KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE:?local auth OIDC cookie keys file is required}
+  auth_oidc_clients:
+    file: ${KOVCHEG_AUTH_OIDC_CLIENTS_FILE:?local auth OIDC clients file is required}
   auth_oidc_jwks:
     file: ${KOVCHEG_AUTH_OIDC_JWKS_FILE:?local auth OIDC JWKS file is required}
   auth_personal_gate_pepper:

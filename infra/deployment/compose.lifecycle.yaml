@@ -1,0 +1,51 @@
+x-test-labels: &test-labels
+  io.kovcheg.test.project: ${KOVCHEG_TEST_PROJECT:?test project label is required}
+  io.kovcheg.test.purpose: ${KOVCHEG_TEST_PURPOSE:?test purpose label is required}
+  io.kovcheg.test.run-id: ${KOVCHEG_TEST_RUN_ID:?test run ID label is required}
+  io.kovcheg.test.source-sha: ${KOVCHEG_TEST_SOURCE_SHA:?test source SHA label is required}
+
+services:
+  postgres:
+    labels: *test-labels
+  redis:
+    labels: *test-labels
+  migrate:
+    labels: *test-labels
+  api-1:
+    labels: *test-labels
+  api-2:
+    labels: *test-labels
+  auth:
+    labels: *test-labels
+  worker:
+    labels: *test-labels
+  web:
+    labels: *test-labels
+  edge:
+    labels: *test-labels
+  backup:
+    labels: *test-labels
+  postgres-test:
+    labels: *test-labels
+  migrate-test:
+    labels: *test-labels
+  database-test:
+    labels: *test-labels
+  restore-smoke:
+    labels: *test-labels
+
+networks:
+  host-loopback:
+    labels: *test-labels
+  service-internal:
+    labels: *test-labels
+  verification-internal:
+    labels: *test-labels
+
+volumes:
+  postgres-backup:
+    labels: *test-labels
+  postgres-data:
+    labels: *test-labels
+  postgres-test-data:
+    labels: *test-labels

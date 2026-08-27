@@ -6,10 +6,17 @@ import { io } from 'socket.io-client';
 
 const baseUrl = process.argv[2];
 const sessionToken = process.env.KOVCHEG_SMOKE_SESSION_TOKEN;
+const deactivatedSessionToken = process.env.KOVCHEG_SMOKE_DEACTIVATED_SESSION_TOKEN;
 assert.ok(baseUrl, 'A loopback base URL is required');
 assert.match(sessionToken ?? '', /^[A-Za-z0-9_-]{43}$/u, 'A synthetic session token is required');
+assert.match(
+  deactivatedSessionToken ?? '',
+  /^[A-Za-z0-9_-]{43}$/u,
+  'A synthetic deactivated session token is required',
+);
 
 const cookie = `__Host-kovcheg_session=${sessionToken}`;
+const deactivatedCookie = `__Host-kovcheg_session=${deactivatedSessionToken}`;
 
 async function request(path, init = {}) {
   return fetch(`${baseUrl}${path}`, {
@@ -33,6 +40,57 @@ function onceWithTimeout(socket, event, timeoutMs = 5_000) {
     });
   });
 }
+
+async function assertSocketRejected(cookieHeader, reason) {
+  const headers = {
+    'x-correlation-id': `session-contract-smoke-${reason}`,
+    ...(cookieHeader === null ? {} : { cookie: cookieHeader }),
+  };
+  const candidate = io(baseUrl, {
+    autoConnect: false,
+    extraHeaders: headers,
+    path: '/socket.io',
+    reconnection: false,
+    transports: ['websocket'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`Timed out waiting for rejected Socket.IO ${reason}`)),
+        5_000,
+      );
+      const rejected = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      candidate.once('connect_error', rejected);
+      candidate.once('disconnect', rejected);
+      candidate.once('realtime.error', rejected);
+      candidate.once('realtime.ready', () => {
+        clearTimeout(timeout);
+        reject(new Error(`Rejected Socket.IO ${reason} received realtime.ready`));
+      });
+      candidate.connect();
+    });
+  } finally {
+    candidate.disconnect();
+  }
+}
+
+for (const protectedPath of ['/bff/chats', '/api/chats']) {
+  assert.equal(
+    (await request(protectedPath)).status,
+    401,
+    `Missing session must not access ${protectedPath}`,
+  );
+  assert.equal(
+    (await request(protectedPath, { headers: { cookie: deactivatedCookie } })).status,
+    401,
+    `Deactivated session must not access ${protectedPath}`,
+  );
+}
+await assertSocketRejected(null, 'missing-session');
+await assertSocketRejected(deactivatedCookie, 'deactivated-session');
 
 const hiddenInternalSession = await request('/auth/internal/session', {
   headers: { cookie },
@@ -131,4 +189,6 @@ try {
   socket.disconnect();
 }
 
-process.stdout.write('A2 session to REST and Socket.IO contract smoke passed.\n');
+process.stdout.write(
+  'A2 session fail-closed and positive REST, Web BFF, and Socket.IO contract smoke passed.\n',
+);

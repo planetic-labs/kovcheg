@@ -4,6 +4,7 @@
   "moduleGraph": {
     "cycles": []
   },
+  "deploymentImages": ["kovcheg-edge", "kovcheg-postgres"],
   "productionImages": ["kovcheg-api", "kovcheg-auth", "kovcheg-web", "kovcheg-worker"],
   "informational": {
     "complexity": {

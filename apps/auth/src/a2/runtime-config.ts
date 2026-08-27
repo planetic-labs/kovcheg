@@ -45,9 +45,11 @@ export type AuthRuntimeConfig = DisabledAuthRuntimeConfig | EnabledAuthRuntimeCo
 
 export interface AuthRuntimeEnvironmentSource {
   readonly AUTH_ADMIN_BOOTSTRAP_JSON?: string | undefined;
+  readonly AUTH_ADMIN_BOOTSTRAP_JSON_FILE?: string | undefined;
   readonly AUTH_CHALLENGE_PEPPER?: string | undefined;
   readonly AUTH_CHALLENGE_PEPPER_FILE?: string | undefined;
   readonly AUTH_OIDC_CLIENTS_JSON?: string | undefined;
+  readonly AUTH_OIDC_CLIENTS_JSON_FILE?: string | undefined;
   readonly AUTH_OIDC_COOKIE_KEYS_JSON?: string | undefined;
   readonly AUTH_OIDC_COOKIE_KEYS_JSON_FILE?: string | undefined;
   readonly AUTH_OIDC_ISSUER?: string | undefined;
@@ -62,6 +64,7 @@ export interface AuthRuntimeEnvironmentSource {
   readonly AUTH_SESSION_PEPPER?: string | undefined;
   readonly AUTH_SESSION_PEPPER_FILE?: string | undefined;
   readonly AUTH_WEBAUTHN_ORIGINS_JSON?: string | undefined;
+  readonly AUTH_WEBAUTHN_PRODUCTION_RP_ID?: string | undefined;
   readonly AUTH_WEBAUTHN_RP_ID?: string | undefined;
   readonly AUTH_WEBAUTHN_RP_NAME?: string | undefined;
 }
@@ -229,9 +232,11 @@ function validateRedisUrl(value: string): string {
   return value;
 }
 
-const productionPasskeyRpId = 'auth.m6z.ru';
-
-function passkeyRpId(environment: AuthRuntimeEnvironment, value: string): string {
+function passkeyRpId(
+  environment: AuthRuntimeEnvironment,
+  value: string,
+  productionRpId: string | undefined,
+): string {
   const normalized = value.trim().toLowerCase();
   if (
     normalized.length > 253 ||
@@ -241,14 +246,12 @@ function passkeyRpId(environment: AuthRuntimeEnvironment, value: string): string
   ) {
     throw new AuthError('auth.invalid-input', 'AUTH_WEBAUTHN_RP_ID must be a DNS name');
   }
-  if (environment === 'production' && normalized !== productionPasskeyRpId) {
-    throw new AuthError('auth.invalid-input', 'Production WebAuthn RP ID is not permitted');
-  }
-  if (
-    environment !== 'production' &&
-    normalized !== productionPasskeyRpId &&
-    !normalized.endsWith('.invalid')
-  ) {
+  if (environment === 'production') {
+    const allowed = productionRpId?.trim().toLowerCase();
+    if (allowed === undefined || allowed.length === 0 || normalized !== allowed) {
+      throw new AuthError('auth.invalid-input', 'Production WebAuthn RP ID is not permitted');
+    }
+  } else if (!normalized.endsWith('.invalid')) {
     throw new AuthError('auth.invalid-input', 'Non-production WebAuthn RP ID must be synthetic');
   }
   return normalized;
@@ -312,7 +315,10 @@ export function loadAuthRuntimeConfig(
     return Object.freeze({ enabled: false });
   }
   const clients = parseClients(
-    parseJson(required(source, 'AUTH_OIDC_CLIENTS_JSON'), 'AUTH_OIDC_CLIENTS_JSON'),
+    parseJson(
+      requiredSecret(source, 'AUTH_OIDC_CLIENTS_JSON', 'AUTH_OIDC_CLIENTS_JSON_FILE'),
+      'AUTH_OIDC_CLIENTS_JSON',
+    ),
   );
   const cookieKeys = stringArray(
     parseJson(
@@ -327,7 +333,11 @@ export function loadAuthRuntimeConfig(
       'AUTH_OIDC_JWKS_JSON',
     ),
   );
-  const rpId = passkeyRpId(environment, required(source, 'AUTH_WEBAUTHN_RP_ID'));
+  const rpId = passkeyRpId(
+    environment,
+    required(source, 'AUTH_WEBAUTHN_RP_ID'),
+    source.AUTH_WEBAUTHN_PRODUCTION_RP_ID,
+  );
   return Object.freeze({
     authSecrets: Object.freeze({
       challengePepper: requiredSecret(
@@ -347,7 +357,12 @@ export function loadAuthRuntimeConfig(
       ),
       sessionPepper: requiredSecret(source, 'AUTH_SESSION_PEPPER', 'AUTH_SESSION_PEPPER_FILE'),
     }),
-    bootstrapAdministrator: parseBootstrap(source.AUTH_ADMIN_BOOTSTRAP_JSON),
+    bootstrapAdministrator: parseBootstrap(
+      source.AUTH_ADMIN_BOOTSTRAP_JSON === undefined &&
+        source.AUTH_ADMIN_BOOTSTRAP_JSON_FILE === undefined
+        ? undefined
+        : requiredSecret(source, 'AUTH_ADMIN_BOOTSTRAP_JSON', 'AUTH_ADMIN_BOOTSTRAP_JSON_FILE'),
+    ),
     enabled: true,
     environment,
     oidc: Object.freeze({

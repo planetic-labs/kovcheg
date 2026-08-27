@@ -53,7 +53,7 @@ function countFindings(report) {
 
 const expectedReports = ['filesystem.json'];
 const images = [];
-for (const application of ['api', 'auth', 'web', 'worker']) {
+for (const application of ['api', 'auth', 'edge', 'postgres', 'web', 'worker']) {
   const vulnerabilityFile = `${application}-image.json`;
   const blockingFile = `${application}-fixed-high-critical.json`;
   const sbomFile = `${application}-sbom.cdx.json`;

@@ -2,17 +2,26 @@
 
 set -eu
 
+. infra/scripts/docker-test-lifecycle.sh
+
 mkdir -p "$PWD/.local"
 test_root=$(mktemp -d "$PWD/.local/database-test.XXXXXX")
 secret_root="$test_root/secrets"
 base_project="kovcheg-db-$$"
+
+docker_test_begin database-test "$base_project"
+docker_test_configure_compose_images "kovcheg-test-database-$KOVCHEG_TEST_RUN_ID"
+docker_storage_preflight
 
 mkdir -p "$secret_root"
 export KOVCHEG_LOCAL_SECRET_DIR="$secret_root"
 export COMPOSE_PARALLEL_LIMIT=1
 
 compose() {
-  sh infra/scripts/compose.sh "$@"
+  sh infra/scripts/compose.sh \
+    --file compose.yaml \
+    --file infra/testing/compose.lifecycle.yaml \
+    "$@"
 }
 
 cleanup_project() {
@@ -21,6 +30,7 @@ cleanup_project() {
 
 cleanup() {
   cleanup_status=$?
+  lifecycle_status=0
   if [ "$cleanup_status" -ne 0 ]; then
     for failed_project in "${base_project}-clean" "${base_project}-upgrade"; do
       COMPOSE_PROJECT_NAME="$failed_project" compose ps --all || true
@@ -29,8 +39,14 @@ cleanup() {
   fi
   cleanup_project "${base_project}-clean"
   cleanup_project "${base_project}-upgrade"
+  docker_test_finish || lifecycle_status=$?
   find "$test_root" -type f -delete
   find "$test_root" -depth -type d -empty -delete
+  docker_test_remove_state
+  if [ "$cleanup_status" -ne 0 ]; then
+    return "$cleanup_status"
+  fi
+  return "$lifecycle_status"
 }
 
 trap cleanup EXIT INT TERM

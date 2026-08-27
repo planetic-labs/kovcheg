@@ -1178,7 +1178,30 @@ async function main(): Promise<void> {
         administratorGate.code,
         `redis-failure-${suffix}`,
       );
+      const preparedRedisFailureChallenge = await requestChallenge(
+        baseUrl,
+        administratorEmail,
+        'redis-failure-prepared',
+        redisFailureGateCookie,
+      );
+      const preparedRedisFailureBody = await readJson(preparedRedisFailureChallenge);
+      const preparedRedisFailureMessage = delivery.messages.at(-1);
+      assert(
+        preparedRedisFailureChallenge.status === 202 &&
+          typeof preparedRedisFailureBody.challengeId === 'string' &&
+          preparedRedisFailureMessage !== undefined,
+        'The Redis failure verification fixture must prepare one valid challenge',
+      );
       await redisClient.close?.();
+      const redisGateFailure = await fetch(`${baseUrl}/personal-gate/activate`, {
+        body: JSON.stringify({
+          clientIdempotencyKey: `integration-browser-redis-failure-closed-${suffix}`,
+          code: administratorGate.code,
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      assert(redisGateFailure.status === 503, 'Redis failure must fail gate activation closed');
       const redisFailure = await requestChallenge(
         baseUrl,
         administratorEmail,
@@ -1186,6 +1209,18 @@ async function main(): Promise<void> {
         redisFailureGateCookie,
       );
       assert(redisFailure.status === 503, 'Redis failure must fail new authentication closed');
+      const redisVerificationFailure = await fetch(
+        `${baseUrl}/session/challenges/${String(preparedRedisFailureBody.challengeId)}/verify`,
+        {
+          body: JSON.stringify({ code: preparedRedisFailureMessage.code }),
+          headers: { cookie: redisFailureGateCookie, 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert(
+        redisVerificationFailure.status === 503,
+        'Redis failure must fail OTP verification closed',
+      );
       const redisPasskeyFailure = await fetch(`${baseUrl}/passkeys/authentication/options`, {
         method: 'POST',
       });

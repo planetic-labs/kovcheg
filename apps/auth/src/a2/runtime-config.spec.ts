@@ -72,7 +72,7 @@ describe('A2 runtime configuration', () => {
 
   it('fails closed when enabled configuration is incomplete or Redis is not Redis', () => {
     expect(() => loadAuthRuntimeConfig('production', { AUTH_RUNTIME_ENABLED: 'true' })).toThrow(
-      'AUTH_OIDC_CLIENTS_JSON is required',
+      'AUTH_OIDC_CLIENTS_JSON or AUTH_OIDC_CLIENTS_JSON_FILE is required',
     );
     expect(() =>
       loadAuthRuntimeConfig('test', {
@@ -108,13 +108,17 @@ describe('A2 runtime configuration', () => {
     const directory = mkdtempSync(join(tmpdir(), 'kovcheg-auth-config-'));
     try {
       const paths = {
+        bootstrap: join(directory, 'bootstrap'),
         challenge: join(directory, 'challenge'),
+        clients: join(directory, 'clients'),
         cookies: join(directory, 'cookies'),
         jwks: join(directory, 'jwks'),
         gate: join(directory, 'gate'),
         rate: join(directory, 'rate'),
         session: join(directory, 'session'),
       };
+      writeFileSync(paths.bootstrap, enabledSource().AUTH_ADMIN_BOOTSTRAP_JSON);
+      writeFileSync(paths.clients, enabledSource().AUTH_OIDC_CLIENTS_JSON);
       writeFileSync(paths.challenge, 'c'.repeat(64));
       writeFileSync(paths.gate, 'g'.repeat(64));
       writeFileSync(paths.cookies, JSON.stringify(['k'.repeat(64), 'l'.repeat(64)]));
@@ -129,12 +133,16 @@ describe('A2 runtime configuration', () => {
 
       const config = loadAuthRuntimeConfig('test', {
         ...enabledSource(),
+        AUTH_ADMIN_BOOTSTRAP_JSON: undefined,
+        AUTH_ADMIN_BOOTSTRAP_JSON_FILE: paths.bootstrap,
         AUTH_CHALLENGE_PEPPER: undefined,
         AUTH_CHALLENGE_PEPPER_FILE: paths.challenge,
         AUTH_OIDC_COOKIE_KEYS_JSON: undefined,
         AUTH_OIDC_COOKIE_KEYS_JSON_FILE: paths.cookies,
         AUTH_OIDC_JWKS_JSON: undefined,
         AUTH_OIDC_JWKS_JSON_FILE: paths.jwks,
+        AUTH_OIDC_CLIENTS_JSON: undefined,
+        AUTH_OIDC_CLIENTS_JSON_FILE: paths.clients,
         AUTH_PERSONAL_GATE_PEPPER: undefined,
         AUTH_PERSONAL_GATE_PEPPER_FILE: paths.gate,
         AUTH_RATE_LIMIT_PEPPER: undefined,
@@ -150,10 +158,50 @@ describe('A2 runtime configuration', () => {
           sessionPepper: 's'.repeat(64),
         },
         enabled: true,
+        bootstrapAdministrator: {
+          email: 'synthetic-bootstrap@auth.invalid',
+        },
+        oidc: {
+          clients: [{ clientId: 'synthetic-client' }],
+        },
       });
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
+  });
+
+  it('requires exact file-or-inline exclusivity for structured deployment inputs', () => {
+    expect(() =>
+      loadAuthRuntimeConfig('test', {
+        ...enabledSource(),
+        AUTH_OIDC_CLIENTS_JSON_FILE: '/synthetic/not-read',
+      }),
+    ).toThrow('AUTH_OIDC_CLIENTS_JSON and AUTH_OIDC_CLIENTS_JSON_FILE are mutually exclusive');
+    expect(() =>
+      loadAuthRuntimeConfig('test', {
+        ...enabledSource(),
+        AUTH_ADMIN_BOOTSTRAP_JSON_FILE: '/synthetic/not-read',
+      }),
+    ).toThrow(
+      'AUTH_ADMIN_BOOTSTRAP_JSON and AUTH_ADMIN_BOOTSTRAP_JSON_FILE are mutually exclusive',
+    );
+  });
+
+  it('binds a production RP to the explicit deployment allowlist', () => {
+    expect(() =>
+      loadAuthRuntimeConfig('production', {
+        ...enabledSource(),
+        AUTH_WEBAUTHN_ORIGINS_JSON: JSON.stringify(['https://auth-config.invalid']),
+        AUTH_WEBAUTHN_PRODUCTION_RP_ID: 'different.invalid',
+      }),
+    ).toThrow('Production WebAuthn RP ID is not permitted');
+    expect(
+      loadAuthRuntimeConfig('production', {
+        ...enabledSource(),
+        AUTH_WEBAUTHN_ORIGINS_JSON: JSON.stringify(['https://auth-config.invalid']),
+        AUTH_WEBAUTHN_PRODUCTION_RP_ID: 'auth-config.invalid',
+      }),
+    ).toMatchObject({ enabled: true, webauthn: { rpId: 'auth-config.invalid' } });
   });
 });
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';

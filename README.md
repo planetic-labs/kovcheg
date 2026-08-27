@@ -2,7 +2,7 @@
 
 Kovcheg is a greenfield web/PWA messenger platform. This repository contains only public application code and the technical files required to build and verify it.
 
-The Alpha-0 foundation contains the monorepo, local-only container topology, versioned technical contracts, guarded synthetic identity fixtures, typed non-secret configuration, health/readiness endpoints, and an OpenAPI surface. The A3 data layer adds reproducible PostgreSQL migrations, partitioned message storage, database roles, transactional outbox, append-only audit primitives, and durable auth persistence. A2 provides email-code/OIDC application sessions and protected administration. A4 provides the message API, and A5 adds PostgreSQL-outbox publication, separate application and Socket.IO Redis Streams, realtime relay, and two API instances behind local Traefik. Production-shaped REST and Socket.IO resolve their principal only through the A2 application session; synthetic identity remains test-only. The repository adds no functional PWA interface, Web Push, internet deployment, AI integration, or private product material.
+The Alpha-0 foundation contains the monorepo, local-only container topology, versioned technical contracts, guarded synthetic identity fixtures, typed non-secret configuration, health/readiness endpoints, and an OpenAPI surface. The A3 data layer adds reproducible PostgreSQL migrations, partitioned message storage, database roles, transactional outbox, append-only audit primitives, and durable auth persistence. A2 provides email-code/OIDC application sessions and protected administration. A4 provides the message API, and A5 adds PostgreSQL-outbox publication, separate application and Socket.IO Redis Streams, realtime relay, and two API instances behind local Traefik. Production-shaped REST and Socket.IO resolve their principal only through the A2 application session; synthetic identity remains test-only. A Docker-only application deployment candidate is defined without a registry, image publication, external route, deploy, or runtime claim. The repository adds no Web Push, internet deployment, AI integration, or private product material.
 
 ## Toolchain
 
@@ -23,6 +23,7 @@ pnpm build
 pnpm database:test
 pnpm realtime:smoke
 pnpm docker:smoke
+pnpm docker:resources
 ```
 
 ## Repository structure
@@ -37,6 +38,7 @@ packages/
   contracts/ Shared public TypeScript contracts
   config/    Shared non-secret configuration primitives
 infra/
+  deployment/ Docker-only application candidate and machine-readable handoff inputs
   postgres/  Custom SQL migrations, role bootstrap, and database tests
   scripts/   Local lifecycle and verification scripts
 ```
@@ -63,7 +65,9 @@ Migration `0009_persona_authorization.sql` adds a fail-closed internal authoriza
 
 Migration `0010_persona_message_audit.sql` separates the public message sender from the protected audit actor. Ordinary messages use the personal account for both roles. An act-as message rechecks the exact session, operator, system persona, and active grant before persisting the persona as sender and the personal operator as audit actor in the same atomic database entrypoint. REST, realtime, and outbox contracts expose only `senderAccountId`; the operator remains available only to protected audit readers.
 
-Migration `0014_auth_personal_entry_gate.sql` adds a persistent, UUID-bound personal entry gate in front of email-code authentication. The database stores only HMAC verifiers, supports separate revocable gate sessions per browser, binds every issued email challenge to its gate session, and provides actor-verified issue, reissue, revoke, resume, and security-reset operations. The runtime exchanges a Crockford Base32 code from a URL fragment or manual field for a strict host-only cookie, applies Redis-backed source protection, keeps wrong-email responses neutral, and extends the seven-day gate only after successful OTP authentication. A gate never creates an application session by itself. Passkey support remains the next mandatory authentication slice and is not included here.
+Migration `0014_auth_personal_entry_gate.sql` adds a persistent, UUID-bound personal entry gate in front of email-code authentication. The database stores only HMAC verifiers, supports separate revocable gate sessions per browser, binds every issued email challenge to its gate session, and provides actor-verified issue, reissue, revoke, resume, and security-reset operations. The runtime exchanges a Crockford Base32 code from a URL fragment or manual field for a strict host-only cookie, applies Redis-backed source protection, keeps wrong-email responses neutral, and extends the seven-day gate only after successful OTP authentication. A gate never creates an application session by itself.
+
+Migration `0015_auth_passkey.sql` adds person-only passkey credentials, user-verification requirements, bounded challenge state, sign-counter evidence, per-credential revocation, account-deactivation invalidation, and protected audit. The runtime permits registration only from a valid application session and creates a new application session only after a verified registered credential. Passkey cache and rate-limit dependencies fail closed.
 
 PostgreSQL bootstrap creates separate `migration`, general `runtime`, `auth runtime`, and `audit` group roles plus one local login for each. Host and local authentication use SCRAM. The Compose wrapper generates random passwords as ignored local files and never writes credentials to the repository. Apply migrations explicitly with:
 
@@ -99,7 +103,7 @@ Socket.IO uses its own `kovcheg:socket.io:v1` Redis Stream, distinct from the ap
 
 ## Local container topology
 
-`compose.yaml` starts local Traefik `edge`, `web`, two stateless API instances, `auth`, `worker`, PostgreSQL, and Redis on an isolated Docker service network. The edge also joins a dedicated host-loopback bridge and provides one same-origin entry at `127.0.0.1:3000`; every application and data-service port remains internal. Traefik uses an HTTP-only local affinity cookie for Socket.IO polling and removes an unhealthy API from rotation. Nothing creates external DNS, ingress, a tunnel, a preview, TLS, or deployment configuration.
+`compose.yaml` starts local Traefik `edge`, `web`, two stateless API instances, `auth`, `worker`, PostgreSQL, and Redis on an isolated Docker service network. The edge also joins a dedicated host-loopback bridge and provides one same-origin entry at `127.0.0.1:3000`; every application and data-service port remains internal. Traefik uses an HTTP-only local affinity cookie for Socket.IO polling and removes an unhealthy API from rotation. Nothing creates external DNS, ingress, a tunnel, a preview, or TLS. The separate [`infra/deployment`](infra/deployment/README.md) candidate remains image-only, loopback-only, and unexecuted outside local verification.
 
 - Web health: `http://127.0.0.1:3000/health/ready`
 - API health: `http://127.0.0.1:3000/api/health/ready`
@@ -110,6 +114,10 @@ Socket.IO uses its own `kovcheg:socket.io:v1` Redis Stream, distinct from the ap
 Swagger UI is available only in a non-production application process; production images retain OpenAPI JSON but do not publish the interactive UI.
 
 `pnpm docker:up` applies migrations, registers the synthetic local OIDC client through the migration login, and starts the eight-container local contour. `pnpm docker:smoke` performs the same setup in a dedicated Compose project, builds the four application images, verifies all eight default containers and host-side same-origin endpoints, checks the exact port and network sets, validates health responses against OpenAPI, and proves a real synthetic A2 session across REST, Socket.IO, and logout. The migration and database-test containers are opt-in tools under the `data` profile and never publish a port. Runtime images contain production dependencies and the files required by their application, not the monorepo build workspace.
+
+`pnpm deployment:verify` statically validates the image-only deployment contract, env schema, migration ordering, loopback/network isolation, volume classes, and resource ceilings. `pnpm deployment:smoke` builds all six repository-owned images for `linux/amd64`, runs the exact candidate in an isolated Compose project, proves fail-closed and positive session contracts, reads back image architecture and resource limits, and verifies cleanup. Neither command publishes an image or creates an external route.
+
+Every disposable Docker build uses a unique current-run tag plus project, purpose, run ID, and full source-SHA labels. Before a heavy build, the scripts measure Docker-daemon storage and require 20 GiB free by default; `KOVCHEG_DOCKER_MIN_FREE_GIB` may set another positive-integer threshold. Cleanup removes only exact current-run containers, networks, disposable volumes, and tagged images. `KOVCHEG_KEEP_TEST_IMAGES=1` is an explicit diagnostic exception. `pnpm docker:resources` is read-only and reports labelled project resources separately from legacy-name matches whose ownership is undetermined; it never removes anything.
 
 Official base-image tags are pinned to verified multi-architecture digests. The smoke build records the tested Git commit in image labels and health metadata. The database records checksummed migration versions itself. Application health keeps migration version `null` until a later stage connects runtime services to PostgreSQL; it does not invent a value before that integration exists.
 
