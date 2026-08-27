@@ -22,6 +22,10 @@ fi
 project="kovcheg-deployment-smoke-$$"
 docker_test_begin deployment-smoke "$project"
 docker_storage_preflight
+if ! docker buildx version >/dev/null 2>&1; then
+  echo 'Deployment smoke requires the official Docker Buildx plugin for linux/amd64 images.' >&2
+  exit 1
+fi
 image_prefix="kovcheg-test-deployment-$KOVCHEG_TEST_RUN_ID"
 export KOVCHEG_LOCAL_SECRET_DIR="$PWD/.local/$project-secrets"
 export KOVCHEG_LOOPBACK_PORT=$((32000 + ($$ % 1000)))
@@ -78,37 +82,37 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file apps/api/Dockerfile --tag "$KOVCHEG_API_IMAGE" .
-DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file apps/auth/Dockerfile --tag "$KOVCHEG_AUTH_IMAGE" .
-DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file apps/web/Dockerfile --tag "$KOVCHEG_WEB_IMAGE" .
-DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file apps/worker/Dockerfile --tag "$KOVCHEG_WORKER_IMAGE" .
-DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file infra/edge/Dockerfile --tag "$KOVCHEG_EDGE_IMAGE" infra/edge
-DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
