@@ -30,6 +30,7 @@ cleanup_project() {
 
 cleanup() {
   cleanup_status=$?
+  trap - EXIT INT TERM
   lifecycle_status=0
   if [ "$cleanup_status" -ne 0 ]; then
     for failed_project in "${base_project}-clean" "${base_project}-upgrade"; do

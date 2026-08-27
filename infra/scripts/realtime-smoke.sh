@@ -23,6 +23,7 @@ compose() {
 
 cleanup() {
   exit_code=$?
+  trap - EXIT INT TERM
   lifecycle_status=0
   if [ "$exit_code" -ne 0 ]; then
     compose ps

@@ -25,6 +25,7 @@ test('disposable Docker entrypoints use exact lifecycle ownership and cleanup', 
     assert.match(source, /docker_test_(?:register_image|configure_compose_images)/u, path);
     assert.match(source, /docker_test_finish/u, path);
     assert.match(source, /trap cleanup EXIT INT TERM/u, path);
+    assert.match(source, /trap - EXIT INT TERM/u, path);
   }
 });
 

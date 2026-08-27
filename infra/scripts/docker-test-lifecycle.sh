@@ -186,6 +186,7 @@ docker_test_remove_owned_resources() {
 }
 
 docker_test_cleanup_images() {
+  [ -f "$KOVCHEG_TEST_IMAGE_TAGS_FILE" ] || return 0
   docker_test_capture_images
   if [ "$KOVCHEG_KEEP_TEST_IMAGES" = '1' ]; then
     echo "Keeping current-run test images by explicit KOVCHEG_KEEP_TEST_IMAGES=1: $KOVCHEG_TEST_IMAGE_RECORDS_FILE"
@@ -213,6 +214,7 @@ docker_test_assert_clean() {
     return 1
   fi
   if [ "$KOVCHEG_KEEP_TEST_IMAGES" != '1' ]; then
+    [ -f "$KOVCHEG_TEST_IMAGE_TAGS_FILE" ] || return 0
     while IFS= read -r image; do
       [ -n "$image" ] || continue
       if docker image inspect "$image" >/dev/null 2>&1; then

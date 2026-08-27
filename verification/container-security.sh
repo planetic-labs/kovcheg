@@ -30,6 +30,7 @@ done
 
 cleanup() {
   cleanup_status=$?
+  trap - EXIT INT TERM
   lifecycle_status=0
   docker_test_finish || lifecycle_status=$?
   mkdir -p .artifacts/security

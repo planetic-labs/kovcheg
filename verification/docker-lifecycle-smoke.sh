@@ -51,6 +51,7 @@ run_owned_build() {
     docker_test_register_image "$owned_image"
     cleanup() {
       status=$?
+      trap - EXIT INT TERM
       docker_test_finish
       docker_test_remove_state
       return "$status"

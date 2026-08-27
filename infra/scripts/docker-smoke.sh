@@ -22,6 +22,7 @@ compose() {
 
 cleanup() {
   cleanup_status=$?
+  trap - EXIT INT TERM
   lifecycle_status=0
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   docker_test_finish || lifecycle_status=$?
