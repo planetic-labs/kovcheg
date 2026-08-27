@@ -24,7 +24,7 @@ Before any public push or GitHub write:
 - Runtime services must remain stateless and able to run as two instances.
 - Updates are delivered only as immutable Docker images.
 - User identifiers are UUIDs.
-- Authentication starts with a persistent, separately revocable personal entry gate bound to the UUID of a pre-created active account and then uses the existing one-time email-code session flow. A gate is not authentication. There is no self-registration, password, or external identity provider. Passkey support is the next mandatory authentication slice and is not implemented in Slice A.
+- Authentication uses one-time email codes and discoverable passkeys for pre-created active accounts. Every locally valid email receives the same neutral code-state response, but only a matching active account may receive a real challenge and create a session. Passkey authentication performs no email or account prelookup, requires user verification, and permits voluntary registration only from an authenticated session. There is no self-registration, password, or external identity provider.
 - The web application and browser-facing API/realtime endpoints share one origin; a separate host is reserved for the OIDC issuer used by other services.
 
 Do not change these guardrails without an explicit architecture decision.
@@ -47,7 +47,7 @@ Publishing the source code in `planetic-labs/kovcheg` does not authorize publica
 
 Until `A0-T02 BACKEND-SECURITY-DELIVERY` has been completed, reviewed, and processed, work is limited to localhost and an isolated local Docker environment. Do not create an internet-accessible DNS route, ingress, tunnel, or external preview URL for the application before that gate.
 
-`A0-T02` must prove that unknown, unauthenticated, deactivated, gate-revoked, and gate-suspended users receive no application session and cannot access the web application, API, or Socket.IO. Sign-in requires a valid personal gate for a pre-created active account followed by its valid one-time email code. A wrong email must remain on email entry without creating a challenge or revealing account state.
+`A0-T02` must prove that unknown, unauthenticated, and deactivated users receive no application session and cannot access the web application, API, or Socket.IO. A locally valid email always advances to the same neutral code state without revealing account status; a real challenge, delivery, and email-code session are available only to a matching pre-created active account under server-side limits. Invalid local syntax or a transport failure remains on email entry, and a neutral no-challenge verification cannot create a session. A registered passkey may authenticate without email prelookup only after required user verification.
 
 Passing `A0-T02` authorizes only a technical internet environment with closed access. Test users still wait for processed `A0-T03`, and sensitive real conversations still wait for `A0-T04`.
 

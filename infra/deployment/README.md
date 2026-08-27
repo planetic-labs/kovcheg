@@ -91,7 +91,7 @@ dependency-aware. PostgreSQL uses `pg_isready`, Redis uses `PING`, and edge uses
 waits for PostgreSQL and Redis health and for the one-shot migration and OIDC-registration job before starting API, Auth,
 and Worker; Web and edge then wait for their upstream application services.
 
-The migration image embeds the checksummed `0001 -> 0015` chain. Migrations are forward-only and run
+The migration image embeds the checksummed `0001 -> 0016` chain. Migrations are forward-only and run
 through the migration role. The migration action remains a separate infrastructure permission even
 though its ordering is machine-readable here.
 
@@ -136,10 +136,11 @@ A later independent readback must record, without secret or user data:
 - `linux/amd64` architecture, container user, health, readiness, restart count, logs, CPU/memory/PID
   limits, exact networks, and the single loopback binding;
 - the recorded migration version and volume classes;
-- unknown, missing-gate, missing-session, and deactivated negative checks for Web BFF, REST, and
-  Socket.IO;
-- active gate to case-insensitive matching email to OTP, registered passkey, REST, Socket.IO,
-  logout, Redis recovery, and outbox/catch-up positive checks using only synthetic data;
+- unknown, missing-session, deactivated, no-challenge verification, and retired-gate-endpoint negative
+  checks for Web BFF, REST, and Socket.IO;
+- neutral valid-email code-state behavior, case-insensitive active-account matching to OTP, registered
+  discoverable passkey, REST, Socket.IO, logout, Redis recovery, and outbox/catch-up positive checks
+  using only synthetic data;
 - backup checksum verification and an isolated restore smoke when separately authorized.
 
 ## Current gate status
