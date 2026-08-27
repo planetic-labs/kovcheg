@@ -57,6 +57,12 @@ test('deployment amd64 builds use Buildx and load exact local images', async () 
   assert.match(source, /"\$architecture" != 'amd64'/u);
 });
 
+test('Compose builds use BuildKit for cross-platform Dockerfiles', async () => {
+  const source = await readFile('infra/scripts/compose.sh', 'utf8');
+  assert.match(source, /export DOCKER_BUILDKIT=\$\{DOCKER_BUILDKIT:-1\}/u);
+  assert.match(source, /export COMPOSE_DOCKER_CLI_BUILD=\$\{COMPOSE_DOCKER_CLI_BUILD:-1\}/u);
+});
+
 test('web container cross-build compiles natively with x64 runtime dependencies', async () => {
   const dockerfile = await readFile('apps/web/Dockerfile', 'utf8');
   const workspace = await readFile('pnpm-workspace.yaml', 'utf8');

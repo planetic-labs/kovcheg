@@ -2,6 +2,9 @@
 
 set -eu
 
+export DOCKER_BUILDKIT=${DOCKER_BUILDKIT:-1}
+export COMPOSE_DOCKER_CLI_BUILD=${COMPOSE_DOCKER_CLI_BUILD:-1}
+
 compose_project=${COMPOSE_PROJECT_NAME:-kovcheg-local}
 secret_directory=${KOVCHEG_LOCAL_SECRET_DIR:-$PWD/.local/postgres-${compose_project}}
 
