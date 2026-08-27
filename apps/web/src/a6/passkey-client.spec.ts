@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+
 import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -13,6 +15,7 @@ import {
 } from './passkey-client';
 
 const ceremonyId = '00000000-0000-4000-8000-000000000721';
+const syntheticAuthenticatorData = Buffer.from('authenticator', 'utf8').toString('base64url');
 const authenticationOptions = {
   challenge: 'YXV0aC1jaGFsbGVuZ2U',
   rpId: 'auth.example.invalid',
@@ -29,7 +32,7 @@ const authenticationResponse = {
   id: 'c3ludGhldGlj',
   rawId: 'c3ludGhldGlj',
   response: {
-    authenticatorData: 'YXV0aGVudGljYXRvcg',
+    authenticatorData: syntheticAuthenticatorData,
     clientDataJSON: 'Y2xpZW50',
     signature: 'c2lnbmF0dXJl',
     userHandle: 'c3ludGhldGlj',

@@ -18,6 +18,10 @@ function finding(code, evidence) {
   findings.push({ code, evidence });
 }
 
+function runHostCommand(command, args, environment) {
+  return spawnSync(command, args, { encoding: 'utf8', env: environment });
+}
+
 function memoryMiB(value) {
   const match = /^(\d+)([KMG])$/u.exec(String(value));
   if (match === null) return Number.NaN;
@@ -234,18 +238,34 @@ const composeEnvironment = {
   KOVCHEG_WORKER_IMAGE: `registry.invalid/kovcheg-worker@sha256:${'f'.repeat(64)}`,
   KOVCHEG_WORKER_IMAGE_DIGEST: `sha256:${'f'.repeat(64)}`,
 };
-const composeCommand = spawnSync(
-  'sh',
-  ['-c', 'exec docker-compose --file infra/deployment/compose.yaml config --quiet'],
-  { encoding: 'utf8', env: composeEnvironment },
-);
+const composeV2 = runHostCommand('docker', ['compose', 'version'], composeEnvironment);
+const composeV1 =
+  composeV2.status === 0 ? null : runHostCommand('docker-compose', ['version'], composeEnvironment);
+const composeInvocation =
+  composeV2.status === 0
+    ? {
+        args: ['compose', '--file', 'infra/deployment/compose.yaml', 'config', '--quiet'],
+        command: 'docker',
+      }
+    : composeV1?.status === 0
+      ? {
+          args: ['--file', 'infra/deployment/compose.yaml', 'config', '--quiet'],
+          command: 'docker-compose',
+        }
+      : null;
+const composeCommand =
+  composeInvocation === null
+    ? null
+    : runHostCommand(composeInvocation.command, composeInvocation.args, composeEnvironment);
 const composeConfig =
-  composeCommand.error?.code === 'ENOENT'
-    ? 'TOOL_UNAVAILABLE'
-    : composeCommand.status === 0
-      ? 'PASS'
-      : 'FAIL';
-if (composeConfig === 'FAIL') finding('compose-config', composeCommand.stderr.trim());
+  composeInvocation === null ? 'TOOL_UNAVAILABLE' : composeCommand?.status === 0 ? 'PASS' : 'FAIL';
+if (composeConfig === 'TOOL_UNAVAILABLE') {
+  finding(
+    'compose-cli-unavailable',
+    'Docker Compose v2 plugin and legacy docker-compose are unavailable.',
+  );
+}
+if (composeConfig === 'FAIL') finding('compose-config', composeCommand?.stderr.trim());
 
 const report = {
   ...(await collectExecutionMetadata()),

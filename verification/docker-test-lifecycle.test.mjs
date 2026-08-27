@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 const dockerEntrypoints = [
   'infra/deployment/smoke.sh',
@@ -83,8 +86,62 @@ test('lifecycle helper defaults to 20 GiB and supports diagnostic image retentio
   assert.match(source, /No automatic cleanup was attempted/u);
   assert.match(source, /Docker Buildx is required before project-owned image builds/u);
   assert.match(source, /Refusing to remove image without exact current-run ownership/u);
+  assert.match(source, /KOVCHEG_TEST_IMAGE_BASELINE_FILE/u);
+  assert.match(source, /docker image rm "\$image_id"/u);
+  assert.match(source, /Refusing to remove pre-existing image ID/u);
+  assert.match(source, /Refusing to remove shared image ID with remaining tags/u);
   assert.match(source, /KOVCHEG_TEST_VOLUME_BASELINE_FILE/u);
   assert.match(source, /No unowned volume was removed automatically/u);
+});
+
+test('deployment verifier prefers Compose v2, falls back to v1, and fails without either', async () => {
+  async function runWithTools({ dockerExit, legacyExit = 127 }) {
+    const bin = await mkdtemp(path.join(tmpdir(), 'kovcheg-compose-selector-'));
+    const log = path.join(bin, 'calls.log');
+    const docker = path.join(bin, 'docker');
+    await writeFile(
+      docker,
+      `#!/bin/sh\nprintf 'docker %s\\n' "$*" >>"${log}"\nexit ${dockerExit}\n`,
+    );
+    await chmod(docker, 0o755);
+    const legacy = path.join(bin, 'docker-compose');
+    await writeFile(
+      legacy,
+      `#!/bin/sh\nprintf 'docker-compose %s\\n' "$*" >>"${log}"\nexit ${legacyExit}\n`,
+    );
+    await chmod(legacy, 0o755);
+    const result = spawnSync(process.execPath, ['infra/deployment/verify.mjs'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` },
+    });
+    const calls = await readFile(log, 'utf8').catch(() => '');
+    await rm(bin, { force: true, recursive: true });
+    const composeCalls = `${calls
+      .split('\n')
+      .filter((line) => line.startsWith('docker compose') || line.startsWith('docker-compose'))
+      .join('\n')}\n`;
+    return { composeCalls, result };
+  }
+
+  const v2 = await runWithTools({ dockerExit: 0 });
+  assert.equal(v2.result.status, 0, v2.result.stderr);
+  assert.equal(
+    v2.composeCalls,
+    'docker compose version\ndocker compose --file infra/deployment/compose.yaml config --quiet\n',
+  );
+
+  const v1 = await runWithTools({ dockerExit: 1, legacyExit: 0 });
+  assert.equal(v1.result.status, 0, v1.result.stderr);
+  assert.equal(
+    v1.composeCalls,
+    'docker compose version\ndocker-compose version\ndocker-compose --file infra/deployment/compose.yaml config --quiet\n',
+  );
+
+  const unavailable = await runWithTools({ dockerExit: 1 });
+  assert.equal(unavailable.result.status, 1);
+  assert.match(unavailable.result.stdout, /Compose TOOL_UNAVAILABLE/u);
+  assert.equal(unavailable.composeCalls, 'docker compose version\ndocker-compose version\n');
 });
 
 test('PostgreSQL deployment image removes the unused vulnerable privilege helper', async () => {

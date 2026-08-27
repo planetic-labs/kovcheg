@@ -57,11 +57,13 @@ docker_test_begin() {
   export KOVCHEG_TEST_STATE_DIRECTORY="$state_directory"
   export KOVCHEG_TEST_IMAGE_TAGS_FILE="$state_directory/image-tags"
   export KOVCHEG_TEST_IMAGE_RECORDS_FILE="$state_directory/image-records.tsv"
+  export KOVCHEG_TEST_IMAGE_BASELINE_FILE="$state_directory/image-baseline"
   export KOVCHEG_TEST_VOLUME_BASELINE_FILE="$state_directory/volume-baseline"
   export KOVCHEG_KEEP_TEST_IMAGES="$keep_images"
 
   : >"$KOVCHEG_TEST_IMAGE_TAGS_FILE"
   : >"$KOVCHEG_TEST_IMAGE_RECORDS_FILE"
+  docker image ls --quiet --no-trunc | sort -u >"$KOVCHEG_TEST_IMAGE_BASELINE_FILE"
   docker volume ls --quiet | sort >"$KOVCHEG_TEST_VOLUME_BASELINE_FILE"
 }
 
@@ -213,6 +215,24 @@ docker_test_cleanup_images() {
       docker image rm "$image" >/dev/null
     fi
   done <"$KOVCHEG_TEST_IMAGE_TAGS_FILE"
+
+  cut -f2 "$KOVCHEG_TEST_IMAGE_RECORDS_FILE" | sort -u | while IFS= read -r image_id; do
+    [ -n "$image_id" ] || continue
+    if ! docker image inspect "$image_id" >/dev/null 2>&1; then
+      continue
+    fi
+    docker_test_assert_image_ownership "$image_id"
+    if grep -F -x -q "$image_id" "$KOVCHEG_TEST_IMAGE_BASELINE_FILE"; then
+      echo "Refusing to remove pre-existing image ID: $image_id" >&2
+      return 1
+    fi
+    remaining_tags=$(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$image_id")
+    if [ -n "$remaining_tags" ]; then
+      echo "Refusing to remove shared image ID with remaining tags: $image_id" >&2
+      return 1
+    fi
+    docker image rm "$image_id" >/dev/null
+  done
 }
 
 docker_test_assert_clean() {
@@ -236,6 +256,15 @@ docker_test_assert_clean() {
         return 1
       fi
     done <"$KOVCHEG_TEST_IMAGE_TAGS_FILE"
+    if [ -f "$KOVCHEG_TEST_IMAGE_RECORDS_FILE" ]; then
+      cut -f2 "$KOVCHEG_TEST_IMAGE_RECORDS_FILE" | sort -u | while IFS= read -r image_id; do
+        [ -n "$image_id" ] || continue
+        if docker image inspect "$image_id" >/dev/null 2>&1; then
+          echo "Current Docker test run left a temporary image ID: $image_id" >&2
+          return 1
+        fi
+      done
+    fi
   fi
 }
 
