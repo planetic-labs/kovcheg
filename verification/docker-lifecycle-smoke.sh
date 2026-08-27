@@ -68,6 +68,19 @@ run_owned_build() {
       --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
       --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
       --tag "$owned_image" "$regression_root" >/dev/null
+    owned_commit_container="kovcheg-lifecycle-owned-container-$KOVCHEG_TEST_RUN_ID"
+    docker create --name "$owned_commit_container" --tmpfs /data \
+      --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
+      --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
+      --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
+      --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
+      "$base_image" redis-server --version >/dev/null
+    owned_untagged_image=$(docker commit "$owned_commit_container")
+    docker_test_assert_image_ownership "$owned_untagged_image"
+    if [ -n "$(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$owned_untagged_image")" ]; then
+      echo 'Lifecycle regression did not create an untagged current-run-owned image.' >&2
+      exit 1
+    fi
     docker network create \
       --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
       --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
@@ -112,4 +125,4 @@ if [ "$dangling_after" != "$dangling_before" ]; then
   exit 1
 fi
 
-echo 'Docker lifecycle regression passed failure cleanup, foreign-resource preservation, and stable dangling-image count.'
+echo 'Docker lifecycle regression passed exact-label untagged-image cleanup, failure cleanup, foreign-resource preservation, and stable dangling-image count.'

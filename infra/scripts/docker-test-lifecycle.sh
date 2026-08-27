@@ -63,7 +63,7 @@ docker_test_begin() {
 
   : >"$KOVCHEG_TEST_IMAGE_TAGS_FILE"
   : >"$KOVCHEG_TEST_IMAGE_RECORDS_FILE"
-  docker image ls --quiet --no-trunc | sort -u >"$KOVCHEG_TEST_IMAGE_BASELINE_FILE"
+  docker image ls --all --quiet --no-trunc | sort -u >"$KOVCHEG_TEST_IMAGE_BASELINE_FILE"
   docker volume ls --quiet | sort >"$KOVCHEG_TEST_VOLUME_BASELINE_FILE"
 }
 
@@ -162,6 +162,30 @@ docker_test_assert_image_ownership() {
   fi
 }
 
+docker_test_list_owned_image_ids() {
+  docker image ls --all --quiet --no-trunc \
+    --filter "label=$KOVCHEG_DOCKER_TEST_LABEL_PROJECT=$KOVCHEG_TEST_PROJECT" \
+    --filter "label=$KOVCHEG_DOCKER_TEST_LABEL_PURPOSE=$KOVCHEG_TEST_PURPOSE" \
+    --filter "label=$KOVCHEG_DOCKER_TEST_LABEL_RUN=$KOVCHEG_TEST_RUN_ID" \
+    --filter "label=$KOVCHEG_DOCKER_TEST_LABEL_SOURCE=$KOVCHEG_TEST_SOURCE_SHA" \
+    | sort -u
+}
+
+docker_test_remove_owned_image_id() {
+  image_id=$1
+  docker_test_assert_image_ownership "$image_id"
+  if grep -F -x -q "$image_id" "$KOVCHEG_TEST_IMAGE_BASELINE_FILE"; then
+    echo "Refusing to remove pre-existing image ID: $image_id" >&2
+    return 1
+  fi
+  remaining_tags=$(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$image_id")
+  if [ -n "$remaining_tags" ]; then
+    echo "Refusing to remove shared image ID with remaining tags: $image_id" >&2
+    return 1
+  fi
+  docker image rm "$image_id" >/dev/null
+}
+
 docker_test_capture_images() {
   [ -f "$KOVCHEG_TEST_IMAGE_TAGS_FILE" ] || return 0
   : >"$KOVCHEG_TEST_IMAGE_RECORDS_FILE"
@@ -216,23 +240,22 @@ docker_test_cleanup_images() {
     fi
   done <"$KOVCHEG_TEST_IMAGE_TAGS_FILE"
 
-  cut -f2 "$KOVCHEG_TEST_IMAGE_RECORDS_FILE" | sort -u | while IFS= read -r image_id; do
+  recorded_image_ids="$KOVCHEG_TEST_STATE_DIRECTORY/recorded-image-ids"
+  cut -f2 "$KOVCHEG_TEST_IMAGE_RECORDS_FILE" | sort -u >"$recorded_image_ids"
+  while IFS= read -r image_id; do
     [ -n "$image_id" ] || continue
     if ! docker image inspect "$image_id" >/dev/null 2>&1; then
       continue
     fi
-    docker_test_assert_image_ownership "$image_id"
-    if grep -F -x -q "$image_id" "$KOVCHEG_TEST_IMAGE_BASELINE_FILE"; then
-      echo "Refusing to remove pre-existing image ID: $image_id" >&2
-      return 1
-    fi
-    remaining_tags=$(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$image_id")
-    if [ -n "$remaining_tags" ]; then
-      echo "Refusing to remove shared image ID with remaining tags: $image_id" >&2
-      return 1
-    fi
-    docker image rm "$image_id" >/dev/null
-  done
+    docker_test_remove_owned_image_id "$image_id"
+  done <"$recorded_image_ids"
+
+  remaining_owned_image_ids="$KOVCHEG_TEST_STATE_DIRECTORY/remaining-owned-image-ids"
+  docker_test_list_owned_image_ids >"$remaining_owned_image_ids"
+  while IFS= read -r image_id; do
+    [ -n "$image_id" ] || continue
+    docker_test_remove_owned_image_id "$image_id"
+  done <"$remaining_owned_image_ids"
 }
 
 docker_test_assert_clean() {
@@ -264,6 +287,12 @@ docker_test_assert_clean() {
           return 1
         fi
       done
+    fi
+    remaining_owned_image_ids=$(docker_test_list_owned_image_ids)
+    if [ -n "$remaining_owned_image_ids" ]; then
+      echo 'Current Docker test run left exact-label-owned image IDs:' >&2
+      printf '%s\n' "$remaining_owned_image_ids" | sed 's/^/  /' >&2
+      return 1
     fi
   fi
 }

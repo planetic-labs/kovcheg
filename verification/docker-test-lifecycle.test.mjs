@@ -87,6 +87,12 @@ test('lifecycle helper defaults to 20 GiB and supports diagnostic image retentio
   assert.match(source, /Docker Buildx is required before project-owned image builds/u);
   assert.match(source, /Refusing to remove image without exact current-run ownership/u);
   assert.match(source, /KOVCHEG_TEST_IMAGE_BASELINE_FILE/u);
+  assert.match(source, /docker image ls --all --quiet --no-trunc/u);
+  assert.match(source, /docker_test_list_owned_image_ids/u);
+  assert.match(source, /KOVCHEG_DOCKER_TEST_LABEL_PROJECT=\$KOVCHEG_TEST_PROJECT/u);
+  assert.match(source, /KOVCHEG_DOCKER_TEST_LABEL_PURPOSE=\$KOVCHEG_TEST_PURPOSE/u);
+  assert.match(source, /KOVCHEG_DOCKER_TEST_LABEL_RUN=\$KOVCHEG_TEST_RUN_ID/u);
+  assert.match(source, /KOVCHEG_DOCKER_TEST_LABEL_SOURCE=\$KOVCHEG_TEST_SOURCE_SHA/u);
   assert.match(source, /docker image rm "\$image_id"/u);
   assert.match(source, /Refusing to remove pre-existing image ID/u);
   assert.match(source, /Refusing to remove shared image ID with remaining tags/u);
@@ -163,4 +169,8 @@ test('lifecycle regression removes foreign-container anonymous volumes', async (
   assert.match(source, /volume_count_before=/u);
   assert.match(source, /volume_count_after=/u);
   assert.match(source, /Docker lifecycle regression changed volume count/u);
+  assert.match(source, /docker commit "\$owned_commit_container"/u);
+  assert.match(source, /docker_test_assert_image_ownership "\$owned_untagged_image"/u);
+  assert.match(source, /\.RepoTags/u);
+  assert.match(source, /Docker lifecycle regression changed dangling images/u);
 });
