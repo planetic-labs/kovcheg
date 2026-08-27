@@ -7,6 +7,7 @@ import type { AuthCrypto, AuthRandomSource, Clock } from './ports.js';
 
 export interface AuthSecretMaterial {
   readonly challengePepper: string;
+  readonly personalGatePepper: string;
   readonly rateLimitPepper: string;
   readonly sessionPepper: string;
 }
@@ -28,12 +29,46 @@ function digest(secret: string, namespace: string, value: string): string {
 export class HmacAuthCrypto implements AuthCrypto {
   constructor(private readonly secrets: AuthSecretMaterial) {
     assertSecret('challengePepper', secrets.challengePepper);
+    assertSecret('personalGatePepper', secrets.personalGatePepper);
     assertSecret('rateLimitPepper', secrets.rateLimitPepper);
     assertSecret('sessionPepper', secrets.sessionPepper);
   }
 
   challengeCodeVerifier(challengeId: Uuid, code: string): string {
     return digest(this.secrets.challengePepper, 'email-challenge', `${challengeId}\0${code}`);
+  }
+
+  personalGateActivationCredentials(normalizedCode: string, clientIdempotencyKey: string) {
+    const gateToken = digest(
+      this.secrets.personalGatePepper,
+      'personal-gate-cookie',
+      `${normalizedCode}\0${clientIdempotencyKey}`,
+    );
+    const identifierBytes = createHmac('sha256', this.secrets.personalGatePepper)
+      .update('personal-gate-session\0', 'utf8')
+      .update(normalizedCode, 'utf8')
+      .update('\0', 'utf8')
+      .update(clientIdempotencyKey, 'utf8')
+      .digest()
+      .subarray(0, 16);
+    identifierBytes[6] = ((identifierBytes[6] ?? 0) & 0x0f) | 0x40;
+    identifierBytes[8] = ((identifierBytes[8] ?? 0) & 0x3f) | 0x80;
+    const hexadecimal = identifierBytes.toString('hex');
+    const gateSessionId =
+      `${hexadecimal.slice(0, 8)}-${hexadecimal.slice(8, 12)}-${hexadecimal.slice(12, 16)}-${hexadecimal.slice(16, 20)}-${hexadecimal.slice(20)}` as Uuid;
+    return Object.freeze({
+      gateSessionId,
+      gateToken,
+      gateTokenVerifier: this.personalGateTokenVerifier(gateToken),
+    });
+  }
+
+  personalGateCodeVerifier(normalizedCode: string): string {
+    return digest(this.secrets.personalGatePepper, 'personal-gate-code', normalizedCode);
+  }
+
+  personalGateTokenVerifier(gateToken: string): string {
+    return digest(this.secrets.personalGatePepper, 'personal-gate-token', gateToken);
   }
 
   rateLimitKey(namespace: string, value: string): string {
@@ -57,6 +92,11 @@ export class SystemAuthRandomSource implements AuthRandomSource {
 
   opaqueToken(): string {
     return randomBytes(32).toString('base64url');
+  }
+
+  personalGateCode(): string {
+    const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    return Array.from({ length: 8 }, () => alphabet[randomInt(0, alphabet.length)]).join('');
   }
 
   sessionId(): SessionId {

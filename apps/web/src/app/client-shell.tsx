@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { parseSessionPrincipal } from '../a6/contracts';
 import type { SessionPrincipal } from '../a6/contracts';
+import { attemptConditionalPasskey, registerPasskey } from '../a6/passkey-client';
 import { AdministrationPanel } from './administration-panel';
 import { ChatPanel } from './chat-panel';
 import { CodeInput } from './code-input';
@@ -21,6 +22,16 @@ export function ClientShell() {
   const [session, setSession] = useState<SessionState>('loading');
   const [sessionError, setSessionError] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const pendingGateCode = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    const fragment = window.location.hash;
+    const parameters = new URLSearchParams(fragment.startsWith('#') ? fragment.slice(1) : fragment);
+    pendingGateCode.current = parameters.get('gate');
+    if (fragment.length > 0) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    }
+  }, []);
 
   const refreshSession = useCallback(async () => {
     setSessionError(false);
@@ -60,6 +71,7 @@ export function ClientShell() {
   if (session === null) {
     return (
       <LoginPanel
+        initialGateCode={pendingGateCode.current}
         onAuthenticated={refreshSession}
         sessionExpired={sessionExpired}
         sessionUnavailable={sessionError}
@@ -97,20 +109,92 @@ function Brand() {
 }
 
 function LoginPanel({
+  initialGateCode,
   onAuthenticated,
   sessionExpired,
   sessionUnavailable,
 }: Readonly<{
+  initialGateCode: string | null;
   onAuthenticated: () => Promise<void>;
   sessionExpired: boolean;
   sessionUnavailable: boolean;
 }>) {
-  const [step, setStep] = useState<'code' | 'email'>('email');
+  const [step, setStep] = useState<'code' | 'email' | 'gate' | 'loading'>('loading');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const emailInput = useRef<HTMLInputElement>(null);
+  const conditionalPasskeyStarted = useRef(false);
   const verifyingCode = useRef(false);
   const statusId = 'authentication-status';
+  const volatileClientKey = useRef<string | null>(null);
+
+  function clientIdempotencyKey(): string {
+    const storageKey = 'kovcheg-personal-gate-client';
+    try {
+      const existing = window.localStorage.getItem(storageKey);
+      if (existing !== null && /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/u.test(existing)) {
+        return existing;
+      }
+      const created = crypto.randomUUID();
+      window.localStorage.setItem(storageKey, created);
+      return created;
+    } catch {
+      volatileClientKey.current ??= crypto.randomUUID();
+      return volatileClientKey.current;
+    }
+  }
+
+  const activateGate = useCallback(async (code: string): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch('/bff/auth/gate', {
+        body: JSON.stringify({ clientIdempotencyKey: clientIdempotencyKey(), code }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const payload = (await jsonOrNull(response)) as { readonly next?: unknown } | null;
+      setStep(response.ok && payload?.next === 'email' ? 'email' : 'gate');
+      if (!response.ok) {
+        setError('Не удалось проверить доступ. Попробуйте снова.');
+      }
+    } catch {
+      setStep('gate');
+      setError('Не удалось проверить доступ. Попробуйте снова.');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (initialGateCode !== null) {
+      void activateGate(initialGateCode);
+      return;
+    }
+    void fetch('/bff/auth/gate', { cache: 'no-store' })
+      .then(async (response) => {
+        const payload = (await jsonOrNull(response)) as { readonly status?: unknown } | null;
+        setStep(response.ok && payload?.status === 'active' ? 'email' : 'gate');
+      })
+      .catch(() => {
+        setStep('gate');
+        setError('Не удалось проверить доступ. Попробуйте снова.');
+      });
+  }, [activateGate, initialGateCode]);
+
+  useEffect(() => {
+    if (step === 'loading' || conditionalPasskeyStarted.current) return;
+    conditionalPasskeyStarted.current = true;
+    void attemptConditionalPasskey().then(async (result) => {
+      if (result === 'authenticated') await onAuthenticated();
+    });
+  }, [onAuthenticated, step]);
+
+  async function submitGate(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const code = String(new FormData(event.currentTarget).get('gateCode') ?? '');
+    await activateGate(code);
+  }
 
   async function requestCode(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -123,8 +207,13 @@ function LoginPanel({
         headers: { 'content-type': 'application/json' },
         method: 'POST',
       });
+      if (response.status === 401) {
+        setStep('gate');
+        return;
+      }
       if (!response.ok) throw new Error('challenge-unavailable');
-      setStep('code');
+      const payload = (await jsonOrNull(response)) as { readonly next?: unknown } | null;
+      if (payload?.next === 'code') setStep('code');
     } catch {
       setError('Не удалось отправить запрос. Проверьте соединение и попробуйте снова.');
     } finally {
@@ -148,6 +237,7 @@ function LoginPanel({
         method: 'POST',
       });
       if (!response.ok) {
+        if (response.status === 401) setStep('gate');
         setError('Код не подошёл или устарел. Запросите новый код.');
         return;
       }
@@ -175,13 +265,41 @@ function LoginPanel({
         : busy
           ? step === 'email'
             ? 'Проверяем адрес и отправляем код.'
-            : 'Проверяем код.'
+            : step === 'code'
+              ? 'Проверяем код.'
+              : 'Проверяем доступ.'
           : '');
   const authState = error !== null || sessionUnavailable ? 'error' : busy ? 'busy' : 'ready';
 
   return (
     <main className="login-layout">
       <section aria-label="Вход" className="login-card">
+        <form
+          aria-busy={busy}
+          className="auth-control"
+          data-state={authState}
+          hidden={step !== 'gate'}
+          onSubmit={(event) => void submitGate(event)}
+        >
+          <label className="visually-hidden" htmlFor="gate-code">
+            Персональный код доступа
+          </label>
+          <input
+            aria-describedby={statusId}
+            aria-invalid={authState === 'error'}
+            autoComplete="webauthn"
+            autoFocus={step === 'gate'}
+            disabled={busy}
+            id="gate-code"
+            inputMode="text"
+            maxLength={9}
+            name="gateCode"
+            pattern="[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}"
+            required
+            spellCheck={false}
+            type="text"
+          />
+        </form>
         <form
           aria-busy={busy}
           className="auth-control"
@@ -195,8 +313,8 @@ function LoginPanel({
           <input
             aria-describedby={statusId}
             aria-invalid={authState === 'error'}
-            autoComplete="email"
-            autoFocus
+            autoComplete="username webauthn"
+            autoFocus={step === 'email'}
             disabled={busy}
             id="email"
             maxLength={254}
@@ -266,6 +384,23 @@ function Workspace({
   const hasAdministrativeAccess = Object.values(principal.administrativeCapabilities).some(Boolean);
   const [view, setView] = useState<WorkspaceView>('chats');
   const [logoutBusy, setLogoutBusy] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyStatus, setPasskeyStatus] = useState('');
+
+  async function addPasskey(): Promise<void> {
+    if (passkeyBusy) return;
+    setPasskeyBusy(true);
+    setPasskeyStatus('');
+    const result = await registerPasskey();
+    setPasskeyStatus(
+      result === 'registered'
+        ? 'Passkey добавлен.'
+        : result === 'failed'
+          ? 'Не удалось добавить passkey.'
+          : '',
+    );
+    setPasskeyBusy(false);
+  }
 
   async function logout(): Promise<void> {
     setLogoutBusy(true);
@@ -304,6 +439,25 @@ function Workspace({
         </nav>
         <div className="header-actions">
           <ProblemReportEntry />
+          <button
+            aria-describedby="passkey-registration-status"
+            aria-busy={passkeyBusy}
+            className="passkey-button"
+            disabled={passkeyBusy}
+            onClick={() => void addPasskey()}
+            type="button"
+          >
+            Добавить passkey
+          </button>
+          <span
+            aria-atomic="true"
+            aria-live="polite"
+            className="visually-hidden"
+            id="passkey-registration-status"
+            role="status"
+          >
+            {passkeyStatus}
+          </span>
           <button className="session-button" disabled={logoutBusy} onClick={() => void logout()}>
             {logoutBusy ? 'Завершаем…' : 'Завершить сеанс'}
           </button>

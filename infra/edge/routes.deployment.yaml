@@ -1,0 +1,74 @@
+http:
+  middlewares:
+    strip-api-prefix:
+      stripPrefix:
+        prefixes:
+          - /api
+    strip-auth-prefix:
+      stripPrefix:
+        prefixes:
+          - /auth
+    web-security-headers:
+      headers:
+        contentTypeNosniff: true
+        customResponseHeaders:
+          Cross-Origin-Embedder-Policy: require-corp
+          Cross-Origin-Opener-Policy: same-origin
+          Cross-Origin-Resource-Policy: same-origin
+        frameDeny: true
+        permissionsPolicy: camera=(), geolocation=(), microphone=(), payment=(), usb=()
+
+  routers:
+    api:
+      entryPoints: [public]
+      middlewares: [strip-api-prefix]
+      priority: 100
+      rule: PathPrefix(`/api`) && !PathPrefix(`/api/internal`)
+      service: api
+    auth:
+      entryPoints: [public]
+      middlewares: [strip-auth-prefix]
+      priority: 100
+      rule: PathPrefix(`/auth`) && !PathPrefix(`/auth/internal`)
+      service: auth
+    realtime:
+      entryPoints: [public]
+      priority: 200
+      rule: PathPrefix(`/socket.io`)
+      service: api
+    internal-realtime:
+      entryPoints: [internal]
+      priority: 300
+      rule: PathPrefix(`/internal/realtime`)
+      service: api
+    web:
+      entryPoints: [public]
+      middlewares: [web-security-headers]
+      priority: 1
+      rule: PathPrefix(`/`)
+      service: web
+
+  services:
+    api:
+      loadBalancer:
+        healthCheck:
+          interval: 2s
+          path: /health/ready
+          timeout: 3s
+        servers:
+          - url: http://api-1:3001
+          - url: http://api-2:3001
+        sticky:
+          cookie:
+            httpOnly: true
+            name: kovcheg_affinity
+            sameSite: strict
+            secure: true
+    auth:
+      loadBalancer:
+        servers:
+          - url: http://auth:3002
+    web:
+      loadBalancer:
+        servers:
+          - url: http://web:3000

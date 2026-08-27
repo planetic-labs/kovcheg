@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { emailChallengePolicy } from './contracts.js';
+import { emailChallengePolicy, passkeyPolicy, passkeyRateLimitPolicy } from './contracts.js';
 import { LocalAuthRepository, LocalEmailChallengeDelivery } from './local-adapters.js';
 import { ResendEmailChallengeDelivery } from './resend-email-challenge-delivery.js';
 import { createAuthRuntime } from './runtime.js';
@@ -44,6 +44,7 @@ describe('A2 production runtime boundary', () => {
     const config: EnabledAuthRuntimeConfig = {
       authSecrets: {
         challengePepper: 'c'.repeat(64),
+        personalGatePepper: 'g'.repeat(64),
         rateLimitPepper: 'r'.repeat(64),
         sessionPepper: 's'.repeat(64),
       },
@@ -65,10 +66,12 @@ describe('A2 production runtime boundary', () => {
       },
       policy: {
         challenge: emailChallengePolicy,
+        passkey: passkeyPolicy,
         rateLimits: {
           challengeByEmail: rule,
           challengeByFingerprint: rule,
           challengeByNetwork: rule,
+          ...passkeyRateLimitPolicy,
           verifyByChallenge: rule,
           verifyByNetwork: rule,
         },
@@ -76,6 +79,11 @@ describe('A2 production runtime boundary', () => {
       },
       redisUrl: 'rediss://redis.invalid:6379',
       secureCookies: true,
+      webauthn: {
+        origins: ['https://auth.example.invalid'],
+        rpId: 'auth.example.invalid',
+        rpName: 'Kovcheg',
+      },
     };
 
     await expect(

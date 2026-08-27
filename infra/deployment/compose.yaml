@@ -1,0 +1,518 @@
+name: kovcheg-candidate
+
+x-api-common: &api-common
+  image: ${KOVCHEG_API_IMAGE:?immutable api image reference is required}
+  platform: linux/amd64
+  depends_on:
+    auth:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment: &api-environment
+    AUTH_SESSION_VALIDATION_URL: http://auth:3002/internal/session
+    BUILD_IMAGE_DIGEST: ${KOVCHEG_API_IMAGE_DIGEST:?api image digest is required}
+    HOST: 0.0.0.0
+    LOG_LEVEL: info
+    NODE_ENV: production
+    PGDATABASE: kovcheg
+    PGHOST: postgres
+    PGPASSWORD_FILE: /run/secrets/postgres_runtime_password
+    PGUSER: kovcheg_app
+    PORT: '3001'
+    REALTIME_RELAY_TOKEN_FILE: /run/secrets/realtime_relay_token
+    REDIS_URL: redis://redis:6379
+  expose: ['3001']
+  healthcheck:
+    test:
+      [
+        'CMD',
+        'node',
+        '-e',
+        "fetch('http://127.0.0.1:3001/health/ready').then(async r=>{const b=await r.json();if(!r.ok||b.status!=='ok')process.exit(1)}).catch(()=>process.exit(1))",
+      ]
+    interval: 10s
+    timeout: 3s
+    retries: 18
+    start_period: 10s
+  init: true
+  networks: [service-internal]
+  pids_limit: 128
+  read_only: true
+  restart: unless-stopped
+  secrets: [postgres_runtime_password, realtime_relay_token]
+  stop_grace_period: 15s
+  tmpfs: ['/tmp']
+  deploy:
+    resources:
+      limits: { cpus: '0.35', memory: 384M, pids: 128 }
+      reservations: { cpus: '0.10', memory: 128M }
+
+services:
+  postgres:
+    image: ${KOVCHEG_POSTGRES_IMAGE:?immutable postgres image reference is required}
+    platform: linux/amd64
+    command: ['postgres', '-c', 'password_encryption=scram-sha-256']
+    environment:
+      POSTGRES_DB: kovcheg
+      POSTGRES_INITDB_ARGS: '--auth-host=scram-sha-256 --auth-local=scram-sha-256'
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+      POSTGRES_USER: postgres
+    expose: ['5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready --host 127.0.0.1 --username postgres --dbname kovcheg']
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 10s
+    networks: [service-internal]
+    pids_limit: 256
+    restart: unless-stopped
+    secrets:
+      - postgres_audit_password
+      - postgres_auth_password
+      - postgres_migration_password
+      - postgres_runtime_password
+      - postgres_superuser_password
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    deploy:
+      resources:
+        limits: { cpus: '0.75', memory: 1024M, pids: 256 }
+        reservations: { cpus: '0.25', memory: 512M }
+
+  redis:
+    image: redis:8.2.1-bookworm@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
+    platform: linux/amd64
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    expose: ['6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 2s
+      retries: 24
+    networks: [service-internal]
+    pids_limit: 64
+    read_only: true
+    restart: unless-stopped
+    tmpfs: ['/data']
+    deploy:
+      resources:
+        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+        reservations: { cpus: '0.05', memory: 64M }
+
+  migrate:
+    image: ${KOVCHEG_POSTGRES_IMAGE:?immutable postgres image reference is required}
+    platform: linux/amd64
+    entrypoint: ['/opt/kovcheg/deploy-migrate.sh']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AUTH_OIDC_CLIENTS_JSON_FILE: /run/secrets/auth_oidc_clients
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_migration_password
+      PGUSER: kovcheg_migrator
+    networks: [service-internal]
+    pids_limit: 64
+    read_only: true
+    restart: 'no'
+    secrets: [auth_oidc_clients, postgres_migration_password]
+    tmpfs: ['/tmp']
+    deploy:
+      resources:
+        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+        reservations: { cpus: '0.05', memory: 64M }
+
+  api-1:
+    <<: *api-common
+    environment:
+      <<: *api-environment
+      INSTANCE_ID: api-1
+
+  api-2:
+    <<: *api-common
+    environment:
+      <<: *api-environment
+      INSTANCE_ID: api-2
+
+  auth:
+    image: ${KOVCHEG_AUTH_IMAGE:?immutable auth image reference is required}
+    platform: linux/amd64
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      AUTH_ADMIN_BOOTSTRAP_JSON_FILE: /run/secrets/auth_admin_bootstrap
+      AUTH_CHALLENGE_PEPPER_FILE: /run/secrets/auth_challenge_pepper
+      AUTH_EMAIL_DELIVERY_ADAPTER: resend
+      AUTH_EMAIL_FROM_ADDRESS: ${KOVCHEG_AUTH_EMAIL_FROM_ADDRESS:?sender address is required}
+      AUTH_EMAIL_FROM_NAME: ${KOVCHEG_AUTH_EMAIL_FROM_NAME:?sender name is required}
+      AUTH_OIDC_CLIENTS_JSON_FILE: /run/secrets/auth_oidc_clients
+      AUTH_OIDC_COOKIE_KEYS_JSON_FILE: /run/secrets/auth_oidc_cookie_keys
+      AUTH_OIDC_ISSUER: ${KOVCHEG_AUTH_OIDC_ISSUER:?OIDC issuer is required}
+      AUTH_OIDC_JWKS_JSON_FILE: /run/secrets/auth_oidc_jwks
+      AUTH_PERSONAL_GATE_PEPPER_FILE: /run/secrets/auth_personal_gate_pepper
+      AUTH_RATE_LIMIT_PEPPER_FILE: /run/secrets/auth_rate_limit_pepper
+      AUTH_REDIS_URL: redis://redis:6379
+      AUTH_RUNTIME_ENABLED: 'true'
+      AUTH_SESSION_PEPPER_FILE: /run/secrets/auth_session_pepper
+      AUTH_WEBAUTHN_ORIGINS_JSON: ${KOVCHEG_AUTH_WEBAUTHN_ORIGINS_JSON:?WebAuthn origins are required}
+      AUTH_WEBAUTHN_PRODUCTION_RP_ID: ${KOVCHEG_AUTH_WEBAUTHN_RP_ID:?WebAuthn RP ID is required}
+      AUTH_WEBAUTHN_RP_ID: ${KOVCHEG_AUTH_WEBAUTHN_RP_ID:?WebAuthn RP ID is required}
+      AUTH_WEBAUTHN_RP_NAME: ${KOVCHEG_AUTH_WEBAUTHN_RP_NAME:?WebAuthn RP name is required}
+      BUILD_IMAGE_DIGEST: ${KOVCHEG_AUTH_IMAGE_DIGEST:?auth image digest is required}
+      HOST: 0.0.0.0
+      LOG_LEVEL: info
+      NODE_ENV: production
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_auth_password
+      PGUSER: kovcheg_auth_app
+      PORT: '3002'
+      RESEND_API_KEY_FILE: /run/secrets/resend_api_key
+    expose: ['3002']
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3002/health/ready').then(async r=>{const b=await r.json();if(!r.ok||b.status!=='ok')process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 10s
+    init: true
+    networks: [service-internal]
+    pids_limit: 128
+    read_only: true
+    restart: unless-stopped
+    secrets:
+      - auth_admin_bootstrap
+      - auth_challenge_pepper
+      - auth_oidc_clients
+      - auth_oidc_cookie_keys
+      - auth_oidc_jwks
+      - auth_personal_gate_pepper
+      - auth_rate_limit_pepper
+      - auth_session_pepper
+      - postgres_auth_password
+      - resend_api_key
+    stop_grace_period: 15s
+    tmpfs: ['/tmp']
+    deploy:
+      resources:
+        limits: { cpus: '0.45', memory: 640M, pids: 128 }
+        reservations: { cpus: '0.15', memory: 192M }
+
+  worker:
+    image: ${KOVCHEG_WORKER_IMAGE:?immutable worker image reference is required}
+    platform: linux/amd64
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      BUILD_IMAGE_DIGEST: ${KOVCHEG_WORKER_IMAGE_DIGEST:?worker image digest is required}
+      HOST: 0.0.0.0
+      INSTANCE_ID: worker-1
+      LOG_LEVEL: info
+      NODE_ENV: production
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_runtime_password
+      PGUSER: kovcheg_app
+      PORT: '3003'
+      REALTIME_RELAY_TOKEN_FILE: /run/secrets/realtime_relay_token
+      REALTIME_RELAY_URL: http://edge:8081/internal/realtime/events
+      REDIS_URL: redis://redis:6379
+    expose: ['3003']
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3003/health/ready').then(async r=>{const b=await r.json();if(!r.ok||b.status!=='ok')process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 10s
+    init: true
+    networks: [service-internal]
+    pids_limit: 128
+    read_only: true
+    restart: unless-stopped
+    secrets: [postgres_runtime_password, realtime_relay_token]
+    stop_grace_period: 15s
+    tmpfs: ['/tmp']
+    deploy:
+      resources:
+        limits: { cpus: '0.30', memory: 384M, pids: 128 }
+        reservations: { cpus: '0.10', memory: 128M }
+
+  web:
+    image: ${KOVCHEG_WEB_IMAGE:?immutable web image reference is required}
+    platform: linux/amd64
+    depends_on:
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      worker:
+        condition: service_healthy
+    environment:
+      BUILD_IMAGE_DIGEST: ${KOVCHEG_WEB_IMAGE_DIGEST:?web image digest is required}
+      HOST: 0.0.0.0
+      KOVCHEG_API_INTERNAL_URL: http://edge:8080/api
+      KOVCHEG_AUTH_INTERNAL_URL: http://auth:3002
+      LOG_LEVEL: info
+      NEXT_TELEMETRY_DISABLED: '1'
+      NODE_ENV: production
+      PORT: '3000'
+    expose: ['3000']
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health/ready').then(async r=>{const b=await r.json();if(!r.ok||b.status!=='ok')process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 10s
+    init: true
+    networks: [service-internal]
+    pids_limit: 128
+    read_only: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    tmpfs: ['/tmp']
+    deploy:
+      resources:
+        limits: { cpus: '0.35', memory: 512M, pids: 128 }
+        reservations: { cpus: '0.10', memory: 128M }
+
+  edge:
+    image: ${KOVCHEG_EDGE_IMAGE:?immutable edge image reference is required}
+    platform: linux/amd64
+    depends_on:
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'traefik', 'healthcheck', '--ping']
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 10s
+    init: true
+    networks: [service-internal, host-loopback]
+    pids_limit: 64
+    ports: ['127.0.0.1:${KOVCHEG_LOOPBACK_PORT:-3000}:8080']
+    read_only: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    tmpfs: ['/tmp']
+    deploy:
+      resources:
+        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+        reservations: { cpus: '0.05', memory: 64M }
+
+  backup:
+    image: ${KOVCHEG_POSTGRES_IMAGE:?immutable postgres image reference is required}
+    platform: linux/amd64
+    entrypoint: ['/opt/kovcheg/backup-local.sh']
+    environment:
+      KOVCHEG_BACKUP_DIRECTORY: /backup
+      KOVCHEG_BACKUP_RETENTION_DAYS: ${KOVCHEG_BACKUP_RETENTION_DAYS:-7}
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_superuser_password
+      PGUSER: postgres
+    networks: [service-internal]
+    pids_limit: 64
+    profiles: [operations]
+    read_only: true
+    restart: 'no'
+    secrets: [postgres_superuser_password]
+    tmpfs: ['/tmp']
+    volumes: [postgres-backup:/backup]
+    deploy:
+      resources:
+        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+        reservations: { cpus: '0.05', memory: 64M }
+
+  restore-smoke:
+    image: ${KOVCHEG_POSTGRES_IMAGE:?immutable postgres image reference is required}
+    platform: linux/amd64
+    entrypoint: ['/opt/kovcheg/restore-smoke.sh']
+    environment:
+      KOVCHEG_BACKUP_DIRECTORY: /backup
+      KOVCHEG_RESTORE_DATABASE: kovcheg_restore_smoke
+      PGDATABASE: kovcheg
+      PGHOST: postgres
+      PGPASSWORD_FILE: /run/secrets/postgres_superuser_password
+      PGUSER: postgres
+    networks: [service-internal]
+    pids_limit: 96
+    profiles: [operations]
+    read_only: true
+    restart: 'no'
+    secrets: [postgres_superuser_password]
+    tmpfs: ['/tmp']
+    volumes: [postgres-backup:/backup:ro]
+    deploy:
+      resources:
+        limits: { cpus: '0.35', memory: 512M, pids: 96 }
+        reservations: { cpus: '0.10', memory: 128M }
+
+  postgres-test:
+    image: ${KOVCHEG_POSTGRES_IMAGE:?immutable postgres image reference is required}
+    platform: linux/amd64
+    command: ['postgres', '-c', 'password_encryption=scram-sha-256']
+    environment:
+      POSTGRES_DB: kovcheg
+      POSTGRES_INITDB_ARGS: '--auth-host=scram-sha-256 --auth-local=scram-sha-256'
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+      POSTGRES_USER: postgres
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready --host 127.0.0.1 --username postgres --dbname kovcheg']
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    networks: [verification-internal]
+    pids_limit: 256
+    profiles: [verification]
+    secrets:
+      - postgres_audit_password
+      - postgres_auth_password
+      - postgres_migration_password
+      - postgres_runtime_password
+      - postgres_superuser_password
+    volumes: [postgres-test-data:/var/lib/postgresql/data]
+    deploy:
+      resources:
+        limits: { cpus: '0.75', memory: 1024M, pids: 256 }
+        reservations: { cpus: '0.20', memory: 384M }
+
+  migrate-test:
+    image: ${KOVCHEG_POSTGRES_IMAGE:?immutable postgres image reference is required}
+    platform: linux/amd64
+    entrypoint: ['/opt/kovcheg/migrate.sh']
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      PGDATABASE: kovcheg
+      PGHOST: postgres-test
+      PGPASSWORD_FILE: /run/secrets/postgres_migration_password
+      PGUSER: kovcheg_migrator
+    networks: [verification-internal]
+    pids_limit: 64
+    profiles: [verification]
+    read_only: true
+    secrets: [postgres_migration_password]
+    tmpfs: ['/tmp']
+    deploy:
+      resources:
+        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+        reservations: { cpus: '0.05', memory: 64M }
+
+  database-test:
+    image: ${KOVCHEG_POSTGRES_IMAGE:?immutable postgres image reference is required}
+    platform: linux/amd64
+    entrypoint: ['/opt/kovcheg/tests/verify.sh']
+    depends_on:
+      migrate-test:
+        condition: service_completed_successfully
+    environment:
+      PGDATABASE: kovcheg
+      PGHOST: postgres-test
+      TEST_SCENARIO: clean
+    networks: [verification-internal]
+    pids_limit: 128
+    profiles: [verification]
+    read_only: true
+    secrets:
+      - postgres_audit_password
+      - postgres_auth_password
+      - postgres_migration_password
+      - postgres_runtime_password
+      - postgres_superuser_password
+    tmpfs: ['/tmp']
+    deploy:
+      resources:
+        limits: { cpus: '0.50', memory: 768M, pids: 128 }
+        reservations: { cpus: '0.10', memory: 128M }
+
+networks:
+  host-loopback:
+    driver: bridge
+  service-internal:
+    driver: bridge
+    internal: true
+  verification-internal:
+    driver: bridge
+    internal: true
+
+secrets:
+  auth_admin_bootstrap:
+    file: ${KOVCHEG_AUTH_ADMIN_BOOTSTRAP_FILE:?administrator bootstrap file is required}
+  auth_challenge_pepper:
+    file: ${KOVCHEG_AUTH_CHALLENGE_PEPPER_FILE:?auth challenge pepper file is required}
+  auth_oidc_clients:
+    file: ${KOVCHEG_AUTH_OIDC_CLIENTS_FILE:?OIDC clients file is required}
+  auth_oidc_cookie_keys:
+    file: ${KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE:?OIDC cookie keys file is required}
+  auth_oidc_jwks:
+    file: ${KOVCHEG_AUTH_OIDC_JWKS_FILE:?OIDC JWKS file is required}
+  auth_personal_gate_pepper:
+    file: ${KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE:?personal gate pepper file is required}
+  auth_rate_limit_pepper:
+    file: ${KOVCHEG_AUTH_RATE_LIMIT_PEPPER_FILE:?auth rate-limit pepper file is required}
+  auth_session_pepper:
+    file: ${KOVCHEG_AUTH_SESSION_PEPPER_FILE:?auth session pepper file is required}
+  postgres_audit_password:
+    file: ${KOVCHEG_POSTGRES_AUDIT_PASSWORD_FILE:?audit database password file is required}
+  postgres_auth_password:
+    file: ${KOVCHEG_POSTGRES_AUTH_PASSWORD_FILE:?auth database password file is required}
+  postgres_migration_password:
+    file: ${KOVCHEG_POSTGRES_MIGRATION_PASSWORD_FILE:?migration database password file is required}
+  postgres_runtime_password:
+    file: ${KOVCHEG_POSTGRES_RUNTIME_PASSWORD_FILE:?runtime database password file is required}
+  postgres_superuser_password:
+    file: ${KOVCHEG_POSTGRES_SUPERUSER_PASSWORD_FILE:?database superuser password file is required}
+  realtime_relay_token:
+    file: ${KOVCHEG_REALTIME_RELAY_TOKEN_FILE:?realtime relay token file is required}
+  resend_api_key:
+    file: ${KOVCHEG_RESEND_API_KEY_FILE:?email provider credential file is required}
+
+volumes:
+  postgres-backup:
+  postgres-data:
+  postgres-test-data:

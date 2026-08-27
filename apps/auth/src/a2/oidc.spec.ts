@@ -7,7 +7,7 @@ import { decodeJwt, exportJWK, generateKeyPair } from 'jose';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AuthService } from './auth-service.js';
-import { emailChallengePolicy } from './contracts.js';
+import { emailChallengePolicy, passkeyPolicy, passkeyRateLimitPolicy } from './contracts.js';
 import type { AuthPolicy } from './contracts.js';
 import { HmacAuthCrypto, SystemAuthRandomSource } from './crypto.js';
 import {
@@ -44,10 +44,12 @@ function policy(): AuthPolicy {
   const rule = Object.freeze({ limit: 50, windowMs: 10 * 60_000 });
   return Object.freeze({
     challenge: emailChallengePolicy,
+    passkey: passkeyPolicy,
     rateLimits: Object.freeze({
       challengeByEmail: rule,
       challengeByFingerprint: rule,
       challengeByNetwork: rule,
+      ...passkeyRateLimitPolicy,
       verifyByChallenge: rule,
       verifyByNetwork: rule,
     }),
@@ -66,6 +68,7 @@ async function createAuthFixture() {
     clock,
     crypto: new HmacAuthCrypto({
       challengePepper: 'c'.repeat(64),
+      personalGatePepper: 'g'.repeat(64),
       rateLimitPepper: 'r'.repeat(64),
       sessionPepper: 's'.repeat(64),
     }),

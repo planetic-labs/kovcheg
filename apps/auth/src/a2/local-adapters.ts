@@ -11,13 +11,18 @@ import {
 import type {
   AccountRecord,
   AccountStatus,
+  AuthPasskeyCredential,
+  AuthPasskeySignCountStatus,
+  AuthPasskeyTransport,
   BootstrapAdministratorInput,
   ChallengeRecordInput,
   EmailChallengeMessage,
+  PersonalGateSecurityResetResult,
   RateLimitRule,
   SessionPrincipal,
   SessionRecordInput,
 } from './contracts.js';
+import { personalGateLifetimeMs } from './contracts.js';
 import type {
   AuthRepository,
   BootstrapAdministratorResult,
@@ -44,6 +49,7 @@ interface StoredChallenge extends ChallengeRecordInput {
   attempts: number;
   invalidatedAt: number | null;
   usedAt: number | null;
+  gateSessionId: Uuid | null;
 }
 
 interface StoredSession extends SessionRecordInput {
@@ -51,6 +57,48 @@ interface StoredSession extends SessionRecordInput {
   idleExpiresAt: number;
   lastSeenAt: number;
   revokedAt: number | null;
+}
+
+interface StoredGateFamily {
+  accountId: UserId;
+  codeVerifier: string;
+  familyId: Uuid;
+  mismatchCount: number;
+  mismatchWindowStartedAt: number | null;
+  pauseCount: number;
+  pauseWindowStartedAt: number | null;
+  pausedUntil: number | null;
+  status: 'active' | 'revoked' | 'suspended';
+}
+
+interface StoredGateSession {
+  accountId: UserId;
+  clientIdempotencyKey: string;
+  expiresAt: number;
+  familyId: Uuid;
+  gateSessionId: Uuid;
+  issuedAt: number;
+  lastLoginAt: number | null;
+  revokedAt: number | null;
+  tokenVerifier: string;
+}
+
+interface StoredPasskey {
+  aaguid: Uuid;
+  accountId: UserId;
+  attestationFormat: string;
+  credentialId: Uint8Array;
+  createdAt: number;
+  lastBackupEligible: boolean;
+  lastBackupState: boolean;
+  lastUsedAt: number | null;
+  passkeyId: Uuid;
+  publicKey: Uint8Array;
+  registeredBackupEligible: boolean;
+  registeredBackupState: boolean;
+  revokedAt: number | null;
+  signCount: number;
+  transports: readonly AuthPasskeyTransport[];
 }
 
 function cloneAccount(account: StoredAccount): AccountRecord {
@@ -120,6 +168,10 @@ export class LocalAuthRepository implements AuthRepository {
   private readonly bootstrapAccounts = new Map<string, UserId>();
   private readonly challenges = new Map<Uuid, StoredChallenge>();
   private readonly latestChallengeAt = new Map<UserId, number>();
+  private readonly gateFamilies = new Map<Uuid, StoredGateFamily>();
+  private readonly gateSessionsByVerifier = new Map<string, StoredGateSession>();
+  private readonly passkeysByCredentialId = new Map<string, StoredPasskey>();
+  private readonly passkeysById = new Map<Uuid, StoredPasskey>();
   private readonly queue = new ExclusiveQueue();
   private readonly sessionsByVerifier = new Map<string, StoredSession>();
 
@@ -127,6 +179,202 @@ export class LocalAuthRepository implements AuthRepository {
     if (environment.NODE_ENV === 'production') {
       throw new Error('Local auth repository is unavailable in production');
     }
+  }
+
+  activatePersonalGate(
+    input: Parameters<AuthRepository['activatePersonalGate']>[0],
+  ): ReturnType<AuthRepository['activatePersonalGate']> {
+    return this.queue.run(() => {
+      const family = [...this.gateFamilies.values()].find(
+        (candidate) =>
+          candidate.status === 'active' &&
+          safeVerifierEqual(candidate.codeVerifier, input.codeVerifier) &&
+          this.accountsById.get(candidate.accountId)?.status === 'active',
+      );
+      if (family === undefined) return { kind: 'invalid' };
+      const existing = [...this.gateSessionsByVerifier.values()].find(
+        (candidate) =>
+          candidate.familyId === family.familyId &&
+          candidate.clientIdempotencyKey === input.clientIdempotencyKey &&
+          candidate.revokedAt === null &&
+          input.now < candidate.expiresAt,
+      );
+      if (existing !== undefined) {
+        if (
+          existing.gateSessionId !== input.gateSessionId ||
+          !safeVerifierEqual(existing.tokenVerifier, input.gateTokenVerifier)
+        ) {
+          throw new AuthRepositoryConflictError();
+        }
+        return {
+          accountId: existing.accountId,
+          familyId: existing.familyId,
+          gateSessionId: existing.gateSessionId,
+          kind: 'active',
+          reused: true,
+        };
+      }
+      const gateSession: StoredGateSession = {
+        accountId: family.accountId,
+        clientIdempotencyKey: input.clientIdempotencyKey,
+        expiresAt: input.now + personalGateLifetimeMs,
+        familyId: family.familyId,
+        gateSessionId: input.gateSessionId,
+        issuedAt: input.now,
+        lastLoginAt: null,
+        revokedAt: null,
+        tokenVerifier: input.gateTokenVerifier,
+      };
+      this.gateSessionsByVerifier.set(gateSession.tokenVerifier, gateSession);
+      return {
+        accountId: gateSession.accountId,
+        familyId: gateSession.familyId,
+        gateSessionId: gateSession.gateSessionId,
+        kind: 'active',
+        reused: false,
+      };
+    });
+  }
+
+  adminIssuePersonalGate(
+    input: Parameters<AuthRepository['adminIssuePersonalGate']>[0],
+  ): Promise<Uuid> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const account = this.requireAccount(input.accountId);
+      if (account.status !== 'active') throw new AuthRepositoryNotFoundError();
+      if (
+        [...this.gateFamilies.values()].some(
+          (family) =>
+            family.accountId === account.userId &&
+            (family.status === 'active' || family.status === 'suspended'),
+        )
+      ) {
+        throw new AuthRepositoryConflictError();
+      }
+      this.gateFamilies.set(input.familyId, this.newGateFamily(input));
+      return input.familyId;
+    });
+  }
+
+  adminReissuePersonalGate(
+    input: Parameters<AuthRepository['adminReissuePersonalGate']>[0],
+  ): ReturnType<AuthRepository['adminReissuePersonalGate']> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const account = this.requireAccount(input.accountId);
+      if (account.status !== 'active') throw new AuthRepositoryNotFoundError();
+      const current = [...this.gateFamilies.values()].find(
+        (family) =>
+          family.accountId === account.userId &&
+          (family.status === 'active' || family.status === 'suspended'),
+      );
+      if (current === undefined) throw new AuthRepositoryNotFoundError();
+      current.status = 'revoked';
+      const revokedGateSessionCount = this.revokeGateSessions(current.familyId, input.now);
+      this.gateFamilies.set(input.familyId, this.newGateFamily(input));
+      return { familyId: input.familyId, revokedGateSessionCount };
+    });
+  }
+
+  adminResumePersonalGate(
+    input: Parameters<AuthRepository['adminResumePersonalGate']>[0],
+  ): Promise<boolean> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const family = this.gateFamilies.get(input.familyId);
+      if (
+        family === undefined ||
+        family.accountId !== input.accountId ||
+        family.status !== 'suspended' ||
+        this.accountsById.get(input.accountId)?.status !== 'active'
+      ) {
+        throw new AuthRepositoryNotFoundError();
+      }
+      family.status = 'active';
+      family.mismatchCount = 0;
+      family.mismatchWindowStartedAt = null;
+      family.pauseCount = 0;
+      family.pauseWindowStartedAt = null;
+      family.pausedUntil = null;
+      return true;
+    });
+  }
+
+  adminRevokePersonalGate(
+    input: Parameters<AuthRepository['adminRevokePersonalGate']>[0],
+  ): Promise<number> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const family = this.gateFamilies.get(input.familyId);
+      if (
+        family === undefined ||
+        family.accountId !== input.accountId ||
+        (family.status !== 'active' && family.status !== 'suspended')
+      ) {
+        throw new AuthRepositoryNotFoundError();
+      }
+      family.status = 'revoked';
+      return this.revokeGateSessions(family.familyId, input.now);
+    });
+  }
+
+  adminSecurityResetAuthAccess(
+    input: Parameters<AuthRepository['adminSecurityResetAuthAccess']>[0],
+  ): Promise<PersonalGateSecurityResetResult> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      this.requireAccount(input.accountId);
+      let revokedFamilyCount = 0;
+      for (const family of this.gateFamilies.values()) {
+        if (
+          family.accountId === input.accountId &&
+          (family.status === 'active' || family.status === 'suspended')
+        ) {
+          family.status = 'revoked';
+          revokedFamilyCount += 1;
+        }
+      }
+      let revokedGateSessionCount = 0;
+      for (const gateSession of this.gateSessionsByVerifier.values()) {
+        if (gateSession.accountId === input.accountId && gateSession.revokedAt === null) {
+          gateSession.revokedAt = input.now;
+          revokedGateSessionCount += 1;
+        }
+      }
+      let invalidatedChallengeCount = 0;
+      for (const challenge of this.challenges.values()) {
+        if (
+          challenge.accountId === input.accountId &&
+          challenge.invalidatedAt === null &&
+          challenge.usedAt === null
+        ) {
+          challenge.invalidatedAt = input.now;
+          invalidatedChallengeCount += 1;
+        }
+      }
+      let revokedApplicationSessionCount = 0;
+      for (const session of this.sessionsByVerifier.values()) {
+        if (session.accountId === input.accountId && session.revokedAt === null) {
+          session.revokedAt = input.now;
+          revokedApplicationSessionCount += 1;
+        }
+      }
+      let revokedPasskeyCount = 0;
+      for (const passkey of this.passkeysById.values()) {
+        if (passkey.accountId === input.accountId && passkey.revokedAt === null) {
+          passkey.revokedAt = input.now;
+          revokedPasskeyCount += 1;
+        }
+      }
+      return {
+        invalidatedChallengeCount,
+        revokedApplicationSessionCount,
+        revokedFamilyCount,
+        revokedGateSessionCount,
+        revokedPasskeyCount,
+      };
+    });
   }
 
   authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null> {
@@ -209,6 +457,65 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
+  completePasskeyLogin(
+    input: Parameters<AuthRepository['completePasskeyLogin']>[0],
+  ): ReturnType<AuthRepository['completePasskeyLogin']> {
+    return this.queue.run(() => {
+      const passkey = this.passkeysByCredentialId.get(
+        Buffer.from(input.credentialId).toString('base64url'),
+      );
+      const account = passkey === undefined ? undefined : this.accountsById.get(passkey.accountId);
+      if (
+        passkey === undefined ||
+        passkey.revokedAt !== null ||
+        account?.status !== 'active' ||
+        !input.userVerified
+      ) {
+        return null;
+      }
+      if (passkey.signCount !== input.expectedSignCount) {
+        throw new AuthRepositoryConflictError();
+      }
+      if (
+        this.sessionsByVerifier.has(input.session.tokenVerifier) ||
+        [...this.sessionsByVerifier.values()].some(
+          (session) => session.sessionId === input.session.sessionId,
+        )
+      ) {
+        throw new AuthRepositoryConflictError();
+      }
+      const signCountStatus: AuthPasskeySignCountStatus =
+        passkey.signCount === 0 && input.observedSignCount === 0
+          ? 'not_supported'
+          : input.observedSignCount > passkey.signCount
+            ? 'advanced'
+            : input.observedSignCount === passkey.signCount
+              ? 'not_advanced'
+              : 'regressed';
+      passkey.signCount = Math.max(passkey.signCount, input.observedSignCount);
+      passkey.lastBackupEligible = input.observedBackupEligible;
+      passkey.lastBackupState = input.observedBackupState;
+      passkey.lastUsedAt = input.now;
+      const session: StoredSession = {
+        ...input.session,
+        accountId: passkey.accountId,
+        idleExpiresAt: Math.min(
+          input.session.absoluteExpiresAt,
+          input.now + input.session.idleLifetimeMs,
+        ),
+        lastSeenAt: input.now,
+        revokedAt: null,
+      };
+      this.sessionsByVerifier.set(session.tokenVerifier, session);
+      return {
+        accountId: passkey.accountId,
+        reused: false,
+        sessionId: session.sessionId,
+        signCountStatus,
+      };
+    });
+  }
+
   consumeChallengeAndCreateSession(input: {
     readonly candidateCodeVerifier: string;
     readonly challengeId: Uuid;
@@ -257,6 +564,50 @@ export class LocalAuthRepository implements AuthRepository {
         kind: 'authenticated',
         principal: sessionPrincipal(account, session),
       };
+    });
+  }
+
+  consumePersonalGateChallengeAndCreateSession(
+    input: Parameters<AuthRepository['consumePersonalGateChallengeAndCreateSession']>[0],
+  ): Promise<ConsumeChallengeResult> {
+    return this.queue.run(() => {
+      const gateSession = this.validGateSession(input.gateTokenVerifier, input.now);
+      const challenge = this.challenges.get(input.challengeId);
+      if (
+        gateSession === null ||
+        challenge === undefined ||
+        challenge.gateSessionId !== gateSession.gateSessionId ||
+        challenge.invalidatedAt !== null ||
+        challenge.usedAt !== null ||
+        input.now >= challenge.expiresAt ||
+        challenge.attempts >= challenge.maxAttempts
+      ) {
+        return { kind: 'invalid' };
+      }
+      if (!safeVerifierEqual(challenge.codeVerifier, input.candidateCodeVerifier)) {
+        challenge.attempts += 1;
+        return { kind: 'invalid' };
+      }
+      const account = this.accountsById.get(challenge.accountId);
+      if (account === undefined || account.status !== 'active') return { kind: 'invalid' };
+      if (this.sessionsByVerifier.has(input.session.tokenVerifier)) {
+        throw new AuthRepositoryConflictError();
+      }
+      challenge.usedAt = input.now;
+      const session: StoredSession = {
+        ...input.session,
+        accountId: account.userId,
+        idleExpiresAt: Math.min(
+          input.session.absoluteExpiresAt,
+          input.session.issuedAt + input.session.idleLifetimeMs,
+        ),
+        lastSeenAt: input.session.issuedAt,
+        revokedAt: null,
+      };
+      this.sessionsByVerifier.set(session.tokenVerifier, session);
+      gateSession.lastLoginAt = input.now;
+      gateSession.expiresAt = input.now + personalGateLifetimeMs;
+      return { kind: 'authenticated', principal: sessionPrincipal(account, session) };
     });
   }
 
@@ -351,6 +702,7 @@ export class LocalAuthRepository implements AuthRepository {
         accountId: account.userId,
         attempts: 0,
         invalidatedAt: null,
+        gateSessionId: null,
         usedAt: null,
       });
       this.latestChallengeAt.set(account.userId, input.challenge.issuedAt);
@@ -360,6 +712,167 @@ export class LocalAuthRepository implements AuthRepository {
         kind: 'issued',
         recipient: account.email,
       };
+    });
+  }
+
+  issueChallengeForPersonalGate(
+    input: Parameters<AuthRepository['issueChallengeForPersonalGate']>[0],
+  ): ReturnType<AuthRepository['issueChallengeForPersonalGate']> {
+    return this.queue.run(() => {
+      const gateSession = this.validGateSession(input.gateTokenVerifier, input.challenge.issuedAt);
+      if (gateSession === null) return { kind: 'neutral' };
+      const family = this.gateFamilies.get(gateSession.familyId);
+      const account = this.accountsById.get(gateSession.accountId);
+      if (family === undefined || account === undefined) return { kind: 'neutral' };
+      if (family.pausedUntil !== null && input.challenge.issuedAt < family.pausedUntil) {
+        return { kind: 'neutral' };
+      }
+      if (input.email !== account.email) {
+        if (
+          family.mismatchWindowStartedAt === null ||
+          input.challenge.issuedAt >= family.mismatchWindowStartedAt + 15 * 60_000
+        ) {
+          family.mismatchWindowStartedAt = input.challenge.issuedAt;
+          family.mismatchCount = 1;
+        } else {
+          family.mismatchCount += 1;
+        }
+        if (family.mismatchCount >= 5) {
+          if (
+            family.pauseWindowStartedAt === null ||
+            input.challenge.issuedAt >= family.pauseWindowStartedAt + 24 * 60 * 60_000
+          ) {
+            family.pauseWindowStartedAt = input.challenge.issuedAt;
+            family.pauseCount = 1;
+          } else {
+            family.pauseCount += 1;
+          }
+          family.mismatchCount = 0;
+          family.mismatchWindowStartedAt = null;
+          if (family.pauseCount >= 3) {
+            family.status = 'suspended';
+            this.revokeGateSessions(family.familyId, input.challenge.issuedAt);
+          } else {
+            family.pausedUntil = input.challenge.issuedAt + 15 * 60_000;
+          }
+        }
+        return { kind: 'neutral' };
+      }
+      family.mismatchCount = 0;
+      family.mismatchWindowStartedAt = null;
+      family.pausedUntil = null;
+      const lastIssuedAt = this.latestChallengeAt.get(account.userId);
+      if (
+        lastIssuedAt !== undefined &&
+        input.challenge.issuedAt - lastIssuedAt < input.resendCooldownMs
+      ) {
+        return { kind: 'neutral' };
+      }
+      for (const challenge of this.challenges.values()) {
+        if (
+          challenge.accountId === account.userId &&
+          challenge.usedAt === null &&
+          challenge.invalidatedAt === null
+        ) {
+          challenge.invalidatedAt = input.challenge.issuedAt;
+        }
+      }
+      this.challenges.set(input.challenge.challengeId, {
+        ...input.challenge,
+        accountId: account.userId,
+        attempts: 0,
+        gateSessionId: gateSession.gateSessionId,
+        invalidatedAt: null,
+        usedAt: null,
+      });
+      this.latestChallengeAt.set(account.userId, input.challenge.issuedAt);
+      return {
+        accountId: account.userId,
+        challengeId: input.challenge.challengeId,
+        kind: 'issued',
+        recipient: account.email,
+      };
+    });
+  }
+
+  readPasskeyByCredentialId(
+    credentialId: Uint8Array,
+    now: number,
+  ): Promise<AuthPasskeyCredential | null> {
+    return this.queue.run(() => {
+      const passkey = this.passkeysByCredentialId.get(
+        Buffer.from(credentialId).toString('base64url'),
+      );
+      const account = passkey === undefined ? undefined : this.accountsById.get(passkey.accountId);
+      if (
+        passkey === undefined ||
+        passkey.revokedAt !== null ||
+        now < passkey.createdAt ||
+        account?.status !== 'active'
+      ) {
+        return null;
+      }
+      return Object.freeze({
+        aaguid: passkey.aaguid,
+        accountId: passkey.accountId,
+        attestationFormat: passkey.attestationFormat,
+        credentialId: Uint8Array.from(passkey.credentialId),
+        lastBackupEligible: passkey.lastBackupEligible,
+        lastBackupState: passkey.lastBackupState,
+        passkeyId: passkey.passkeyId,
+        publicKey: Uint8Array.from(passkey.publicKey),
+        registeredBackupEligible: passkey.registeredBackupEligible,
+        registeredBackupState: passkey.registeredBackupState,
+        signCount: passkey.signCount,
+        transports: Object.freeze([...passkey.transports]),
+      });
+    });
+  }
+
+  registerPasskey(
+    input: Parameters<AuthRepository['registerPasskey']>[0],
+  ): ReturnType<AuthRepository['registerPasskey']> {
+    return this.queue.run(() => {
+      const session = this.sessionsByVerifier.get(input.actorSessionVerifier);
+      const account = session === undefined ? undefined : this.accountsById.get(session.accountId);
+      if (
+        session === undefined ||
+        session.revokedAt !== null ||
+        input.now < session.issuedAt ||
+        input.now >= session.idleExpiresAt ||
+        input.now >= session.absoluteExpiresAt ||
+        account?.status !== 'active' ||
+        !input.userVerified
+      ) {
+        throw new AuthRepositoryAuthorizationError();
+      }
+      const credentialKey = Buffer.from(input.credentialId).toString('base64url');
+      if (
+        this.passkeysByCredentialId.has(credentialKey) ||
+        this.passkeysById.has(input.passkeyId)
+      ) {
+        throw new AuthRepositoryConflictError();
+      }
+      const passkey: StoredPasskey = {
+        aaguid: input.aaguid,
+        accountId: account.userId,
+        attestationFormat: input.attestationFormat,
+        credentialId: Uint8Array.from(input.credentialId),
+        createdAt: input.now,
+        lastBackupEligible: input.backupEligible,
+        lastBackupState: input.backupState,
+        lastUsedAt: null,
+        passkeyId: input.passkeyId,
+        publicKey: Uint8Array.from(input.publicKey),
+        registeredBackupEligible: input.backupEligible,
+        registeredBackupState: input.backupState,
+        revokedAt: null,
+        signCount: input.signCount,
+        transports: Object.freeze([...input.transports]),
+      };
+      this.passkeysByCredentialId.set(credentialKey, passkey);
+      this.passkeysById.set(passkey.passkeyId, passkey);
+      return { accountId: account.userId, passkeyId: passkey.passkeyId };
     });
   }
 
@@ -443,6 +956,16 @@ export class LocalAuthRepository implements AuthRepository {
       }
       account.status = input.status;
       if (input.status === 'deactivated') {
+        for (const family of this.gateFamilies.values()) {
+          if (family.accountId === input.userId && family.status !== 'revoked') {
+            family.status = 'revoked';
+          }
+        }
+        for (const gateSession of this.gateSessionsByVerifier.values()) {
+          if (gateSession.accountId === input.userId && gateSession.revokedAt === null) {
+            gateSession.revokedAt = input.now;
+          }
+        }
         for (const session of this.sessionsByVerifier.values()) {
           if (session.accountId === input.userId && session.revokedAt === null) {
             session.revokedAt = input.now;
@@ -455,6 +978,11 @@ export class LocalAuthRepository implements AuthRepository {
             challenge.usedAt === null
           ) {
             challenge.invalidatedAt = input.now;
+          }
+        }
+        for (const passkey of this.passkeysById.values()) {
+          if (passkey.accountId === input.userId && passkey.revokedAt === null) {
+            passkey.revokedAt = input.now;
           }
         }
       }
@@ -492,6 +1020,71 @@ export class LocalAuthRepository implements AuthRepository {
       this.accountsByEmail.set(account.email, account);
       return cloneAccount(account);
     });
+  }
+
+  validatePersonalGateSession(
+    gateTokenVerifier: string,
+    now: number,
+  ): ReturnType<AuthRepository['validatePersonalGateSession']> {
+    return this.queue.run(() => {
+      const session = this.validGateSession(gateTokenVerifier, now);
+      if (session === null) return { kind: 'invalid' };
+      const family = this.gateFamilies.get(session.familyId);
+      if (family === undefined) return { kind: 'invalid' };
+      return {
+        accountId: session.accountId,
+        emailSubmissionAllowed: family.pausedUntil === null || now >= family.pausedUntil,
+        expiresAt: session.expiresAt,
+        familyId: session.familyId,
+        gateSessionId: session.gateSessionId,
+        kind: 'active',
+      };
+    });
+  }
+
+  private newGateFamily(input: {
+    readonly accountId: UserId;
+    readonly codeVerifier: string;
+    readonly familyId: Uuid;
+  }): StoredGateFamily {
+    return {
+      accountId: input.accountId,
+      codeVerifier: input.codeVerifier,
+      familyId: input.familyId,
+      mismatchCount: 0,
+      mismatchWindowStartedAt: null,
+      pauseCount: 0,
+      pauseWindowStartedAt: null,
+      pausedUntil: null,
+      status: 'active',
+    };
+  }
+
+  private revokeGateSessions(familyId: Uuid, now: number): number {
+    let count = 0;
+    for (const gateSession of this.gateSessionsByVerifier.values()) {
+      if (gateSession.familyId === familyId && gateSession.revokedAt === null) {
+        gateSession.revokedAt = now;
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private validGateSession(tokenVerifier: string, now: number): StoredGateSession | null {
+    const gateSession = this.gateSessionsByVerifier.get(tokenVerifier);
+    if (
+      gateSession === undefined ||
+      gateSession.revokedAt !== null ||
+      now < gateSession.issuedAt ||
+      now >= gateSession.expiresAt
+    ) {
+      return null;
+    }
+    const family = this.gateFamilies.get(gateSession.familyId);
+    const account = this.accountsById.get(gateSession.accountId);
+    if (family?.status !== 'active' || account?.status !== 'active') return null;
+    return gateSession;
   }
 
   private requireAdministrator(actorSessionVerifier: string, now: number): StoredAccount {

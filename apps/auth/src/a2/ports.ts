@@ -10,13 +10,23 @@ import type {
 import type {
   AccountRecord,
   AccountStatus,
+  AuthPasskeyCredential,
+  AuthPasskeySignCountStatus,
+  AuthPasskeyTransport,
   BootstrapAdministratorInput,
   ChallengeRecordInput,
   EmailChallengeMessage,
+  PersonalGateSecurityResetResult,
   RateLimitRule,
   SessionPrincipal,
   SessionRecordInput,
 } from './contracts.js';
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON,
+} from '@simplewebauthn/server';
 
 export type BootstrapAdministratorResult =
   | { readonly account: AccountRecord; readonly created: false }
@@ -35,14 +45,188 @@ export type ConsumeChallengeResult =
   | { readonly kind: 'authenticated'; readonly principal: SessionPrincipal }
   | { readonly kind: 'invalid' };
 
+interface CompletePasskeyLoginResult {
+  readonly accountId: UserId;
+  readonly reused: boolean;
+  readonly sessionId: SessionId;
+  readonly signCountStatus: AuthPasskeySignCountStatus;
+}
+
+export type PasskeyCeremonyState =
+  | {
+      readonly accountId: UserId;
+      readonly challenge: string;
+      readonly clientContextKey: string;
+      readonly ceremony: 'registration';
+      readonly sessionVerifier: string;
+    }
+  | {
+      readonly challenge: string;
+      readonly clientContextKey: string;
+      readonly ceremony: 'authentication';
+    };
+
+export type TakePasskeyCeremonyResult =
+  | { readonly kind: 'found'; readonly state: PasskeyCeremonyState }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'unavailable' };
+
+export interface PasskeyCeremonyStore {
+  put(
+    ceremonyId: Uuid,
+    state: PasskeyCeremonyState,
+    ttlMs: number,
+  ): Promise<'stored' | 'unavailable'>;
+  take(ceremonyId: Uuid): Promise<TakePasskeyCeremonyResult>;
+}
+
+export interface PasskeyRegistrationVerification {
+  readonly aaguid: Uuid;
+  readonly attestationFormat: string;
+  readonly backupEligible: boolean;
+  readonly backupState: boolean;
+  readonly credentialId: Uint8Array;
+  readonly publicKey: Uint8Array;
+  readonly signCount: number;
+  readonly transports: readonly AuthPasskeyTransport[];
+  readonly userVerified: boolean;
+}
+
+export interface PasskeyAuthenticationVerification {
+  readonly backupEligible: boolean;
+  readonly backupState: boolean;
+  readonly observedSignCount: number;
+  readonly userVerified: boolean;
+}
+
+export interface WebAuthnServer {
+  generateAuthenticationOptions(input: {
+    readonly rpId: string;
+    readonly timeoutMs: number;
+  }): Promise<PublicKeyCredentialRequestOptionsJSON>;
+  generateRegistrationOptions(input: {
+    readonly accountId: UserId;
+    readonly accountLabel: string;
+    readonly rpId: string;
+    readonly rpName: string;
+    readonly timeoutMs: number;
+  }): Promise<PublicKeyCredentialCreationOptionsJSON>;
+  verifyAuthentication(input: {
+    readonly credential: AuthPasskeyCredential;
+    readonly expectedChallenge: string;
+    readonly expectedOrigins: readonly string[];
+    readonly expectedRpId: string;
+    readonly response: AuthenticationResponseJSON;
+  }): Promise<PasskeyAuthenticationVerification | null>;
+  verifyRegistration(input: {
+    readonly expectedChallenge: string;
+    readonly expectedOrigins: readonly string[];
+    readonly expectedRpId: string;
+    readonly response: RegistrationResponseJSON;
+  }): Promise<PasskeyRegistrationVerification | null>;
+}
+
+type ActivatePersonalGateResult =
+  | {
+      readonly accountId: UserId;
+      readonly familyId: Uuid;
+      readonly gateSessionId: Uuid;
+      readonly kind: 'active';
+      readonly reused: boolean;
+    }
+  | { readonly kind: 'invalid' };
+
+type ValidatePersonalGateResult =
+  | {
+      readonly accountId: UserId;
+      readonly emailSubmissionAllowed: boolean;
+      readonly expiresAt: number;
+      readonly familyId: Uuid;
+      readonly gateSessionId: Uuid;
+      readonly kind: 'active';
+    }
+  | { readonly kind: 'invalid' };
+
+type IssuePersonalGateChallengeResult =
+  | {
+      readonly accountId: UserId;
+      readonly challengeId: Uuid;
+      readonly kind: 'issued';
+      readonly recipient: string;
+    }
+  | { readonly kind: 'neutral' };
+
 export interface AuthRepository {
   readonly productionSafe?: true;
   authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null>;
   validateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null>;
+  activatePersonalGate(input: {
+    readonly clientIdempotencyKey: string;
+    readonly codeVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly gateSessionId: Uuid;
+    readonly gateTokenVerifier: string;
+    readonly now: number;
+  }): Promise<ActivatePersonalGateResult>;
+  adminIssuePersonalGate(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly codeVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly familyId: Uuid;
+    readonly now: number;
+  }): Promise<Uuid>;
+  adminReissuePersonalGate(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly codeVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly familyId: Uuid;
+    readonly now: number;
+  }): Promise<{ readonly familyId: Uuid; readonly revokedGateSessionCount: number }>;
+  adminResumePersonalGate(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly correlationId: CorrelationId;
+    readonly familyId: Uuid;
+    readonly now: number;
+  }): Promise<boolean>;
+  adminRevokePersonalGate(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly correlationId: CorrelationId;
+    readonly familyId: Uuid;
+    readonly now: number;
+  }): Promise<number>;
+  adminSecurityResetAuthAccess(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+  }): Promise<PersonalGateSecurityResetResult>;
   bootstrapAdministrator(input: BootstrapAdministratorInput): Promise<BootstrapAdministratorResult>;
+  completePasskeyLogin(input: {
+    readonly assertionId: Uuid;
+    readonly correlationId: CorrelationId;
+    readonly credentialId: Uint8Array;
+    readonly expectedSignCount: number;
+    readonly now: number;
+    readonly observedBackupEligible: boolean;
+    readonly observedBackupState: boolean;
+    readonly observedSignCount: number;
+    readonly session: SessionRecordInput;
+    readonly userVerified: boolean;
+  }): Promise<CompletePasskeyLoginResult | null>;
   consumeChallengeAndCreateSession(input: {
     readonly candidateCodeVerifier: string;
     readonly challengeId: Uuid;
+    readonly now: number;
+    readonly session: SessionRecordInput;
+  }): Promise<ConsumeChallengeResult>;
+  consumePersonalGateChallengeAndCreateSession(input: {
+    readonly candidateCodeVerifier: string;
+    readonly challengeId: Uuid;
+    readonly gateTokenVerifier: string;
     readonly now: number;
     readonly session: SessionRecordInput;
   }): Promise<ConsumeChallengeResult>;
@@ -71,6 +255,32 @@ export interface AuthRepository {
     readonly email: string;
     readonly resendCooldownMs: number;
   }): Promise<IssueChallengeResult>;
+  issueChallengeForPersonalGate(input: {
+    readonly challenge: ChallengeRecordInput;
+    readonly correlationId: CorrelationId;
+    readonly email: string;
+    readonly gateTokenVerifier: string;
+    readonly resendCooldownMs: number;
+  }): Promise<IssuePersonalGateChallengeResult>;
+  readPasskeyByCredentialId(
+    credentialId: Uint8Array,
+    now: number,
+  ): Promise<AuthPasskeyCredential | null>;
+  registerPasskey(input: {
+    readonly actorSessionVerifier: string;
+    readonly aaguid: Uuid;
+    readonly attestationFormat: string;
+    readonly backupEligible: boolean;
+    readonly backupState: boolean;
+    readonly correlationId: CorrelationId;
+    readonly credentialId: Uint8Array;
+    readonly now: number;
+    readonly passkeyId: Uuid;
+    readonly publicKey: Uint8Array;
+    readonly signCount: number;
+    readonly transports: readonly AuthPasskeyTransport[];
+    readonly userVerified: boolean;
+  }): Promise<{ readonly accountId: UserId; readonly passkeyId: Uuid }>;
   revokeAllSessionsAsAdministrator(input: {
     readonly actorSessionVerifier: string;
     readonly correlationId: CorrelationId;
@@ -118,10 +328,24 @@ export interface AuthRepository {
     readonly now: number;
     readonly userId: UserId;
   }): Promise<AccountRecord>;
+  validatePersonalGateSession(
+    gateTokenVerifier: string,
+    now: number,
+  ): Promise<ValidatePersonalGateResult>;
 }
 
 export interface AuthCrypto {
   challengeCodeVerifier(challengeId: Uuid, code: string): string;
+  personalGateActivationCredentials(
+    normalizedCode: string,
+    clientIdempotencyKey: string,
+  ): {
+    readonly gateSessionId: Uuid;
+    readonly gateToken: string;
+    readonly gateTokenVerifier: string;
+  };
+  personalGateCodeVerifier(normalizedCode: string): string;
+  personalGateTokenVerifier(gateToken: string): string;
   rateLimitKey(namespace: string, value: string): string;
   sessionTokenVerifier(sessionToken: string): string;
 }
@@ -129,9 +353,28 @@ export interface AuthCrypto {
 export interface AuthRandomSource {
   challengeCode(digits: number): string;
   opaqueToken(): string;
+  personalGateCode(): string;
   sessionId(): SessionId;
   userId(): UserId;
   uuid(): Uuid;
+}
+
+export type PersonalGateSourceDecision = 'allowed' | 'blocked' | 'unavailable';
+export type PersonalGateInvalidDecision = 'allowed' | 'blocked' | 'critical' | 'unavailable';
+
+export interface PersonalGateAbuseProtector {
+  checkSource(sourceKey: string): Promise<PersonalGateSourceDecision>;
+  recordActivation(input: {
+    readonly activationId: Uuid;
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+    readonly sourceKey: string;
+  }): Promise<'recorded' | 'unavailable'>;
+  recordSyntacticallyValidMiss(input: {
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+    readonly sourceKey: string;
+  }): Promise<PersonalGateInvalidDecision>;
 }
 
 export interface Clock {

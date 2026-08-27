@@ -1,0 +1,62 @@
+x-test-labels: &test-labels
+  io.kovcheg.test.project: ${KOVCHEG_TEST_PROJECT:?test project label is required}
+  io.kovcheg.test.purpose: ${KOVCHEG_TEST_PURPOSE:?test purpose label is required}
+  io.kovcheg.test.run-id: ${KOVCHEG_TEST_RUN_ID:?test run ID label is required}
+  io.kovcheg.test.source-sha: ${KOVCHEG_TEST_SOURCE_SHA:?test source SHA label is required}
+
+services:
+  postgres:
+    labels: *test-labels
+  migrate:
+    labels: *test-labels
+  database-test:
+    labels: *test-labels
+  message-flow-test:
+    image: ${KOVCHEG_TEST_MESSAGE_FLOW_IMAGE:?message-flow test image is required}
+    build:
+      labels: *test-labels
+    labels: *test-labels
+  auth-integration-test:
+    image: ${KOVCHEG_TEST_AUTH_INTEGRATION_IMAGE:?auth integration test image is required}
+    build:
+      labels: *test-labels
+    labels: *test-labels
+  redis:
+    labels: *test-labels
+  api-1:
+    image: ${KOVCHEG_TEST_API_IMAGE:?api test image is required}
+    build:
+      labels: *test-labels
+    labels: *test-labels
+  api-2:
+    image: ${KOVCHEG_TEST_API_IMAGE:?api test image is required}
+    build:
+      labels: *test-labels
+    labels: *test-labels
+  auth:
+    image: ${KOVCHEG_TEST_AUTH_IMAGE:?auth test image is required}
+    build:
+      labels: *test-labels
+    labels: *test-labels
+  worker:
+    image: ${KOVCHEG_TEST_WORKER_IMAGE:?worker test image is required}
+    build:
+      labels: *test-labels
+    labels: *test-labels
+  web:
+    image: ${KOVCHEG_TEST_WEB_IMAGE:?web test image is required}
+    build:
+      labels: *test-labels
+    labels: *test-labels
+  edge:
+    labels: *test-labels
+
+networks:
+  host-loopback:
+    labels: *test-labels
+  local:
+    labels: *test-labels
+
+volumes:
+  postgres-data:
+    labels: *test-labels

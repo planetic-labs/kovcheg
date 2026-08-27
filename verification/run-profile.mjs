@@ -137,7 +137,9 @@ function runDiffCheck() {
 function runCodeQualityChecks() {
   runStep('verification-regression-fixtures', 'node', [
     '--test',
+    'verification/docker-test-lifecycle.test.mjs',
     'verification/source-analysis.test.mjs',
+    'verification/html-inspection.test.mjs',
     'verification/policy-checks.test.mjs',
     'verification/run-profile.test.mjs',
     'verification/workflow-policy.test.mjs',
@@ -151,6 +153,7 @@ function runCodeQualityChecks() {
   });
   runStep('workspace-boundaries-and-cycles', 'node', ['verification/source-analysis.mjs']);
   runStep('production-entrypoints', 'node', ['verification/entrypoint-policy.mjs']);
+  runStep('deployment-contract', 'node', ['infra/deployment/verify.mjs']);
   runStep('workflow-policy', 'node', ['verification/workflow-policy.mjs']);
 }
 

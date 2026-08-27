@@ -2,7 +2,13 @@
 
 set -eu
 
+. infra/scripts/docker-test-lifecycle.sh
+
 realtime_project="kovcheg-realtime-$$"
+docker_test_begin realtime-smoke "$realtime_project"
+docker_test_configure_compose_images "kovcheg-test-realtime-$KOVCHEG_TEST_RUN_ID"
+docker_storage_preflight
+docker_buildx_preflight
 mkdir -p "$PWD/.local"
 realtime_secret_directory=$(mktemp -d "$PWD/.local/realtime-smoke.XXXXXX")
 export KOVCHEG_LOCAL_SECRET_DIR="$realtime_secret_directory"
@@ -11,19 +17,30 @@ compose() {
   sh infra/scripts/compose.sh \
     -f compose.yaml \
     -f infra/realtime/compose.test.yaml \
+    -f infra/testing/compose.lifecycle.yaml \
     -p "$realtime_project" \
     "$@"
 }
 
 cleanup() {
   exit_code=$?
+  trap - EXIT INT TERM
+  lifecycle_status=0
   if [ "$exit_code" -ne 0 ]; then
     compose ps
     compose logs --no-color --tail 100 api-1 api-2 auth worker redis edge
   fi
-  compose down --volumes --remove-orphans
+  compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  docker_test_finish || lifecycle_status=$?
   find "$realtime_secret_directory" -type f -delete
   find "$realtime_secret_directory" -depth -type d -empty -delete
+  docker_test_remove_state
+  if [ "$exit_code" -ne 0 ]; then
+    return "$exit_code"
+  fi
+  if [ "$lifecycle_status" -ne 0 ]; then
+    return "$lifecycle_status"
+  fi
   return "$exit_code"
 }
 

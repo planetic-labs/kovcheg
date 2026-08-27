@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { functionalGrants, parseCurrentPrincipalAuthorization } from '@kovcheg/contracts';
-import type { FunctionalGrant, UserId, Uuid } from '@kovcheg/contracts';
+import type { FunctionalGrant, SessionId, UserId, Uuid } from '@kovcheg/contracts';
 import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
 import type { PoolConfig, QueryResultRow } from 'pg';
 import { Pool } from 'pg';
@@ -12,7 +12,15 @@ import {
   AuthRepositoryConflictError,
   AuthRepositoryNotFoundError,
 } from './contracts.js';
-import type { AccountRecord, AccountStatus, SessionPrincipal } from './contracts.js';
+import type {
+  AccountRecord,
+  AccountStatus,
+  AuthPasskeyCredential,
+  AuthPasskeySignCountStatus,
+  AuthPasskeyTransport,
+  PersonalGateSecurityResetResult,
+  SessionPrincipal,
+} from './contracts.js';
 import type { OidcClientRepository, RegisteredOidcClient } from './oidc.js';
 import type {
   AuthRepository,
@@ -21,11 +29,15 @@ import type {
   IssueChallengeResult,
 } from './ports.js';
 
-export interface AuthPostgresClient {
+interface AuthPostgresQueryClient {
   query<Row extends QueryResultRow>(
     text: string,
     values?: readonly unknown[],
   ): Promise<{ readonly rows: Row[] }>;
+}
+
+export interface AuthPostgresClient extends AuthPostgresQueryClient {
+  connect?(): Promise<AuthPostgresQueryClient & { release(): void }>;
 }
 
 export interface AuthPostgresEnvironment {
@@ -52,6 +64,62 @@ interface ChallengeRow extends QueryResultRow {
   readonly challenge_id: string | null;
   readonly outcome: string;
   readonly recipient: string | null;
+}
+
+interface PersonalGateActivationRow extends QueryResultRow {
+  readonly account_id: string | null;
+  readonly family_id: string | null;
+  readonly gate_session_id: string | null;
+  readonly outcome: string;
+  readonly reused: boolean | null;
+}
+
+interface PersonalGateValidationRow extends QueryResultRow {
+  readonly account_id: string;
+  readonly email_submission_allowed: boolean;
+  readonly expires_at: Date | string;
+  readonly family_id: string;
+  readonly gate_session_id: string;
+}
+
+interface PersonalGateReissueRow extends QueryResultRow {
+  readonly family_id: string;
+  readonly revoked_gate_session_count: number;
+}
+
+interface PasskeyRow extends QueryResultRow {
+  readonly aaguid: string;
+  readonly account_id: string;
+  readonly attestation_format: string;
+  readonly last_backup_eligible: boolean;
+  readonly last_backup_state: boolean;
+  readonly passkey_id: string;
+  readonly public_key: Uint8Array;
+  readonly registered_backup_eligible: boolean;
+  readonly registered_backup_state: boolean;
+  readonly sign_count: number | string;
+  readonly transports: unknown;
+}
+
+interface PasskeyRegistrationRow extends QueryResultRow {
+  readonly account_id: string;
+  readonly passkey_id: string;
+}
+
+interface PasskeyLoginRow extends QueryResultRow {
+  readonly account_id: string;
+  readonly outcome: string;
+  readonly reused: boolean;
+  readonly session_id: string;
+  readonly sign_count_status: string;
+}
+
+interface JsonResultRow extends QueryResultRow {
+  readonly result: unknown;
+}
+
+interface TimestampResultRow extends QueryResultRow {
+  readonly result: Date | string | null;
 }
 
 interface SessionRow extends QueryResultRow {
@@ -84,10 +152,15 @@ interface OidcArtifactRow extends QueryResultRow {
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const genericUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const oidcModelPattern = /^[A-Za-z][A-Za-z0-9]{1,63}$/;
 
 function unavailable(): AuthError {
   return new AuthError('auth.unavailable', 'Durable authentication storage is unavailable');
+}
+
+function isSerializationFailure(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === '40001';
 }
 
 function mapPostgresError(error: unknown): Error {
@@ -101,6 +174,9 @@ function mapPostgresError(error: unknown): Error {
   if (postgresError.code === '23505') {
     return new AuthRepositoryConflictError();
   }
+  if (postgresError.code === '40001') {
+    return new AuthRepositoryConflictError();
+  }
   if (postgresError.code === 'P0002') {
     return new AuthRepositoryNotFoundError();
   }
@@ -108,7 +184,7 @@ function mapPostgresError(error: unknown): Error {
 }
 
 async function query<Row extends QueryResultRow>(
-  client: AuthPostgresClient,
+  client: AuthPostgresQueryClient,
   text: string,
   values: readonly unknown[] = [],
 ): Promise<Row[]> {
@@ -131,6 +207,74 @@ function identifier<T extends string>(value: string | null): T {
     throw unavailable();
   }
   return value as T;
+}
+
+function genericUuid(value: string | null): Uuid {
+  if (value === null || !genericUuidPattern.test(value)) throw unavailable();
+  return value as Uuid;
+}
+
+function timestamp(value: Date | string): number {
+  const milliseconds = value instanceof Date ? value.getTime() : Date.parse(value);
+  if (!Number.isFinite(milliseconds)) throw unavailable();
+  return milliseconds;
+}
+
+function countField(value: unknown, name: string): number {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw unavailable();
+  const field = (value as Record<string, unknown>)[name];
+  if (!Number.isSafeInteger(field) || (field as number) < 0) throw unavailable();
+  return field as number;
+}
+
+function boundedInteger(value: unknown, maximum = Number.MAX_SAFE_INTEGER): number {
+  const parsed = typeof value === 'string' && /^\d+$/u.test(value) ? Number(value) : value;
+  if (!Number.isSafeInteger(parsed) || (parsed as number) < 0 || (parsed as number) > maximum) {
+    throw unavailable();
+  }
+  return parsed as number;
+}
+
+function passkeyTransports(value: unknown): readonly AuthPasskeyTransport[] {
+  const parsed =
+    typeof value === 'string' && /^\{(?:[a-z-]+(?:,[a-z-]+)*)?\}$/u.test(value)
+      ? value.slice(1, -1).split(',')
+      : value;
+  if (!Array.isArray(parsed)) throw unavailable();
+  if (parsed.length === 1 && parsed[0] === '') return Object.freeze([]);
+  if (
+    parsed.some(
+      (transport) =>
+        transport !== 'ble' &&
+        transport !== 'hybrid' &&
+        transport !== 'internal' &&
+        transport !== 'nfc' &&
+        transport !== 'smart-card' &&
+        transport !== 'usb',
+    )
+  ) {
+    throw unavailable();
+  }
+  return Object.freeze([...parsed] as AuthPasskeyTransport[]);
+}
+
+function passkeySignCountStatus(value: string): AuthPasskeySignCountStatus {
+  if (
+    value !== 'advanced' &&
+    value !== 'not_advanced' &&
+    value !== 'not_supported' &&
+    value !== 'regressed'
+  ) {
+    throw unavailable();
+  }
+  return value;
+}
+
+function bytes(value: unknown, maximum: number): Uint8Array {
+  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > maximum) {
+    throw unavailable();
+  }
+  return Uint8Array.from(value);
 }
 
 function grants(value: unknown): readonly FunctionalGrant[] {
@@ -179,6 +323,120 @@ export class PostgresAuthRepository implements AuthRepository {
 
   constructor(private readonly client: AuthPostgresClient) {}
 
+  async activatePersonalGate(
+    input: Parameters<AuthRepository['activatePersonalGate']>[0],
+  ): ReturnType<AuthRepository['activatePersonalGate']> {
+    const rows = await query<PersonalGateActivationRow>(
+      this.client,
+      `SELECT outcome, account_id, family_id, gate_session_id, reused
+       FROM kovcheg.activate_auth_personal_gate($1, $2, $3, $4, $5, $6)`,
+      [
+        input.codeVerifier,
+        input.gateSessionId,
+        input.gateTokenVerifier,
+        input.clientIdempotencyKey,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const row = rows[0];
+    if (row?.outcome === 'invalid') return Object.freeze({ kind: 'invalid' });
+    if (row?.outcome !== 'active' || typeof row.reused !== 'boolean') throw unavailable();
+    return Object.freeze({
+      accountId: identifier<UserId>(row.account_id),
+      familyId: identifier<Uuid>(row.family_id),
+      gateSessionId: identifier<Uuid>(row.gate_session_id),
+      kind: 'active',
+      reused: row.reused,
+    });
+  }
+
+  async adminIssuePersonalGate(
+    input: Parameters<AuthRepository['adminIssuePersonalGate']>[0],
+  ): Promise<Uuid> {
+    const rows = await query<{ readonly result: string } & QueryResultRow>(
+      this.client,
+      'SELECT kovcheg.admin_issue_auth_personal_gate($1, $2, $3, $4, $5, $6) AS result',
+      [
+        input.actorSessionVerifier,
+        input.accountId,
+        input.familyId,
+        input.codeVerifier,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    return identifier<Uuid>(rows[0]?.result ?? null);
+  }
+
+  async adminReissuePersonalGate(
+    input: Parameters<AuthRepository['adminReissuePersonalGate']>[0],
+  ): ReturnType<AuthRepository['adminReissuePersonalGate']> {
+    const rows = await query<PersonalGateReissueRow>(
+      this.client,
+      `SELECT family_id, revoked_gate_session_count
+       FROM kovcheg.admin_reissue_auth_personal_gate($1, $2, $3, $4, $5, $6)`,
+      [
+        input.actorSessionVerifier,
+        input.accountId,
+        input.familyId,
+        input.codeVerifier,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const row = rows[0];
+    if (!Number.isSafeInteger(row?.revoked_gate_session_count)) throw unavailable();
+    return Object.freeze({
+      familyId: identifier<Uuid>(row?.family_id ?? null),
+      revokedGateSessionCount: row?.revoked_gate_session_count ?? 0,
+    });
+  }
+
+  async adminResumePersonalGate(
+    input: Parameters<AuthRepository['adminResumePersonalGate']>[0],
+  ): Promise<boolean> {
+    return this.adminGateBoolean('kovcheg.admin_resume_auth_personal_gate', input);
+  }
+
+  async adminRevokePersonalGate(
+    input: Parameters<AuthRepository['adminRevokePersonalGate']>[0],
+  ): Promise<number> {
+    const rows = await query<CountRow>(
+      this.client,
+      'SELECT kovcheg.admin_revoke_auth_personal_gate($1, $2, $3, $4, $5) AS result',
+      [
+        input.actorSessionVerifier,
+        input.accountId,
+        input.familyId,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    if (!Number.isSafeInteger(rows[0]?.result) || (rows[0]?.result ?? -1) < 0) {
+      throw unavailable();
+    }
+    return rows[0]?.result ?? 0;
+  }
+
+  async adminSecurityResetAuthAccess(
+    input: Parameters<AuthRepository['adminSecurityResetAuthAccess']>[0],
+  ): Promise<PersonalGateSecurityResetResult> {
+    const rows = await query<JsonResultRow>(
+      this.client,
+      'SELECT kovcheg.admin_security_reset_auth_access($1, $2, $3, $4) AS result',
+      [input.actorSessionVerifier, input.accountId, new Date(input.now), input.correlationId],
+    );
+    const result = rows[0]?.result;
+    return Object.freeze({
+      invalidatedChallengeCount: countField(result, 'invalidatedChallengeCount'),
+      revokedApplicationSessionCount: countField(result, 'revokedApplicationSessionCount'),
+      revokedFamilyCount: countField(result, 'revokedFamilyCount'),
+      revokedGateSessionCount: countField(result, 'revokedGateSessionCount'),
+      revokedPasskeyCount: countField(result, 'revokedPasskeyCount'),
+    });
+  }
+
   async authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null> {
     const rows = await query<SessionRow>(
       this.client,
@@ -217,6 +475,42 @@ export class PostgresAuthRepository implements AuthRepository {
     return Object.freeze({ account, created: row.created });
   }
 
+  async completePasskeyLogin(
+    input: Parameters<AuthRepository['completePasskeyLogin']>[0],
+  ): ReturnType<AuthRepository['completePasskeyLogin']> {
+    const rows = await query<PasskeyLoginRow>(
+      this.client,
+      `SELECT outcome, account_id, session_id, sign_count_status, reused
+       FROM kovcheg.complete_auth_passkey_login(
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+       )`,
+      [
+        Buffer.from(input.credentialId),
+        input.expectedSignCount,
+        input.observedSignCount,
+        input.observedBackupEligible,
+        input.observedBackupState,
+        input.userVerified,
+        input.assertionId,
+        input.session.sessionId,
+        input.session.tokenVerifier,
+        input.session.idleLifetimeMs,
+        new Date(input.session.absoluteExpiresAt),
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const row = rows[0];
+    if (row === undefined) return null;
+    if (row.outcome !== 'authenticated' || typeof row.reused !== 'boolean') throw unavailable();
+    return Object.freeze({
+      accountId: identifier<UserId>(row.account_id),
+      reused: row.reused,
+      sessionId: identifier<SessionId>(row.session_id),
+      signCountStatus: passkeySignCountStatus(row.sign_count_status),
+    });
+  }
+
   async consumeChallengeAndCreateSession(
     input: Parameters<AuthRepository['consumeChallengeAndCreateSession']>[0],
   ): Promise<ConsumeChallengeResult> {
@@ -247,6 +541,82 @@ export class PostgresAuthRepository implements AuthRepository {
     const principal = parseCurrentPrincipalAuthorization(row.principal);
     if (principal === null) throw unavailable();
     return Object.freeze({ kind: 'authenticated', principal });
+  }
+
+  async consumePersonalGateChallengeAndCreateSession(
+    input: Parameters<AuthRepository['consumePersonalGateChallengeAndCreateSession']>[0],
+  ): Promise<ConsumeChallengeResult> {
+    const connect = this.client.connect;
+    if (connect === undefined) throw unavailable();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const transaction = await connect.call(this.client).catch(() => {
+        throw unavailable();
+      });
+      let completed = false;
+      try {
+        await transaction.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+        const gateRows = (
+          await transaction.query<PersonalGateValidationRow>(
+            `SELECT account_id, family_id, gate_session_id, email_submission_allowed,
+                    paused_until, expires_at
+             FROM kovcheg.validate_auth_personal_gate_session($1, $2)`,
+            [input.gateTokenVerifier, new Date(input.now)],
+          )
+        ).rows;
+        if (gateRows[0] === undefined) {
+          await transaction.query('ROLLBACK');
+          completed = true;
+          return Object.freeze({ kind: 'invalid' });
+        }
+        const sessionRows = (
+          await transaction.query<SessionRow>(
+            `SELECT outcome, principal
+             FROM kovcheg.consume_challenge_and_read_principal(
+               $1, $2, $3, $4, $5, $6, $7, $8
+             )`,
+            [
+              input.challengeId,
+              input.candidateCodeVerifier,
+              new Date(input.now),
+              input.session.sessionId,
+              input.session.tokenVerifier,
+              new Date(input.session.issuedAt),
+              input.session.idleLifetimeMs,
+              new Date(input.session.absoluteExpiresAt),
+            ],
+          )
+        ).rows;
+        const sessionRow = sessionRows[0];
+        if (sessionRow?.outcome === 'invalid') {
+          await transaction.query('COMMIT');
+          completed = true;
+          return Object.freeze({ kind: 'invalid' });
+        }
+        const principal = parseCurrentPrincipalAuthorization(sessionRow?.principal);
+        if (sessionRow?.outcome !== 'authenticated' || principal === null) throw unavailable();
+        const extensionRows = (
+          await transaction.query<TimestampResultRow>(
+            'SELECT kovcheg.extend_auth_personal_gate_after_login($1, $2, $3) AS result',
+            [input.gateTokenVerifier, input.session.tokenVerifier, new Date(input.now)],
+          )
+        ).rows;
+        if (extensionRows[0]?.result === null || extensionRows[0]?.result === undefined) {
+          await transaction.query('ROLLBACK');
+          completed = true;
+          return Object.freeze({ kind: 'invalid' });
+        }
+        await transaction.query('COMMIT');
+        completed = true;
+        return Object.freeze({ kind: 'authenticated', principal });
+      } catch (error) {
+        if (!completed) await transaction.query('ROLLBACK').catch(() => undefined);
+        if (isSerializationFailure(error) && attempt < 2) continue;
+        throw mapPostgresError(error);
+      } finally {
+        transaction.release();
+      }
+    }
+    throw unavailable();
   }
 
   async createAccountAsAdministrator(
@@ -342,6 +712,119 @@ export class PostgresAuthRepository implements AuthRepository {
       challengeId: identifier<Uuid>(row.challenge_id),
       kind: 'issued',
       recipient: row.recipient,
+    });
+  }
+
+  async issueChallengeForPersonalGate(
+    input: Parameters<AuthRepository['issueChallengeForPersonalGate']>[0],
+  ): ReturnType<AuthRepository['issueChallengeForPersonalGate']> {
+    const rows = await query<ChallengeRow>(
+      this.client,
+      `SELECT outcome, account_id, challenge_id, recipient
+       FROM kovcheg.issue_auth_challenge_for_personal_gate(
+         $1, $2, $3, $4, $5, $6, $7, $8::bigint * interval '1 millisecond', $9
+       )`,
+      [
+        input.gateTokenVerifier,
+        input.email,
+        input.challenge.challengeId,
+        input.challenge.codeVerifier,
+        new Date(input.challenge.issuedAt),
+        new Date(input.challenge.expiresAt),
+        input.challenge.maxAttempts,
+        input.resendCooldownMs,
+        input.correlationId,
+      ],
+    );
+    const row = rows[0];
+    if (
+      row?.outcome === 'invalid' ||
+      row?.outcome === 'paused' ||
+      row?.outcome === 'mismatch' ||
+      row?.outcome === 'suspended' ||
+      row?.outcome === 'rate_limited'
+    ) {
+      return Object.freeze({ kind: 'neutral' });
+    }
+    if (row?.outcome !== 'issued' || row.recipient === null) throw unavailable();
+    return Object.freeze({
+      accountId: identifier<UserId>(row.account_id),
+      challengeId: identifier<Uuid>(row.challenge_id),
+      kind: 'issued',
+      recipient: row.recipient,
+    });
+  }
+
+  async readPasskeyByCredentialId(
+    credentialId: Uint8Array,
+    now: number,
+  ): Promise<AuthPasskeyCredential | null> {
+    const rows = await query<PasskeyRow>(
+      this.client,
+      `SELECT passkey_id, account_id, public_key, sign_count, transports, aaguid,
+              attestation_format, registered_backup_eligible, registered_backup_state,
+              last_backup_eligible, last_backup_state
+       FROM kovcheg.read_auth_passkey_by_credential_id($1, $2)`,
+      [Buffer.from(credentialId), new Date(now)],
+    );
+    const row = rows[0];
+    if (row === undefined) return null;
+    if (
+      typeof row.attestation_format !== 'string' ||
+      typeof row.registered_backup_eligible !== 'boolean' ||
+      typeof row.registered_backup_state !== 'boolean' ||
+      typeof row.last_backup_eligible !== 'boolean' ||
+      typeof row.last_backup_state !== 'boolean'
+    ) {
+      throw unavailable();
+    }
+    return Object.freeze({
+      aaguid: genericUuid(row.aaguid),
+      accountId: identifier<UserId>(row.account_id),
+      attestationFormat: row.attestation_format,
+      credentialId: Uint8Array.from(credentialId),
+      lastBackupEligible: row.last_backup_eligible,
+      lastBackupState: row.last_backup_state,
+      passkeyId: identifier<Uuid>(row.passkey_id),
+      publicKey: bytes(row.public_key, 8192),
+      registeredBackupEligible: row.registered_backup_eligible,
+      registeredBackupState: row.registered_backup_state,
+      signCount: boundedInteger(row.sign_count, 4_294_967_295),
+      transports: passkeyTransports(row.transports),
+    });
+  }
+
+  async registerPasskey(
+    input: Parameters<AuthRepository['registerPasskey']>[0],
+  ): ReturnType<AuthRepository['registerPasskey']> {
+    const rows = await query<PasskeyRegistrationRow>(
+      this.client,
+      `SELECT passkey_id, account_id
+       FROM kovcheg.register_auth_passkey(
+         $1, $2, $3, $4, $5, $6::kovcheg.auth_passkey_transport[], $7, $8,
+         $9, $10, $11, $12, $13
+       )`,
+      [
+        input.actorSessionVerifier,
+        input.passkeyId,
+        Buffer.from(input.credentialId),
+        Buffer.from(input.publicKey),
+        input.signCount,
+        [...input.transports],
+        input.aaguid,
+        input.attestationFormat,
+        input.backupEligible,
+        input.backupState,
+        input.userVerified,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const row = rows[0];
+    if (row === undefined) throw unavailable();
+    return Object.freeze({
+      accountId: identifier<UserId>(row.account_id),
+      passkeyId: identifier<Uuid>(row.passkey_id),
     });
   }
 
@@ -467,6 +950,49 @@ export class PostgresAuthRepository implements AuthRepository {
       throw unavailable();
     }
     return account;
+  }
+
+  async validatePersonalGateSession(
+    gateTokenVerifier: string,
+    now: number,
+  ): ReturnType<AuthRepository['validatePersonalGateSession']> {
+    const rows = await query<PersonalGateValidationRow>(
+      this.client,
+      `SELECT account_id, family_id, gate_session_id, email_submission_allowed,
+              paused_until, expires_at
+       FROM kovcheg.validate_auth_personal_gate_session($1, $2)`,
+      [gateTokenVerifier, new Date(now)],
+    );
+    const row = rows[0];
+    if (row === undefined) return Object.freeze({ kind: 'invalid' });
+    if (typeof row.email_submission_allowed !== 'boolean') throw unavailable();
+    return Object.freeze({
+      accountId: identifier<UserId>(row.account_id),
+      emailSubmissionAllowed: row.email_submission_allowed,
+      expiresAt: timestamp(row.expires_at),
+      familyId: identifier<Uuid>(row.family_id),
+      gateSessionId: identifier<Uuid>(row.gate_session_id),
+      kind: 'active',
+    });
+  }
+
+  private async adminGateBoolean(
+    name: 'kovcheg.admin_resume_auth_personal_gate',
+    input: Parameters<AuthRepository['adminResumePersonalGate']>[0],
+  ): Promise<boolean> {
+    const rows = await query<BooleanRow>(
+      this.client,
+      `SELECT ${name}($1, $2, $3, $4, $5) AS result`,
+      [
+        input.actorSessionVerifier,
+        input.accountId,
+        input.familyId,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    if (typeof rows[0]?.result !== 'boolean') throw unavailable();
+    return rows[0].result;
   }
 
   private async authorizationMutation(

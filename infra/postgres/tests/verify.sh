@@ -2,7 +2,7 @@
 
 set -eu
 
-test_root=/workspace/infra/postgres/tests
+test_root=${KOVCHEG_TEST_ROOT:-/workspace/infra/postgres/tests}
 scenario=${TEST_SCENARIO:-clean}
 
 read_secret() {
@@ -150,8 +150,8 @@ verify_latest_migration_state() {
       FROM kovcheg_meta.schema_migrations
     "
   )
-  if [ "$latest_state" != '0013:13' ]; then
-    echo 'The complete thirteen-migration chain was not recorded.' >&2
+  if [ "$latest_state" != '0015:15' ]; then
+    echo 'The complete fifteen-migration chain was not recorded.' >&2
     exit 1
   fi
 }
@@ -305,6 +305,102 @@ run_message_flow_tests() {
 
 run_auth_tests() {
   run_sql kovcheg_auth_app "$auth_password" "$test_root/verify-auth-runtime.sql"
+  run_sql kovcheg_auth_app "$auth_password" \
+    "$test_root/verify-auth-personal-entry-gate.sql"
+  run_sql kovcheg_auth_app "$auth_password" \
+    "$test_root/verify-auth-passkey.sql"
+
+  gate_race_result_root="/tmp/kovcheg-gate-race-$$"
+  parallel_number=1
+  parallel_pids=''
+  while [ "$parallel_number" -le 12 ]; do
+    PGPASSWORD="$auth_password" psql --no-psqlrc --tuples-only --no-align --quiet \
+      --set=ON_ERROR_STOP=1 --username kovcheg_auth_app --command="
+        SELECT outcome || ':' || reused
+        FROM kovcheg.activate_auth_personal_gate(
+          repeat('R', 43),
+          '00000000-0000-4000-8000-000000004210',
+          repeat('S', 43),
+          'synthetic-client-race-001',
+          '2030-01-01 00:56:02+00',
+          'gate-race-activate'
+        )
+      " >"$gate_race_result_root-$parallel_number" &
+    parallel_pids="$parallel_pids $!"
+    parallel_number=$((parallel_number + 1))
+  done
+
+  for parallel_pid in $parallel_pids; do
+    wait "$parallel_pid"
+  done
+
+  race_active_count=$(grep -h -c '^active:' "$gate_race_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
+  if [ "$race_active_count" -ne 12 ]; then
+    echo 'Concurrent gate activation did not return twelve successful idempotent outcomes.' >&2
+    exit 1
+  fi
+
+  gate_race_state=$(query_as_migration "
+    SELECT
+      (SELECT count(*)
+       FROM kovcheg.auth_personal_gate_sessions
+       WHERE family_id = '00000000-0000-4000-8000-000000004110'
+         AND client_idempotency_key = 'synthetic-client-race-001') || ':' ||
+      (SELECT count(*)
+       FROM kovcheg.audit_events
+       WHERE correlation_id = 'gate-race-activate')
+  ")
+  if [ "$gate_race_state" != '1:1' ]; then
+    echo 'Concurrent gate activation did not preserve one session and one audit event.' >&2
+    exit 1
+  fi
+
+  passkey_race_result_root="/tmp/kovcheg-passkey-race-$$"
+  parallel_number=1
+  parallel_pids=''
+  while [ "$parallel_number" -le 12 ]; do
+    PGPASSWORD="$auth_password" psql --no-psqlrc --tuples-only --no-align --quiet \
+      --set=ON_ERROR_STOP=1 --username kovcheg_auth_app --command="
+        SELECT outcome || ':' || reused
+        FROM kovcheg.complete_auth_passkey_login(
+          decode(repeat('a4', 32), 'hex'),
+          10,
+          11,
+          true,
+          true,
+          true,
+          '00000000-0000-4000-8000-000000005605',
+          '00000000-0000-4000-8000-000000005505',
+          repeat('K', 42) || '5',
+          3600000,
+          '2030-01-02 01:08:00+00',
+          '2030-01-01 01:08:00+00',
+          'passkey-race-login'
+        )
+      " >"$passkey_race_result_root-$parallel_number" &
+    parallel_pids="$parallel_pids $!"
+    parallel_number=$((parallel_number + 1))
+  done
+
+  for parallel_pid in $parallel_pids; do
+    wait "$parallel_pid"
+  done
+
+  passkey_race_count=$(grep -h -c '^authenticated:' "$passkey_race_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
+  passkey_created_count=$(grep -h -c '^authenticated:false$' "$passkey_race_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
+  passkey_reused_count=$(grep -h -c '^authenticated:true$' "$passkey_race_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
+  if [ "$passkey_race_count" -ne 12 ] \
+    || [ "$passkey_created_count" -ne 1 ] \
+    || [ "$passkey_reused_count" -ne 11 ]; then
+    echo 'Concurrent passkey assertion retries were not exactly idempotent.' >&2
+    exit 1
+  fi
+  find /tmp -maxdepth 1 -name 'kovcheg-passkey-race-*' -type f -delete
+
+  run_sql kovcheg_migrator "$migration_password" \
+    "$test_root/verify-auth-personal-entry-gate-owner.sql"
+  run_sql kovcheg_migrator "$migration_password" \
+    "$test_root/verify-auth-passkey-owner.sql"
 
   parallel_number=1
   parallel_pids=''
@@ -644,6 +740,14 @@ case "$scenario" in
   upgrade-v12)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v12.sql"
+    ;;
+  upgrade-v13)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v13.sql"
+    ;;
+  upgrade-v14)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v14.sql"
     ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"

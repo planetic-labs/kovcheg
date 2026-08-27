@@ -32,6 +32,20 @@ for (const application of manifest.productionApplications) {
   }
 }
 
+for (const image of manifest.deploymentImages ?? []) {
+  await requireFile(image.dockerfile, 'deployment-image');
+  await requireFile(image.sourceEntrypoint, 'deployment-image');
+  const dockerfile = await readFile(path.join(repositoryRoot, image.dockerfile), 'utf8');
+  const targetPattern = new RegExp(`^FROM\\s+.+\\s+AS\\s+${image.target}$`, 'im');
+  if (!targetPattern.test(dockerfile)) {
+    findings.push({
+      kind: 'deployment-image',
+      path: image.dockerfile,
+      reason: `missing Docker target ${image.target}`,
+    });
+  }
+}
+
 for (const shellEntrypoint of manifest.shellEntrypoints) {
   await requireFile(shellEntrypoint, 'shell-entrypoint');
 }
@@ -43,6 +57,69 @@ for (const testEntrypoint of manifest.testOnlyEntrypoints) {
       kind: 'test-only-entrypoint',
       path: testEntrypoint.path,
       reason: 'test-only classification lacks a reviewable explanation',
+    });
+  }
+}
+
+const dockerBuildEntrypoints = [
+  'infra/deployment/smoke.sh',
+  'infra/scripts/database-test.sh',
+  'infra/scripts/docker-smoke.sh',
+  'infra/scripts/docker-up.sh',
+  'infra/scripts/realtime-smoke.sh',
+  'verification/container-security.sh',
+  'verification/docker-lifecycle-smoke.sh',
+];
+for (const entrypoint of dockerBuildEntrypoints) {
+  const source = await readFile(path.join(repositoryRoot, entrypoint), 'utf8');
+  if (!source.includes('docker_storage_preflight')) {
+    findings.push({
+      kind: 'docker-storage-preflight',
+      path: entrypoint,
+      reason: 'Docker build entrypoint does not measure daemon storage before a heavy build',
+    });
+  }
+  if (!source.includes('docker_buildx_preflight')) {
+    findings.push({
+      kind: 'docker-buildx-preflight',
+      path: entrypoint,
+      reason: 'Docker build entrypoint does not fail closed when Buildx is unavailable',
+    });
+  }
+  if (
+    /docker\s+system\s+prune/u.test(source) ||
+    /docker\s+image\s+prune[^\n]*\s-a(?:\s|$)/u.test(source)
+  ) {
+    findings.push({
+      kind: 'docker-broad-cleanup',
+      path: entrypoint,
+      reason: 'automatic Docker entrypoint contains a forbidden broad prune operation',
+    });
+  }
+}
+
+for (const entrypoint of dockerBuildEntrypoints.filter(
+  (entrypoint) => entrypoint !== 'infra/scripts/docker-up.sh',
+)) {
+  const source = await readFile(path.join(repositoryRoot, entrypoint), 'utf8');
+  for (const requiredLifecycleCall of [
+    'docker_test_begin',
+    'docker_test_finish',
+    'trap cleanup EXIT INT TERM',
+  ]) {
+    if (!source.includes(requiredLifecycleCall)) {
+      findings.push({
+        kind: 'docker-test-lifecycle',
+        path: entrypoint,
+        reason: `missing required lifecycle call: ${requiredLifecycleCall}`,
+      });
+    }
+  }
+  if (!/docker_test_(?:register_image|configure_compose_images)/u.test(source)) {
+    findings.push({
+      kind: 'docker-test-lifecycle',
+      path: entrypoint,
+      reason: 'missing current-run image registration',
     });
   }
 }
@@ -83,6 +160,18 @@ if (JSON.stringify(imageNames) !== JSON.stringify([...baseline.productionImages]
     reason: 'production image inventory changed without a reviewed baseline update',
   });
 }
+const deploymentImageNames = (manifest.deploymentImages ?? []).map((image) => image.image).sort();
+if (
+  JSON.stringify(deploymentImageNames) !==
+  JSON.stringify([...(baseline.deploymentImages ?? [])].sort())
+) {
+  findings.push({
+    actual: deploymentImageNames,
+    expected: baseline.deploymentImages,
+    kind: 'deployment-image-baseline',
+    reason: 'deployment image inventory changed without a reviewed baseline update',
+  });
+}
 
 const smoke = await readFile(path.join(repositoryRoot, 'infra/scripts/docker-smoke.sh'), 'utf8');
 const requiredImageAssertions = [
@@ -106,6 +195,7 @@ for (const assertion of requiredImageAssertions) {
 const report = {
   actualImageProofCommand: 'pnpm docker:smoke',
   composeDockerfiles,
+  deploymentImages: manifest.deploymentImages ?? [],
   findings,
   productionApplications: manifest.productionApplications,
   shellEntrypoints: manifest.shellEntrypoints,

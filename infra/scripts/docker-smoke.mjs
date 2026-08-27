@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { URL } from 'node:url';
 
+import { attributeValue, openingTags } from './html-inspection.mjs';
+
 const baseUrl = process.argv[2];
 assert.ok(baseUrl, 'A loopback base URL is required');
 
@@ -15,6 +17,7 @@ assert.match(
 );
 
 const expectedCommitSha = process.env.BUILD_COMMIT_SHA || null;
+const expectedImageDigest = process.env.BUILD_IMAGE_DIGEST || null;
 if (expectedCommitSha !== null) {
   assert.match(expectedCommitSha, /^[0-9a-f]{40}$/);
 }
@@ -107,7 +110,7 @@ async function readHealth(path, service, correlationId, expectedState = 'ready')
   assert.equal(health.state, expectedState);
   assert.equal(health.status, 'ok');
   assert.equal(health.build.commitSha, expectedCommitSha);
-  assert.equal(health.build.imageDigest, null);
+  assert.equal(health.build.imageDigest, expectedImageDigest);
   assert.equal(health.build.migrationVersion, null);
   return health;
 }
@@ -150,13 +153,13 @@ assert.equal(rootResponse.headers.get('x-content-type-options'), 'nosniff');
 assert.equal(rootResponse.headers.get('x-frame-options'), 'DENY');
 assert.equal(rootResponse.headers.get('x-powered-by'), null);
 const rootHtml = await rootResponse.text();
-const scriptTags = rootHtml.match(/<script\b[^>]*>/g) ?? [];
+const scriptTags = openingTags(rootHtml, 'script');
 assert.ok(scriptTags.length > 0, 'The rendered Next.js page must contain framework scripts');
 for (const scriptTag of scriptTags) {
-  assert.match(scriptTag, new RegExp(`\\bnonce=["']${nonce}["']`));
+  assert.equal(attributeValue(scriptTag, 'nonce'), nonce);
 }
-for (const styleTag of rootHtml.match(/<style\b[^>]*>/g) ?? []) {
-  assert.match(styleTag, new RegExp(`\\bnonce=["']${nonce}["']`));
+for (const styleTag of openingTags(rootHtml, 'style')) {
+  assert.equal(attributeValue(styleTag, 'nonce'), nonce);
 }
 const secondRootResponse = await fetchWithRetry(`${baseUrl}/`);
 const secondPolicy = secondRootResponse.headers.get('content-security-policy');

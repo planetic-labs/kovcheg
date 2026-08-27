@@ -2,19 +2,38 @@
 
 set -eu
 
+. infra/scripts/docker-test-lifecycle.sh
+
 smoke_project="kovcheg-smoke-$$"
+docker_test_begin docker-smoke "$smoke_project"
+docker_test_configure_compose_images "kovcheg-test-docker-smoke-$KOVCHEG_TEST_RUN_ID"
+docker_storage_preflight
+docker_buildx_preflight
 mkdir -p "$PWD/.local"
 smoke_secret_directory=$(mktemp -d "$PWD/.local/docker-smoke.XXXXXX")
 export KOVCHEG_LOCAL_SECRET_DIR="$smoke_secret_directory"
 
 compose() {
-  sh infra/scripts/compose.sh -p "$smoke_project" "$@"
+  sh infra/scripts/compose.sh \
+    --file compose.yaml \
+    --file infra/testing/compose.lifecycle.yaml \
+    -p "$smoke_project" \
+    "$@"
 }
 
 cleanup() {
-  compose down --volumes --remove-orphans
+  cleanup_status=$?
+  trap - EXIT INT TERM
+  lifecycle_status=0
+  compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  docker_test_finish || lifecycle_status=$?
   find "$smoke_secret_directory" -type f -delete
   find "$smoke_secret_directory" -depth -type d -empty -delete
+  docker_test_remove_state
+  if [ "$cleanup_status" -ne 0 ]; then
+    return "$cleanup_status"
+  fi
+  return "$lifecycle_status"
 }
 
 trap cleanup EXIT INT TERM
@@ -89,9 +108,15 @@ done
 node infra/scripts/docker-smoke.mjs http://127.0.0.1:3000
 
 smoke_session_token=$(compose exec -T auth node --input-type=module <infra/scripts/create-smoke-session.mjs)
+deactivated_session_token=$(
+  compose exec -T \
+    -e KOVCHEG_SMOKE_ADMIN_SESSION_TOKEN="$smoke_session_token" \
+    auth node --input-type=module <infra/scripts/create-deactivated-smoke-session.mjs
+)
 KOVCHEG_SMOKE_SESSION_TOKEN="$smoke_session_token" \
+KOVCHEG_SMOKE_DEACTIVATED_SESSION_TOKEN="$deactivated_session_token" \
   node infra/scripts/session-contract-smoke.mjs http://127.0.0.1:3000
-unset smoke_session_token
+unset smoke_session_token deactivated_session_token
 
 compose exec -T worker node --input-type=module -e "
 import { readFile } from 'node:fs/promises';

@@ -30,17 +30,43 @@
       "workspace": "apps/worker"
     }
   ],
+  "deploymentImages": [
+    {
+      "context": "infra/edge",
+      "dockerfile": "infra/edge/Dockerfile",
+      "image": "kovcheg-edge",
+      "sourceEntrypoint": "infra/edge/traefik.deployment.yaml",
+      "target": "runtime"
+    },
+    {
+      "context": "infra/postgres",
+      "dockerfile": "infra/postgres/Dockerfile",
+      "image": "kovcheg-postgres",
+      "sourceEntrypoint": "infra/postgres/migrate.sh",
+      "target": "runtime"
+    }
+  ],
   "shellEntrypoints": [
+    "infra/deployment/smoke.sh",
+    "infra/postgres/backup-local.sh",
     "infra/postgres/migrate.sh",
+    "infra/postgres/restore-smoke.sh",
     "infra/postgres/tests/verify.sh",
     "infra/scripts/compose.sh",
     "infra/scripts/database-test.sh",
+    "infra/scripts/docker-test-lifecycle.sh",
+    "infra/scripts/docker-test-resources.sh",
     "infra/scripts/docker-smoke.sh",
     "infra/scripts/docker-up.sh",
     "infra/scripts/realtime-smoke.sh",
-    "verification/container-security.sh"
+    "verification/container-security.sh",
+    "verification/docker-lifecycle-smoke.sh"
   ],
   "testOnlyEntrypoints": [
+    {
+      "path": "verification/docker-lifecycle-smoke.sh",
+      "reason": "Disposable Docker ownership, failure cleanup, and foreign-resource preservation regression."
+    },
     {
       "path": "apps/api/src/message-flow/message-flow.integration-check.ts",
       "reason": "Disposable database integration target used only by the data profile."

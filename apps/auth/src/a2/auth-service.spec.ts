@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 import type { CorrelationId, UserId } from '@kovcheg/contracts';
 
 import { AuthService } from './auth-service.js';
-import { AuthError, emailChallengePolicy } from './contracts.js';
+import {
+  AuthError,
+  emailChallengePolicy,
+  passkeyPolicy,
+  passkeyRateLimitPolicy,
+} from './contracts.js';
 import type { AuthPolicy } from './contracts.js';
 import { HmacAuthCrypto, SystemAuthRandomSource } from './crypto.js';
 import {
@@ -23,10 +28,12 @@ function createPolicy(overrides: Partial<AuthPolicy['rateLimits']> = {}): AuthPo
   const generousRule = Object.freeze({ limit: 50, windowMs: 10 * 60_000 });
   return Object.freeze({
     challenge: emailChallengePolicy,
+    passkey: passkeyPolicy,
     rateLimits: Object.freeze({
       challengeByEmail: generousRule,
       challengeByFingerprint: generousRule,
       challengeByNetwork: generousRule,
+      ...passkeyRateLimitPolicy,
       verifyByChallenge: generousRule,
       verifyByNetwork: generousRule,
       ...overrides,
@@ -51,6 +58,7 @@ function createFixture(
   const delivery = options.delivery ?? new LocalEmailChallengeDelivery({ NODE_ENV: 'test' });
   const crypto = new HmacAuthCrypto({
     challengePepper: 'c'.repeat(64),
+    personalGatePepper: 'g'.repeat(64),
     rateLimitPepper: 'r'.repeat(64),
     sessionPepper: 's'.repeat(64),
   });

@@ -50,7 +50,7 @@ x-api-environment: &api-environment
 
 services:
   postgres:
-    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
     command: ['postgres', '-c', 'password_encryption=scram-sha-256']
     environment:
       POSTGRES_DB: kovcheg
@@ -78,7 +78,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   migrate:
-    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
     command: ['/workspace/infra/postgres/migrate.sh']
     depends_on:
       postgres:
@@ -98,7 +98,7 @@ services:
       - ./infra/postgres:/workspace/infra/postgres:ro
 
   database-test:
-    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
     command: ['/workspace/infra/postgres/tests/verify.sh']
     depends_on:
       postgres:
@@ -200,18 +200,23 @@ services:
       args:
         BUILD_COMMIT_SHA: ${BUILD_COMMIT_SHA:-}
     environment:
-      AUTH_ADMIN_BOOTSTRAP_JSON: '{"bootstrapId":"local-bootstrap-administrator","displayName":"Synthetic Local Administrator","email":"synthetic-local-administrator@auth.invalid","userId":"00000000-0000-4000-8000-000000009801"}'
+      AUTH_ADMIN_BOOTSTRAP_JSON_FILE: /run/secrets/auth_admin_bootstrap
       AUTH_CHALLENGE_PEPPER_FILE: /run/secrets/auth_challenge_pepper
       AUTH_EMAIL_DELIVERY_ADAPTER: resend
       AUTH_EMAIL_FROM_ADDRESS: sender@auth.invalid
       AUTH_EMAIL_FROM_NAME: Synthetic Local Sender
-      AUTH_OIDC_CLIENTS_JSON: '[{"clientId":"kovcheg-local","redirectUris":["https://client.invalid/auth/callback"],"scopes":["openid"],"tokenEndpointAuthMethod":"none"}]'
+      AUTH_OIDC_CLIENTS_JSON_FILE: /run/secrets/auth_oidc_clients
       AUTH_OIDC_COOKIE_KEYS_JSON_FILE: /run/secrets/auth_oidc_cookie_keys
       AUTH_OIDC_ISSUER: https://auth.invalid
       AUTH_OIDC_JWKS_JSON_FILE: /run/secrets/auth_oidc_jwks
+      AUTH_PERSONAL_GATE_PEPPER_FILE: /run/secrets/auth_personal_gate_pepper
       AUTH_RATE_LIMIT_PEPPER_FILE: /run/secrets/auth_rate_limit_pepper
       AUTH_RUNTIME_ENABLED: 'true'
       AUTH_SESSION_PEPPER_FILE: /run/secrets/auth_session_pepper
+      AUTH_WEBAUTHN_ORIGINS_JSON: '["https://auth-local.invalid"]'
+      AUTH_WEBAUTHN_PRODUCTION_RP_ID: auth-local.invalid
+      AUTH_WEBAUTHN_RP_ID: auth-local.invalid
+      AUTH_WEBAUTHN_RP_NAME: Kovcheg
       BUILD_IMAGE_DIGEST: ${BUILD_IMAGE_DIGEST:-}
       HOST: 0.0.0.0
       LOG_LEVEL: info
@@ -245,9 +250,12 @@ services:
     networks:
       - local
     secrets:
+      - auth_admin_bootstrap
       - auth_challenge_pepper
+      - auth_oidc_clients
       - auth_oidc_cookie_keys
       - auth_oidc_jwks
+      - auth_personal_gate_pepper
       - auth_rate_limit_pepper
       - auth_session_pepper
       - postgres_auth_password
@@ -341,7 +349,7 @@ services:
     stop_grace_period: 10s
 
   edge:
-    image: traefik:v3.7.7@sha256:1cb3845d7a05e1473c9086351426597e911db49db382b6e4769f9b0744962ac8
+    image: traefik:v3.7.12@sha256:ef751c695afd26e2be41009047f651153dc1e61ace03e6d13f299d8c4be842b8
     command: ['--configFile=/etc/traefik/traefik.yaml']
     depends_on:
       api-1:
@@ -379,12 +387,18 @@ networks:
     internal: true
 
 secrets:
+  auth_admin_bootstrap:
+    file: ${KOVCHEG_AUTH_ADMIN_BOOTSTRAP_FILE:?local auth administrator bootstrap file is required}
   auth_challenge_pepper:
     file: ${KOVCHEG_AUTH_CHALLENGE_PEPPER_FILE:?local auth challenge pepper file is required}
   auth_oidc_cookie_keys:
     file: ${KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE:?local auth OIDC cookie keys file is required}
+  auth_oidc_clients:
+    file: ${KOVCHEG_AUTH_OIDC_CLIENTS_FILE:?local auth OIDC clients file is required}
   auth_oidc_jwks:
     file: ${KOVCHEG_AUTH_OIDC_JWKS_FILE:?local auth OIDC JWKS file is required}
+  auth_personal_gate_pepper:
+    file: ${KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE:?local auth personal-gate pepper file is required}
   auth_rate_limit_pepper:
     file: ${KOVCHEG_AUTH_RATE_LIMIT_PEPPER_FILE:?local auth rate-limit pepper file is required}
   auth_session_pepper:

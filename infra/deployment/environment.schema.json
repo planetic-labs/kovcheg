@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "variables": [
+    {
+      "name": "KOVCHEG_API_IMAGE",
+      "type": "immutable-image-reference",
+      "required": true,
+      "secret": false,
+      "constraint": "registry reference ending in @sha256:<64 lowercase hex>",
+      "restart": "recreate api-1 and api-2",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_AUTH_IMAGE",
+      "type": "immutable-image-reference",
+      "required": true,
+      "secret": false,
+      "constraint": "registry reference ending in @sha256:<64 lowercase hex>",
+      "restart": "recreate auth",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_WEB_IMAGE",
+      "type": "immutable-image-reference",
+      "required": true,
+      "secret": false,
+      "constraint": "registry reference ending in @sha256:<64 lowercase hex>",
+      "restart": "recreate web",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_WORKER_IMAGE",
+      "type": "immutable-image-reference",
+      "required": true,
+      "secret": false,
+      "constraint": "registry reference ending in @sha256:<64 lowercase hex>",
+      "restart": "recreate worker",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_EDGE_IMAGE",
+      "type": "immutable-image-reference",
+      "required": true,
+      "secret": false,
+      "constraint": "registry reference ending in @sha256:<64 lowercase hex>",
+      "restart": "recreate edge",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_POSTGRES_IMAGE",
+      "type": "immutable-image-reference",
+      "required": true,
+      "secret": false,
+      "constraint": "registry reference ending in @sha256:<64 lowercase hex>",
+      "restart": "migration and database operations require the exact same approved image",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_API_IMAGE_DIGEST",
+      "type": "sha256-digest",
+      "required": true,
+      "secret": false,
+      "constraint": "sha256:<64 lowercase hex> and equal to KOVCHEG_API_IMAGE digest",
+      "restart": "recreate api-1 and api-2",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_AUTH_IMAGE_DIGEST",
+      "type": "sha256-digest",
+      "required": true,
+      "secret": false,
+      "constraint": "sha256:<64 lowercase hex> and equal to KOVCHEG_AUTH_IMAGE digest",
+      "restart": "recreate auth",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_WEB_IMAGE_DIGEST",
+      "type": "sha256-digest",
+      "required": true,
+      "secret": false,
+      "constraint": "sha256:<64 lowercase hex> and equal to KOVCHEG_WEB_IMAGE digest",
+      "restart": "recreate web",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_WORKER_IMAGE_DIGEST",
+      "type": "sha256-digest",
+      "required": true,
+      "secret": false,
+      "constraint": "sha256:<64 lowercase hex> and equal to KOVCHEG_WORKER_IMAGE digest",
+      "restart": "recreate worker",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_AUTH_EMAIL_FROM_ADDRESS",
+      "type": "email-address",
+      "required": true,
+      "secret": false,
+      "constraint": "verified sender controlled outside the repository",
+      "restart": "restart auth",
+      "rotation": "review when sender domain changes"
+    },
+    {
+      "name": "KOVCHEG_AUTH_EMAIL_FROM_NAME",
+      "type": "bounded-string",
+      "required": true,
+      "secret": false,
+      "constraint": "1 to 128 visible characters",
+      "restart": "restart auth",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_AUTH_OIDC_ISSUER",
+      "type": "https-url",
+      "required": true,
+      "secret": false,
+      "constraint": "bare HTTPS origin; must match the approved ingress identity",
+      "restart": "restart auth",
+      "rotation": "requires client and ingress coordination"
+    },
+    {
+      "name": "KOVCHEG_AUTH_WEBAUTHN_ORIGINS_JSON",
+      "type": "json-array-of-https-origins",
+      "required": true,
+      "secret": false,
+      "constraint": "1 to 8 unique origins within the configured RP ID",
+      "restart": "restart auth",
+      "rotation": "requires passkey and ingress review"
+    },
+    {
+      "name": "KOVCHEG_AUTH_WEBAUTHN_RP_ID",
+      "type": "dns-name",
+      "required": true,
+      "secret": false,
+      "constraint": "exact production RP allowlist and suffix owner of every allowed origin",
+      "restart": "restart auth",
+      "rotation": "requires explicit passkey migration decision"
+    },
+    {
+      "name": "KOVCHEG_AUTH_WEBAUTHN_RP_NAME",
+      "type": "bounded-string",
+      "required": true,
+      "secret": false,
+      "constraint": "1 to 64 characters without controls",
+      "restart": "restart auth",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_LOOPBACK_PORT",
+      "type": "tcp-port",
+      "required": false,
+      "secret": false,
+      "constraint": "host loopback only; default 3000",
+      "restart": "recreate edge",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_BACKUP_RETENTION_DAYS",
+      "type": "positive-integer",
+      "required": false,
+      "secret": false,
+      "constraint": "minimum 1; conservative application default 7",
+      "restart": "next backup invocation",
+      "rotation": "review against available local storage"
+    },
+    {
+      "name": "KOVCHEG_AUTH_ADMIN_BOOTSTRAP_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "owner-readable JSON file; never an inline value",
+      "restart": "restart auth",
+      "rotation": "remove or replace after controlled bootstrap"
+    },
+    {
+      "name": "KOVCHEG_AUTH_OIDC_CLIENTS_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "owner-readable JSON file; may contain client credentials",
+      "restart": "restart auth",
+      "rotation": "rotate on client credential compromise or client removal"
+    },
+    {
+      "name": "KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "owner-readable JSON array with at least two strong keys",
+      "restart": "restart auth",
+      "rotation": "overlapping key rotation"
+    },
+    {
+      "name": "KOVCHEG_AUTH_OIDC_JWKS_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "owner-readable private JWKS",
+      "restart": "restart auth",
+      "rotation": "overlapping signing-key rotation"
+    },
+    {
+      "name": "KOVCHEG_AUTH_CHALLENGE_PEPPER_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "non-empty high-entropy value",
+      "restart": "restart auth; outstanding challenges become invalid",
+      "rotation": "emergency and planned rotation procedure required"
+    },
+    {
+      "name": "KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "non-empty high-entropy value",
+      "restart": "restart auth; outstanding gate material becomes invalid",
+      "rotation": "emergency and planned rotation procedure required"
+    },
+    {
+      "name": "KOVCHEG_AUTH_RATE_LIMIT_PEPPER_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "non-empty high-entropy value",
+      "restart": "restart auth",
+      "rotation": "emergency and planned rotation procedure required"
+    },
+    {
+      "name": "KOVCHEG_AUTH_SESSION_PEPPER_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "non-empty high-entropy value",
+      "restart": "restart auth; all existing sessions become invalid",
+      "rotation": "security event or controlled global logout"
+    },
+    {
+      "name": "KOVCHEG_RESEND_API_KEY_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "service-scoped provider credential file",
+      "restart": "restart auth",
+      "rotation": "provider credential rotation and emergency revoke"
+    },
+    {
+      "name": "KOVCHEG_REALTIME_RELAY_TOKEN_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "service-scoped high-entropy bearer token file",
+      "restart": "restart worker and both API instances",
+      "rotation": "coordinated overlap-free rotation"
+    },
+    {
+      "name": "KOVCHEG_POSTGRES_SUPERUSER_PASSWORD_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "database-scoped password file",
+      "restart": "database credential transition",
+      "rotation": "controlled database password rotation"
+    },
+    {
+      "name": "KOVCHEG_POSTGRES_MIGRATION_PASSWORD_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "migration-role password file",
+      "restart": "next migration job",
+      "rotation": "controlled database password rotation"
+    },
+    {
+      "name": "KOVCHEG_POSTGRES_RUNTIME_PASSWORD_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "application runtime-role password file",
+      "restart": "restart API and worker",
+      "rotation": "controlled database password rotation"
+    },
+    {
+      "name": "KOVCHEG_POSTGRES_AUTH_PASSWORD_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "auth runtime-role password file",
+      "restart": "restart auth",
+      "rotation": "controlled database password rotation"
+    },
+    {
+      "name": "KOVCHEG_POSTGRES_AUDIT_PASSWORD_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "audit writer-role password file",
+      "restart": "restart any future audit writer consumer",
+      "rotation": "controlled database password rotation"
+    }
+  ]
+}

@@ -37,14 +37,39 @@ function apiBaseUrl(): string {
   return base.toString().replace(/\/$/u, '');
 }
 
-function selectedHeaders(request: NextRequest, includeBody: boolean): Headers {
+type CookieForwarding = 'all' | 'none' | 'session';
+
+function sessionCookieHeader(value: string | null): string | null {
+  if (value === null) return null;
+  const matches = value
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => {
+      const name = part.slice(0, part.indexOf('='));
+      return name === '__Host-kovcheg_session' || name === 'kovcheg_session';
+    });
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
+function selectedHeaders(
+  request: NextRequest,
+  includeBody: boolean,
+  cookieForwarding: CookieForwarding,
+): Headers {
   const headers = new Headers({ accept: 'application/json' });
-  for (const name of ['cookie', 'user-agent', 'x-correlation-id', 'x-forwarded-for']) {
+  for (const name of ['user-agent', 'x-correlation-id', 'x-forwarded-for']) {
     const value = request.headers.get(name);
     if (value !== null) {
       headers.set(name, value);
     }
   }
+  const cookie =
+    cookieForwarding === 'all'
+      ? request.headers.get('cookie')
+      : cookieForwarding === 'session'
+        ? sessionCookieHeader(request.headers.get('cookie'))
+        : null;
+  if (cookie !== null) headers.set('cookie', cookie);
   if (includeBody) {
     headers.set('content-type', 'application/json');
   }
@@ -54,7 +79,11 @@ function selectedHeaders(request: NextRequest, includeBody: boolean): Headers {
 export async function requestAuth(
   request: NextRequest,
   path: string,
-  input: Readonly<{ body?: string; method: 'DELETE' | 'GET' | 'PATCH' | 'POST' | 'PUT' }>,
+  input: Readonly<{
+    body?: string;
+    cookies?: CookieForwarding;
+    method: 'DELETE' | 'GET' | 'PATCH' | 'POST' | 'PUT';
+  }>,
 ): Promise<Response> {
   if (!path.startsWith('/') || path.startsWith('//')) {
     throw new Error('A6 auth upstream path must be absolute and origin-relative');
@@ -62,7 +91,7 @@ export async function requestAuth(
   return fetch(`${authOrigin()}${path}`, {
     ...(input.body === undefined ? {} : { body: input.body }),
     cache: 'no-store',
-    headers: selectedHeaders(request, input.body !== undefined),
+    headers: selectedHeaders(request, input.body !== undefined, input.cookies ?? 'all'),
     method: input.method,
   });
 }
@@ -78,7 +107,7 @@ export async function requestApi(
   return fetch(`${apiBaseUrl()}${path}`, {
     ...(input.body === undefined ? {} : { body: input.body }),
     cache: 'no-store',
-    headers: selectedHeaders(request, input.body !== undefined),
+    headers: selectedHeaders(request, input.body !== undefined, 'all'),
     method: input.method,
   });
 }
@@ -109,6 +138,26 @@ export function copySetCookies(upstream: Response, downstream: NextResponse): vo
   if (value !== null) {
     downstream.headers.append('set-cookie', value);
   }
+}
+
+export function copySessionSetCookie(upstream: Response, downstream: NextResponse): boolean {
+  const headers = upstream.headers as Headers & { getSetCookie?: () => string[] };
+  const values = headers.getSetCookie?.() ?? [];
+  const candidates =
+    values.length > 0
+      ? values
+      : upstream.headers.get('set-cookie') === null
+        ? []
+        : [upstream.headers.get('set-cookie') as string];
+  const sessionCookies = candidates.filter((value) => {
+    const name = value.slice(0, value.indexOf('='));
+    return name === '__Host-kovcheg_session' || name === 'kovcheg_session';
+  });
+  if (sessionCookies.length !== 1) return false;
+  for (const value of sessionCookies) {
+    downstream.headers.append('set-cookie', value);
+  }
+  return true;
 }
 
 export async function relayJson(upstream: Response): Promise<NextResponse> {

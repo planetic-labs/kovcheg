@@ -42,6 +42,8 @@ describe('A6 developer-owned accessibility baseline', () => {
     expect(clientShell).toContain('aria-label="Вернуться к вводу email"');
     expect(clientShell).toContain('className="auth-back"');
     expect(clientShell).toContain('event.currentTarget.form?.requestSubmit()');
+    expect(clientShell).toContain('aria-describedby="passkey-registration-status"');
+    expect(clientShell.match(/id="passkey-registration-status"/gu)).toHaveLength(1);
     expect(codeInput).toContain('aria-label={`Цифра ${index + 1}`}');
     expect(codeInput).toContain('aria-invalid={invalid}');
   });
