@@ -500,6 +500,7 @@ $$;
 DO $$
 DECLARE
   protected_function regprocedure;
+  variant_e_active boolean;
 BEGIN
   IF to_regclass('kovcheg.auth_personal_gate_families') IS NULL THEN
     RETURN;
@@ -529,28 +530,95 @@ BEGIN
     'personal gate state must expose no direct runtime or audit DML'
   );
 
+  variant_e_active := kovcheg.current_migration_version() >= '0016';
+
+  IF variant_e_active THEN
+    PERFORM pg_temp.assert_true(
+      has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.issue_auth_email_challenge(text,uuid,text,timestamp with time zone,timestamp with time zone,integer,interval,character varying)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.admin_security_reset_auth_access(text,uuid,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.issue_auth_challenge_for_active_account(text,uuid,text,timestamp with time zone,timestamp with time zone,integer,interval)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.admin_issue_auth_personal_gate(text,uuid,uuid,text,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.admin_reissue_auth_personal_gate(text,uuid,uuid,text,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.admin_revoke_auth_personal_gate(text,uuid,uuid,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.admin_resume_auth_personal_gate(text,uuid,uuid,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.activate_auth_personal_gate(text,uuid,text,text,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.validate_auth_personal_gate_session(text,timestamp with time zone)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.issue_auth_challenge_for_personal_gate(text,text,uuid,text,timestamp with time zone,timestamp with time zone,integer,interval,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.extend_auth_personal_gate_after_login(text,text,timestamp with time zone)',
+        'EXECUTE'
+      ),
+      'Variant E must expose direct email issuance while every gate entrypoint is retired'
+    );
+  ELSE
+    PERFORM pg_temp.assert_true(
+      has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.activate_auth_personal_gate(text,uuid,text,text,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.validate_auth_personal_gate_session(text,timestamp with time zone)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.issue_auth_challenge_for_personal_gate(text,text,uuid,text,timestamp with time zone,timestamp with time zone,integer,interval,character varying)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.extend_auth_personal_gate_after_login(text,text,timestamp with time zone)',
+        'EXECUTE'
+      ),
+      'pre-Variant-E migrations must retain their historical gate privileges'
+    );
+  END IF;
+
   PERFORM pg_temp.assert_true(
     has_function_privilege(
-      'kovcheg_auth_app',
-      'kovcheg.activate_auth_personal_gate(text,uuid,text,text,timestamp with time zone,character varying)',
-      'EXECUTE'
-    )
-    AND has_function_privilege(
-      'kovcheg_auth_app',
-      'kovcheg.validate_auth_personal_gate_session(text,timestamp with time zone)',
-      'EXECUTE'
-    )
-    AND has_function_privilege(
-      'kovcheg_auth_app',
-      'kovcheg.issue_auth_challenge_for_personal_gate(text,text,uuid,text,timestamp with time zone,timestamp with time zone,integer,interval,character varying)',
-      'EXECUTE'
-    )
-    AND has_function_privilege(
-      'kovcheg_auth_app',
-      'kovcheg.extend_auth_personal_gate_after_login(text,text,timestamp with time zone)',
-      'EXECUTE'
-    )
-    AND has_function_privilege(
       'kovcheg_auth_app',
       'kovcheg.admin_security_reset_auth_access(text,uuid,timestamp with time zone,character varying)',
       'EXECUTE'
@@ -570,7 +638,7 @@ BEGIN
       'kovcheg.auth_personal_gate_audit(character varying,uuid,character varying,character varying,uuid,jsonb)',
       'EXECUTE'
     ),
-    'only the auth runtime may execute the protected personal gate surface'
+    'security reset and internal gate evidence must remain least privilege'
   );
 
   FOREACH protected_function IN ARRAY ARRAY[

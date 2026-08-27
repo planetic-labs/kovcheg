@@ -11,7 +11,6 @@ function enabledSource() {
       userId: '00000000-0000-4000-8000-000000000071',
     }),
     AUTH_CHALLENGE_PEPPER: 'c'.repeat(64),
-    AUTH_PERSONAL_GATE_PEPPER: 'g'.repeat(64),
     AUTH_OIDC_CLIENTS_JSON: JSON.stringify([
       {
         clientId: 'synthetic-client',
@@ -113,14 +112,12 @@ describe('A2 runtime configuration', () => {
         clients: join(directory, 'clients'),
         cookies: join(directory, 'cookies'),
         jwks: join(directory, 'jwks'),
-        gate: join(directory, 'gate'),
         rate: join(directory, 'rate'),
         session: join(directory, 'session'),
       };
       writeFileSync(paths.bootstrap, enabledSource().AUTH_ADMIN_BOOTSTRAP_JSON);
       writeFileSync(paths.clients, enabledSource().AUTH_OIDC_CLIENTS_JSON);
       writeFileSync(paths.challenge, 'c'.repeat(64));
-      writeFileSync(paths.gate, 'g'.repeat(64));
       writeFileSync(paths.cookies, JSON.stringify(['k'.repeat(64), 'l'.repeat(64)]));
       writeFileSync(
         paths.jwks,
@@ -143,8 +140,6 @@ describe('A2 runtime configuration', () => {
         AUTH_OIDC_JWKS_JSON_FILE: paths.jwks,
         AUTH_OIDC_CLIENTS_JSON: undefined,
         AUTH_OIDC_CLIENTS_JSON_FILE: paths.clients,
-        AUTH_PERSONAL_GATE_PEPPER: undefined,
-        AUTH_PERSONAL_GATE_PEPPER_FILE: paths.gate,
         AUTH_RATE_LIMIT_PEPPER: undefined,
         AUTH_RATE_LIMIT_PEPPER_FILE: paths.rate,
         AUTH_SESSION_PEPPER: undefined,
@@ -153,7 +148,6 @@ describe('A2 runtime configuration', () => {
       expect(config).toMatchObject({
         authSecrets: {
           challengePepper: 'c'.repeat(64),
-          personalGatePepper: 'g'.repeat(64),
           rateLimitPepper: 'r'.repeat(64),
           sessionPepper: 's'.repeat(64),
         },

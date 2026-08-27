@@ -1,11 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { parseSessionPrincipal } from '../a6/contracts';
 import type { SessionPrincipal } from '../a6/contracts';
-import { attemptConditionalPasskey, registerPasskey } from '../a6/passkey-client';
+import { parseEmailChallengeResponse, prepareEmailSubmission } from '../a6/email-auth';
+import {
+  attemptConditionalPasskey,
+  cancelPasskeyCeremony,
+  registerPasskey,
+} from '../a6/passkey-client';
 import { AdministrationPanel } from './administration-panel';
 import { ChatPanel } from './chat-panel';
 import { CodeInput } from './code-input';
@@ -22,16 +27,6 @@ export function ClientShell() {
   const [session, setSession] = useState<SessionState>('loading');
   const [sessionError, setSessionError] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
-  const pendingGateCode = useRef<string | null>(null);
-
-  useLayoutEffect(() => {
-    const fragment = window.location.hash;
-    const parameters = new URLSearchParams(fragment.startsWith('#') ? fragment.slice(1) : fragment);
-    pendingGateCode.current = parameters.get('gate');
-    if (fragment.length > 0) {
-      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
-    }
-  }, []);
 
   const refreshSession = useCallback(async () => {
     setSessionError(false);
@@ -71,7 +66,6 @@ export function ClientShell() {
   if (session === null) {
     return (
       <LoginPanel
-        initialGateCode={pendingGateCode.current}
         onAuthenticated={refreshSession}
         sessionExpired={sessionExpired}
         sessionUnavailable={sessionError}
@@ -109,116 +103,72 @@ function Brand() {
 }
 
 function LoginPanel({
-  initialGateCode,
   onAuthenticated,
   sessionExpired,
   sessionUnavailable,
 }: Readonly<{
-  initialGateCode: string | null;
   onAuthenticated: () => Promise<void>;
   sessionExpired: boolean;
   sessionUnavailable: boolean;
 }>) {
-  const [step, setStep] = useState<'code' | 'email' | 'gate' | 'loading'>('loading');
+  const [step, setStep] = useState<'code' | 'email'>('email');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [emailFallbackChosen, setEmailFallbackChosen] = useState(false);
+  const [submittedEmail, setSubmittedEmail] = useState('');
+  const [statusNotice, setStatusNotice] = useState('');
+  const [codeInputKey, setCodeInputKey] = useState(0);
   const emailInput = useRef<HTMLInputElement>(null);
   const conditionalPasskeyStarted = useRef(false);
   const verifyingCode = useRef(false);
   const statusId = 'authentication-status';
-  const volatileClientKey = useRef<string | null>(null);
-
-  function clientIdempotencyKey(): string {
-    const storageKey = 'kovcheg-personal-gate-client';
-    try {
-      const existing = window.localStorage.getItem(storageKey);
-      if (existing !== null && /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/u.test(existing)) {
-        return existing;
-      }
-      const created = crypto.randomUUID();
-      window.localStorage.setItem(storageKey, created);
-      return created;
-    } catch {
-      volatileClientKey.current ??= crypto.randomUUID();
-      return volatileClientKey.current;
-    }
-  }
-
-  const activateGate = useCallback(async (code: string): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await fetch('/bff/auth/gate', {
-        body: JSON.stringify({ clientIdempotencyKey: clientIdempotencyKey(), code }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
-      const payload = (await jsonOrNull(response)) as { readonly next?: unknown } | null;
-      setStep(response.ok && payload?.next === 'email' ? 'email' : 'gate');
-      if (!response.ok) {
-        setError('Не удалось проверить доступ. Попробуйте снова.');
-      }
-    } catch {
-      setStep('gate');
-      setError('Не удалось проверить доступ. Попробуйте снова.');
-    } finally {
-      setBusy(false);
-    }
-  }, []);
 
   useEffect(() => {
-    if (initialGateCode !== null) {
-      void activateGate(initialGateCode);
-      return;
-    }
-    void fetch('/bff/auth/gate', { cache: 'no-store' })
-      .then(async (response) => {
-        const payload = (await jsonOrNull(response)) as { readonly status?: unknown } | null;
-        setStep(response.ok && payload?.status === 'active' ? 'email' : 'gate');
-      })
-      .catch(() => {
-        setStep('gate');
-        setError('Не удалось проверить доступ. Попробуйте снова.');
-      });
-  }, [activateGate, initialGateCode]);
-
-  useEffect(() => {
-    if (step === 'loading' || conditionalPasskeyStarted.current) return;
+    if (conditionalPasskeyStarted.current) return;
     conditionalPasskeyStarted.current = true;
     void attemptConditionalPasskey().then(async (result) => {
       if (result === 'authenticated') await onAuthenticated();
     });
-  }, [onAuthenticated, step]);
+  }, [onAuthenticated]);
 
-  async function submitGate(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    const code = String(new FormData(event.currentTarget).get('gateCode') ?? '');
-    await activateGate(code);
+  async function requestCodeFor(value: string, resend = false): Promise<void> {
+    const preparedEmail = prepareEmailSubmission(value);
+    if (preparedEmail === null) {
+      setError('Проверьте формат email.');
+      setStatusNotice('');
+      if (!resend) setStep('email');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setStatusNotice('');
+    try {
+      const response = await fetch('/bff/auth/challenge', {
+        body: JSON.stringify({ email: preparedEmail }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const payload = response.ok ? parseEmailChallengeResponse(await jsonOrNull(response)) : null;
+      if (payload === null) throw new Error('challenge-unavailable');
+      setEmail(payload.email);
+      setSubmittedEmail(payload.email);
+      setCodeInputKey((current) => current + 1);
+      setStep('code');
+      if (resend) setStatusNotice('Запрос обработан. Введите новый код.');
+    } catch {
+      setError('Не удалось отправить запрос. Проверьте соединение и попробуйте снова.');
+      if (!resend) setStep('email');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function requestCode(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    const submittedEmail = String(new FormData(event.currentTarget).get('email') ?? '');
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await fetch('/bff/auth/challenge', {
-        body: JSON.stringify({ email: submittedEmail }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
-      if (response.status === 401) {
-        setStep('gate');
-        return;
-      }
-      if (!response.ok) throw new Error('challenge-unavailable');
-      const payload = (await jsonOrNull(response)) as { readonly next?: unknown } | null;
-      if (payload?.next === 'code') setStep('code');
-    } catch {
-      setError('Не удалось отправить запрос. Проверьте соединение и попробуйте снова.');
-    } finally {
-      setBusy(false);
-    }
+    setEmailFallbackChosen(true);
+    cancelPasskeyCeremony();
+    await requestCodeFor(email);
   }
 
   async function verifyCode(nextDigits: readonly string[]): Promise<void> {
@@ -237,10 +187,10 @@ function LoginPanel({
         method: 'POST',
       });
       if (!response.ok) {
-        if (response.status === 401) setStep('gate');
         setError('Код не подошёл или устарел. Запросите новый код.');
         return;
       }
+      setStatusNotice('Входим…');
       await onAuthenticated();
     } catch {
       setError('Не удалось проверить код. Попробуйте снова.');
@@ -265,91 +215,92 @@ function LoginPanel({
         : busy
           ? step === 'email'
             ? 'Проверяем адрес и отправляем код.'
-            : step === 'code'
-              ? 'Проверяем код.'
-              : 'Проверяем доступ.'
-          : '');
+            : 'Проверяем код.'
+          : statusNotice);
   const authState = error !== null || sessionUnavailable ? 'error' : busy ? 'busy' : 'ready';
 
   return (
     <main className="login-layout">
       <section aria-label="Вход" className="login-card">
-        <form
-          aria-busy={busy}
-          className="auth-control"
-          data-state={authState}
-          hidden={step !== 'gate'}
-          onSubmit={(event) => void submitGate(event)}
-        >
-          <label className="visually-hidden" htmlFor="gate-code">
-            Персональный код доступа
-          </label>
-          <input
-            aria-describedby={statusId}
-            aria-invalid={authState === 'error'}
-            autoComplete="webauthn"
-            autoFocus={step === 'gate'}
-            disabled={busy}
-            id="gate-code"
-            inputMode="text"
-            maxLength={9}
-            name="gateCode"
-            pattern="[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}"
-            required
-            spellCheck={false}
-            type="text"
-          />
-        </form>
-        <form
-          aria-busy={busy}
-          className="auth-control"
-          data-state={authState}
-          hidden={step !== 'email'}
-          onSubmit={(event) => void requestCode(event)}
-        >
-          <label className="visually-hidden" htmlFor="email">
-            Email
-          </label>
-          <input
-            aria-describedby={statusId}
-            aria-invalid={authState === 'error'}
-            autoComplete="username webauthn"
-            autoFocus={step === 'email'}
-            disabled={busy}
-            id="email"
-            maxLength={254}
-            name="email"
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-            ref={emailInput}
-            required
-            type="email"
-          />
-        </form>
+        {step === 'email' && (
+          <form
+            aria-busy={busy}
+            className="auth-control"
+            data-state={authState}
+            onSubmit={(event) => void requestCode(event)}
+          >
+            <label className="visually-hidden" htmlFor="email">
+              Email
+            </label>
+            <input
+              aria-describedby={statusId}
+              aria-invalid={authState === 'error'}
+              autoComplete={emailFallbackChosen ? 'email' : 'username webauthn'}
+              autoFocus
+              disabled={busy}
+              id="email"
+              maxLength={254}
+              name="email"
+              onChange={(event) => {
+                setEmail(event.currentTarget.value);
+                setError(null);
+                setStatusNotice('');
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+              ref={emailInput}
+              required
+              type="email"
+              value={email}
+            />
+            {email.length > 0 && (
+              <button
+                aria-label="Продолжить"
+                className="auth-arrow auth-next"
+                disabled={busy}
+                type="submit"
+              >
+                <span aria-hidden="true">→</span>
+              </button>
+            )}
+          </form>
+        )}
         {step === 'code' && (
-          <div aria-busy={busy} className="auth-control" data-state={authState}>
+          <div aria-busy={busy} className="auth-control auth-code" data-state={authState}>
+            <p className="auth-email-display">{submittedEmail}</p>
             <CodeInput
               descriptionId={statusId}
               disabled={busy}
               invalid={authState === 'error'}
+              key={codeInputKey}
               onChange={updateDigits}
             />
             <button
               aria-label="Вернуться к вводу email"
-              className="auth-back"
+              className="auth-arrow auth-back"
               disabled={busy}
               onClick={() => {
                 setError(null);
+                setEmail(submittedEmail);
+                setStatusNotice('');
                 setStep('email');
                 requestAnimationFrame(() => emailInput.current?.focus());
               }}
               type="button"
             >
               <span aria-hidden="true">←</span>
+            </button>
+            <button
+              className="auth-resend"
+              disabled={busy}
+              onClick={() => void requestCodeFor(submittedEmail, true)}
+              type="button"
+            >
+              Запросить новый код
             </button>
           </div>
         )}
@@ -363,11 +314,6 @@ function LoginPanel({
           {statusMessage}
         </p>
       </section>
-      <div className="auth-help">
-        <ProblemReportEntry
-          context={sessionUnavailable ? { errorCode: 'SESSION_UNAVAILABLE' } : undefined}
-        />
-      </div>
     </main>
   );
 }

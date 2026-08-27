@@ -15,6 +15,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     upstream = await requestAuth(request, '/session/challenges', {
       body: JSON.stringify({ email: body.email }),
+      cookies: 'none',
       method: 'POST',
     });
   } catch {
@@ -28,24 +29,26 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   const payload = (await upstream.json().catch(() => null)) as {
     readonly challengeId?: unknown;
+    readonly email?: unknown;
     readonly next?: unknown;
     readonly status?: unknown;
   } | null;
-  if (payload?.status !== 'accepted' || (payload.next !== 'email' && payload.next !== 'code')) {
+  if (
+    payload?.status !== 'accepted' ||
+    payload.next !== 'code' ||
+    typeof payload.email !== 'string' ||
+    payload.email !== body.email.trim()
+  ) {
     return bffError(503, 'a6.unavailable');
-  }
-
-  if (payload.next === 'email') {
-    return NextResponse.json(
-      { next: 'email', status: 'accepted' },
-      { headers: { 'cache-control': 'no-store' }, status: 202 },
-    );
   }
   if (typeof payload.challengeId !== 'string' || !uuidPattern.test(payload.challengeId)) {
     return bffError(503, 'a6.unavailable');
   }
 
-  const response = NextResponse.json({ next: 'code', status: 'accepted' }, { status: 202 });
+  const response = NextResponse.json(
+    { email: payload.email, next: 'code', status: 'accepted' },
+    { status: 202 },
+  );
   response.cookies.set({
     httpOnly: true,
     maxAge: 10 * 60,

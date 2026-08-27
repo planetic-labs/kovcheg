@@ -58,35 +58,6 @@ function upstreamTarget(method: string, path: readonly string[]): UpstreamTarget
   if (method === 'PATCH' && path.length === 2 && path[1] === 'domain-status') {
     return target(`/admin/accounts/${accountId}/domain-status`, 'canManageDomainStatus');
   }
-  if ((method === 'POST' || method === 'PUT') && path.length === 2 && path[1] === 'personal-gate') {
-    return target(`/admin/accounts/${accountId}/personal-gate`, 'canManageAccounts');
-  }
-  const gateFamilyId = path[2];
-  if (
-    method === 'DELETE' &&
-    path.length === 3 &&
-    path[1] === 'personal-gate' &&
-    gateFamilyId !== undefined &&
-    uuidPattern.test(gateFamilyId)
-  ) {
-    return target(
-      `/admin/accounts/${accountId}/personal-gate/${gateFamilyId}`,
-      'canManageAccounts',
-    );
-  }
-  if (
-    method === 'POST' &&
-    path.length === 4 &&
-    path[1] === 'personal-gate' &&
-    gateFamilyId !== undefined &&
-    uuidPattern.test(gateFamilyId) &&
-    path[3] === 'resume'
-  ) {
-    return target(
-      `/admin/accounts/${accountId}/personal-gate/${gateFamilyId}/resume`,
-      'canManageAccounts',
-    );
-  }
   if (method === 'POST' && path.length === 2 && path[1] === 'auth-security-reset') {
     return target(`/admin/accounts/${accountId}/auth-security-reset`, 'canManageAccounts');
   }
@@ -135,10 +106,9 @@ async function forward(request: NextRequest, context: RouteContext) {
     return bffError(403, 'a6.forbidden');
   }
   const functionalGrantDeletion = request.method === 'DELETE' && path[1] === 'functional-grants';
-  const bodylessPersonalGateOperation =
-    path[1] === 'personal-gate' || path[1] === 'auth-security-reset';
+  const bodylessSecurityOperation = path[1] === 'auth-security-reset';
   const body =
-    (request.method === 'DELETE' && !functionalGrantDeletion) || bodylessPersonalGateOperation
+    (request.method === 'DELETE' && !functionalGrantDeletion) || bodylessSecurityOperation
       ? undefined
       : await request.text();
   try {

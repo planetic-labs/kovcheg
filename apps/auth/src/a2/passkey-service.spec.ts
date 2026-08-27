@@ -238,7 +238,6 @@ async function fixture(options: { readonly rateLimiter?: LocalRateLimiter } = {}
   const delivery = new LocalEmailChallengeDelivery({ NODE_ENV: 'test' });
   const crypto = new HmacAuthCrypto({
     challengePepper: 'c'.repeat(64),
-    personalGatePepper: 'g'.repeat(64),
     rateLimitPepper: 'r'.repeat(64),
     sessionPepper: 's'.repeat(64),
   });

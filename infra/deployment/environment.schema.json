@@ -209,15 +209,6 @@
       "rotation": "emergency and planned rotation procedure required"
     },
     {
-      "name": "KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE",
-      "type": "host-file-path",
-      "required": true,
-      "secret": true,
-      "constraint": "non-empty high-entropy value",
-      "restart": "restart auth; outstanding gate material becomes invalid",
-      "rotation": "emergency and planned rotation procedure required"
-    },
-    {
       "name": "KOVCHEG_AUTH_RATE_LIMIT_PEPPER_FILE",
       "type": "host-file-path",
       "required": true,

@@ -40,7 +40,6 @@ async function testConfig(
   return Object.freeze({
     authSecrets: Object.freeze({
       challengePepper: 'c'.repeat(64),
-      personalGatePepper: 'g'.repeat(64),
       rateLimitPepper: 'r'.repeat(64),
       sessionPepper: 's'.repeat(64),
     }),
@@ -121,6 +120,7 @@ async function createFixture(
     userId: administratorId,
   });
   const administratorChallenge = await runtime.authService.requestEmailChallenge({
+    correlationId: setupCorrelationId,
     email: 'http-administrator@example.invalid',
     fingerprint: 'fixture-administrator',
     networkAddress: 'fixture-network',
@@ -156,11 +156,6 @@ async function createFixture(
     'deactivated',
     setupCorrelationId,
   );
-  const activeGate = await runtime.authService.issuePersonalGate(
-    administratorSession.sessionToken,
-    activeAccount.userId,
-    setupCorrelationId,
-  );
   delivery.messages.splice(0);
 
   const app = await createAuthApplication(
@@ -171,7 +166,6 @@ async function createFixture(
   await app.listen(0, '127.0.0.1');
   return {
     activeAccount,
-    activeGate,
     administratorSession,
     baseUrl: await app.getUrl(),
     clock,
@@ -281,44 +275,17 @@ function httpAuthenticationResponse(credentialId: string): AuthenticationRespons
 async function requestChallenge(
   baseUrl: string,
   email: string,
-  gateCookie?: string,
   forwardedFor?: string,
 ): Promise<Response> {
   return fetch(`${baseUrl}/session/challenges`, {
     body: JSON.stringify({ email }),
     headers: {
       'content-type': 'application/json',
-      ...(gateCookie === undefined ? {} : { cookie: gateCookie }),
       ...(forwardedFor === undefined ? {} : { 'x-forwarded-for': forwardedFor }),
       'user-agent': 'synthetic-http-test',
     },
     method: 'POST',
   });
-}
-
-let activationCounter = 0;
-
-async function activateGateThroughHttp(
-  fixture: Awaited<ReturnType<typeof createFixture>>,
-  code: string,
-): Promise<string> {
-  activationCounter += 1;
-  const response = await fetch(`${fixture.baseUrl}/personal-gate/activate`, {
-    body: JSON.stringify({
-      clientIdempotencyKey: `synthetic-browser-${activationCounter.toString().padStart(8, '0')}`,
-      code,
-    }),
-    headers: { 'content-type': 'application/json', 'user-agent': 'synthetic-http-test' },
-    method: 'POST',
-  });
-  expect(response.status).toBe(202);
-  await expect(response.json()).resolves.toMatchObject({ next: 'email', status: 'accepted' });
-  const cookie = responseCookie(response);
-  expect(response.headers.getSetCookie()[0]).toContain('__Host-kovcheg_gate=');
-  expect(response.headers.getSetCookie()[0]).toContain('Secure');
-  expect(response.headers.getSetCookie()[0]).toContain('HttpOnly');
-  expect(response.headers.getSetCookie()[0]).toContain('SameSite=Strict');
-  return cookie;
 }
 
 function responseCookie(response: Response): string {
@@ -339,10 +306,8 @@ function issuedCookie(
 async function loginThroughHttp(
   fixture: Awaited<ReturnType<typeof createFixture>>,
   email: string,
-  gateCode: string = fixture.activeGate.code,
 ): Promise<{ readonly cookie: string; readonly sessionId: string }> {
-  const gateCookie = await activateGateThroughHttp(fixture, gateCode);
-  const challengeResponse = await requestChallenge(fixture.baseUrl, email, gateCookie);
+  const challengeResponse = await requestChallenge(fixture.baseUrl, email);
   const challenge = (await challengeResponse.json()) as { readonly challengeId: string };
   const message = fixture.delivery.messages.at(-1);
   if (message === undefined || message.challengeId !== challenge.challengeId) {
@@ -352,7 +317,7 @@ async function loginThroughHttp(
     `${fixture.baseUrl}/session/challenges/${challenge.challengeId}/verify`,
     {
       body: JSON.stringify({ code: message.code }),
-      headers: { cookie: gateCookie, 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json' },
       method: 'POST',
     },
   );
@@ -394,14 +359,13 @@ describe('A2 auth HTTP runtime', () => {
     });
   });
 
-  it('keeps wrong email neutral and never advances it to code entry', async () => {
+  it('moves every valid email to the same neutral code state and delivers only to active accounts', async () => {
     const fixture = await createFixture();
-    const gateCookie = await activateGateThroughHttp(fixture, fixture.activeGate.code);
     const [known, inactive, unknown, unauthorized, oidcUnauthorized, discovery] = await Promise.all(
       [
-        requestChallenge(fixture.baseUrl, 'ACTIVE-HTTP@EXAMPLE.INVALID', gateCookie),
-        requestChallenge(fixture.baseUrl, 'inactive-http@example.invalid', gateCookie),
-        requestChallenge(fixture.baseUrl, 'unknown-http@example.invalid', gateCookie),
+        requestChallenge(fixture.baseUrl, '  ACTIVE-HTTP@EXAMPLE.INVALID  '),
+        requestChallenge(fixture.baseUrl, 'inactive-http@example.invalid'),
+        requestChallenge(fixture.baseUrl, 'unknown-http@example.invalid'),
         fetch(`${fixture.baseUrl}/session`),
         fetch(`${fixture.baseUrl}/interaction/synthetic`),
         fetch(`${fixture.baseUrl}/.well-known/openid-configuration`),
@@ -413,13 +377,16 @@ describe('A2 auth HTTP runtime', () => {
       string,
       unknown
     >[];
-    expect(bodies.map((body) => Object.keys(body).sort())).toEqual([
-      ['challengeId', 'next', 'status'],
-      ['next', 'status'],
-      ['next', 'status'],
-    ]);
+    expect(bodies.map((body) => Object.keys(body).sort())).toEqual(
+      Array.from({ length: 3 }, () => ['challengeId', 'email', 'next', 'status']),
+    );
     expect(bodies.map((body) => body.status)).toEqual(['accepted', 'accepted', 'accepted']);
-    expect(bodies.map((body) => body.next)).toEqual(['code', 'email', 'email']);
+    expect(bodies.map((body) => body.next)).toEqual(['code', 'code', 'code']);
+    expect(bodies.map((body) => body.email)).toEqual([
+      'ACTIVE-HTTP@EXAMPLE.INVALID',
+      'inactive-http@example.invalid',
+      'unknown-http@example.invalid',
+    ]);
     expect(
       [known, inactive, unknown].every((response) => !response.headers.has('set-cookie')),
     ).toBe(true);
@@ -435,13 +402,15 @@ describe('A2 auth HTTP runtime', () => {
       response_types_supported: ['code'],
     });
 
-    expect(bodies.slice(1).every((body) => body.challengeId === undefined)).toBe(true);
-    const noGate = await requestChallenge(fixture.baseUrl, 'active-http@example.invalid');
-    expect(noGate.status).toBe(401);
-    expect(noGate.headers.has('set-cookie')).toBe(false);
+    const retiredGate = await fetch(`${fixture.baseUrl}/personal-gate/activate`, {
+      body: JSON.stringify({ code: 'TEST-CODE' }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    expect(retiredGate.status).toBe(404);
   });
 
-  it('rate-limits distinct client networks independently behind the trusted local proxy', async () => {
+  it('keeps hidden throttling neutral behind the trusted local proxy', async () => {
     const attempts = new Map<string, number>();
     const redisClient: RedisScriptClient = {
       eval(script, options): Promise<unknown> {
@@ -462,20 +431,26 @@ describe('A2 auth HTTP runtime', () => {
       { challengeByNetwork: { limit: 1, windowMs: 15 * 60_000 } },
       redisClient,
     );
-    const gateCookie = await activateGateThroughHttp(fixture, fixture.activeGate.code);
     const [firstNetwork, secondNetwork] = await Promise.all([
-      requestChallenge(fixture.baseUrl, 'network-a@example.invalid', gateCookie, '192.0.2.10'),
-      requestChallenge(fixture.baseUrl, 'network-b@example.invalid', gateCookie, '192.0.2.11'),
+      requestChallenge(fixture.baseUrl, 'network-a@example.invalid', '192.0.2.10'),
+      requestChallenge(fixture.baseUrl, 'network-b@example.invalid', '192.0.2.11'),
     ]);
     const repeatedNetwork = await requestChallenge(
       fixture.baseUrl,
-      'network-c@example.invalid',
-      gateCookie,
+      'active-http@example.invalid',
       '192.0.2.10',
     );
 
     expect([firstNetwork.status, secondNetwork.status]).toEqual([202, 202]);
-    expect(repeatedNetwork.status).toBe(429);
+    expect(repeatedNetwork.status).toBe(202);
+    const repeatedBody = (await repeatedNetwork.json()) as Record<string, unknown>;
+    expect(Object.keys(repeatedBody).sort()).toEqual(['challengeId', 'email', 'next', 'status']);
+    expect(repeatedBody).toMatchObject({
+      email: 'active-http@example.invalid',
+      next: 'code',
+      status: 'accepted',
+    });
+    expect(fixture.delivery.messages).toHaveLength(0);
   });
 
   it('fails authentication closed during Redis loss and accepts login after recovery', async () => {
@@ -489,14 +464,12 @@ describe('A2 auth HTTP runtime', () => {
       isReady: () => redisReady,
     };
     const fixture = await createFixture({}, redisClient);
-    const gateCookie = await activateGateThroughHttp(fixture, fixture.activeGate.code);
 
     redisReady = false;
     const unavailableReadiness = await fetch(`${fixture.baseUrl}/health/ready`);
     const unavailableChallenge = await requestChallenge(
       fixture.baseUrl,
       'active-http@example.invalid',
-      gateCookie,
     );
     expect(unavailableReadiness.status).toBe(503);
     expect(unavailableChallenge.status).toBe(503);
@@ -516,11 +489,9 @@ describe('A2 auth HTTP runtime', () => {
 
   it('issues an HTTP-only server session cookie, logs out, and rejects the revoked token', async () => {
     const fixture = await createFixture();
-    const gateCookie = await activateGateThroughHttp(fixture, fixture.activeGate.code);
     const challengeResponse = await requestChallenge(
       fixture.baseUrl,
       'active-http@example.invalid',
-      gateCookie,
     );
     const challenge = (await challengeResponse.json()) as { challengeId: string };
     const message = fixture.delivery.messages.at(-1);
@@ -531,7 +502,7 @@ describe('A2 auth HTTP runtime', () => {
       `${fixture.baseUrl}/session/challenges/${challenge.challengeId}/verify`,
       {
         body: JSON.stringify({ code: message.code }),
-        headers: { cookie: gateCookie, 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         method: 'POST',
       },
     );
@@ -554,7 +525,6 @@ describe('A2 auth HTTP runtime', () => {
     const secondChallengeResponse = await requestChallenge(
       fixture.baseUrl,
       'active-http@example.invalid',
-      gateCookie,
     );
     const secondChallenge = (await secondChallengeResponse.json()) as { challengeId: string };
     const secondMessage = fixture.delivery.messages.at(-1);
@@ -565,7 +535,7 @@ describe('A2 auth HTTP runtime', () => {
       `${fixture.baseUrl}/session/challenges/${secondChallenge.challengeId}/verify`,
       {
         body: JSON.stringify({ code: secondMessage.code }),
-        headers: { cookie: gateCookie, 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         method: 'POST',
       },
     );
@@ -690,22 +660,9 @@ describe('A2 auth HTTP runtime', () => {
       error: 'auth.not-found',
     });
 
-    const createdGate = await fixture.runtime.authService.issuePersonalGate(
-      fixture.administratorSession.sessionToken,
-      created.userId as UserId,
-      setupCorrelationId,
-    );
-    const firstSession = await loginThroughHttp(
-      fixture,
-      'updated-administration@example.invalid',
-      createdGate.code,
-    );
+    const firstSession = await loginThroughHttp(fixture, 'updated-administration@example.invalid');
     fixture.clock.advance(emailChallengePolicy.resendCooldownMs);
-    const secondSession = await loginThroughHttp(
-      fixture,
-      'updated-administration@example.invalid',
-      createdGate.code,
-    );
+    const secondSession = await loginThroughHttp(fixture, 'updated-administration@example.invalid');
     const otherSession = await loginThroughHttp(fixture, 'active-http@example.invalid');
 
     const foreignRevoke = await adminRequest(fixture, {
@@ -846,89 +803,34 @@ describe('A2 auth HTTP runtime', () => {
     expect(deactivated.status).toBe(403);
   });
 
-  it('exposes protected issue, reissue, revoke, resume boundary, and security reset', async () => {
+  it('keeps retired gate endpoints absent while preserving protected security reset', async () => {
     const fixture = await createFixture();
     const administratorCookie = issuedCookie(
       fixture.runtime,
       fixture.administratorSession.sessionToken,
     );
     const createdResponse = await adminRequest(fixture, {
-      body: { displayName: 'Gate HTTP Account', email: 'gate-http@example.invalid' },
+      body: { displayName: 'Reset HTTP Account', email: 'reset-http@example.invalid' },
       cookie: administratorCookie,
-      correlationId: 'http-gate-create-account',
+      correlationId: 'http-reset-create-account',
       method: 'POST',
       path: '/admin/accounts',
     });
     const created = (await createdResponse.json()) as { readonly userId: UserId };
+    const applicationSession = await loginThroughHttp(fixture, 'reset-http@example.invalid');
 
-    const missingAdministrator = await adminRequest(fixture, {
-      correlationId: 'http-gate-missing-admin',
+    const retiredPublic = await fetch(`${fixture.baseUrl}/personal-gate`, { method: 'GET' });
+    const retiredAdmin = await adminRequest(fixture, {
+      cookie: administratorCookie,
+      correlationId: 'http-retired-gate',
       method: 'POST',
       path: `/admin/accounts/${created.userId}/personal-gate`,
     });
-    expect(missingAdministrator.status).toBe(401);
-
-    const issueResponse = await adminRequest(fixture, {
-      cookie: administratorCookie,
-      correlationId: 'http-gate-issue',
-      method: 'POST',
-      path: `/admin/accounts/${created.userId}/personal-gate`,
-    });
-    expect(issueResponse.status).toBe(201);
-    const issued = (await issueResponse.json()) as {
-      readonly code: string;
-      readonly familyId: string;
-    };
-    expect(issued.code).toMatch(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/u);
-    const applicationSession = await loginThroughHttp(
-      fixture,
-      'gate-http@example.invalid',
-      issued.code,
-    );
-
-    const firstGateCookie = await activateGateThroughHttp(fixture, issued.code);
-    const reissueResponse = await adminRequest(fixture, {
-      cookie: administratorCookie,
-      correlationId: 'http-gate-reissue',
-      method: 'PUT',
-      path: `/admin/accounts/${created.userId}/personal-gate`,
-    });
-    expect(reissueResponse.status).toBe(200);
-    const reissued = (await reissueResponse.json()) as {
-      readonly code: string;
-      readonly familyId: string;
-      readonly revokedGateSessionCount: number;
-    };
-    expect(reissued.revokedGateSessionCount).toBeGreaterThanOrEqual(1);
-    await expect(
-      fetch(`${fixture.baseUrl}/personal-gate`, { headers: { cookie: firstGateCookie } }).then(
-        async (response) => response.json(),
-      ),
-    ).resolves.toEqual({ status: 'required' });
-    expect(
-      await fetch(`${fixture.baseUrl}/session`, {
-        headers: { cookie: applicationSession.cookie },
-      }),
-    ).toMatchObject({ status: 200 });
-
-    const reissuedGateCookie = await activateGateThroughHttp(fixture, reissued.code);
-    const revokeResponse = await adminRequest(fixture, {
-      cookie: administratorCookie,
-      correlationId: 'http-gate-revoke',
-      method: 'DELETE',
-      path: `/admin/accounts/${created.userId}/personal-gate/${reissued.familyId}`,
-    });
-    expect(revokeResponse.status).toBe(200);
-    await expect(revokeResponse.json()).resolves.toMatchObject({ revokedGateSessionCount: 1 });
-    await expect(
-      fetch(`${fixture.baseUrl}/personal-gate`, { headers: { cookie: reissuedGateCookie } }).then(
-        async (response) => response.json(),
-      ),
-    ).resolves.toEqual({ status: 'required' });
+    expect([retiredPublic.status, retiredAdmin.status]).toEqual([404, 404]);
 
     const securityResetResponse = await adminRequest(fixture, {
       cookie: administratorCookie,
-      correlationId: 'http-gate-security-reset',
+      correlationId: 'http-security-reset',
       method: 'POST',
       path: `/admin/accounts/${created.userId}/auth-security-reset`,
     });
@@ -1034,9 +936,8 @@ describe('A2 auth HTTP runtime', () => {
 
   it('rejects an existing session immediately after account deactivation', async () => {
     const fixture = await createFixture();
-    const gateCookie = await activateGateThroughHttp(fixture, fixture.activeGate.code);
     const challenge = (await (
-      await requestChallenge(fixture.baseUrl, 'active-http@example.invalid', gateCookie)
+      await requestChallenge(fixture.baseUrl, 'active-http@example.invalid')
     ).json()) as { challengeId: string };
     const message = fixture.delivery.messages.at(-1);
     if (message === undefined) {
@@ -1046,7 +947,7 @@ describe('A2 auth HTTP runtime', () => {
       `${fixture.baseUrl}/session/challenges/${challenge.challengeId}/verify`,
       {
         body: JSON.stringify({ code: message.code }),
-        headers: { cookie: gateCookie, 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         method: 'POST',
       },
     );

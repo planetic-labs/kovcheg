@@ -231,9 +231,21 @@ const authServer = createServer(async (request, response) => {
 
   if (request.method === 'POST' && url.pathname === '/session/challenges') {
     const body = await readBody(request);
+    const displayEmail = typeof body?.email === 'string' ? body.email.trim() : '';
+    if (
+      displayEmail.length < 3 ||
+      displayEmail.length > 254 ||
+      !/^[^\s@]+@[^\s@]+$/u.test(displayEmail)
+    ) {
+      json(response, 400, { error: 'auth.invalid-input' });
+      return;
+    }
     const challengeId = nextChallengeId();
-    if (body?.email === administrator.email) activeChallenges.add(challengeId);
-    json(response, 202, { challengeId, status: 'accepted' });
+    if (displayEmail.toLowerCase() === administrator.email) {
+      activeChallenges.clear();
+      activeChallenges.add(challengeId);
+    }
+    json(response, 202, { challengeId, email: displayEmail, next: 'code', status: 'accepted' });
     return;
   }
 

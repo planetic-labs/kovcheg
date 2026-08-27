@@ -44,8 +44,17 @@ try {
 
   const issued = await pool.query(
     `SELECT outcome
-     FROM kovcheg.issue_auth_challenge_for_active_account($1, $2, $3, $4, $5, $6, $7)`,
-    [bootstrapEmail, challengeId, challengeVerifier, now, challengeExpiresAt, 5, '0 seconds'],
+     FROM kovcheg.issue_auth_email_challenge($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [
+      bootstrapEmail,
+      challengeId,
+      challengeVerifier,
+      now,
+      challengeExpiresAt,
+      5,
+      '60 seconds',
+      `smoke-session-${challengeId}`,
+    ],
   );
   if (issued.rows[0]?.outcome !== 'issued') throw new Error('Synthetic challenge was not issued');
 

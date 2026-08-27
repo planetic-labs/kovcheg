@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import type {
   CorrelationId,
   DomainStatus,
@@ -21,30 +23,27 @@ import type {
   AuthorizationMutationInput,
   AuthenticatedSession,
   AuthPolicy,
+  AuthSecurityResetResult,
   BootstrapAdministratorInput,
-  ChallengeRequestAccepted,
   CreateAccountInput,
   EmailChallengeMessage,
-  PersonalGateActivation,
-  PersonalGateChallengeResponse,
-  PersonalGateIssueResult,
-  PersonalGateSecurityResetResult,
+  EmailChallengeResponse,
   RateLimitRule,
   SessionPrincipal,
   UpdateAccountInput,
 } from './contracts.js';
-import { formatPersonalGateCode, normalizePersonalGateCode } from './contracts.js';
+import { normalizeEmailSubmission } from './contracts.js';
 import type {
   AuthCrypto,
   AuthRandomSource,
   AuthRepository,
   Clock,
   EmailChallengeDelivery,
-  PersonalGateAbuseProtector,
   RateLimiter,
 } from './ports.js';
 
 export interface ChallengeRequestInput {
+  readonly correlationId?: CorrelationId;
   readonly email: string;
   readonly fingerprint: string;
   readonly networkAddress: string;
@@ -56,19 +55,12 @@ export interface ChallengeVerificationInput {
   readonly networkAddress: string;
 }
 
-export interface PersonalGateRequestContext {
-  readonly correlationId: CorrelationId;
-  readonly fingerprint: string;
-  readonly networkAddress: string;
-}
-
 export interface AuthServiceDependencies {
   readonly clock: Clock;
   readonly crypto: AuthCrypto;
   readonly delivery: EmailChallengeDelivery;
   readonly deliveryTimeoutMs?: number | undefined;
   readonly policy: AuthPolicy;
-  readonly gateAbuseProtector?: PersonalGateAbuseProtector | undefined;
   readonly random: AuthRandomSource;
   readonly rateLimiter: RateLimiter;
   readonly repository: AuthRepository;
@@ -83,6 +75,7 @@ function assertPositiveInteger(name: string, value: number): void {
 function validatePolicy(policy: AuthPolicy): void {
   assertPositiveInteger('challenge.codeDigits', policy.challenge.codeDigits);
   assertPositiveInteger('challenge.maxAttempts', policy.challenge.maxAttempts);
+  assertPositiveInteger('challenge.responseMinimumMs', policy.challenge.responseMinimumMs);
   assertPositiveInteger('challenge.resendCooldownMs', policy.challenge.resendCooldownMs);
   assertPositiveInteger('challenge.ttlMs', policy.challenge.ttlMs);
   assertPositiveInteger('session.absoluteLifetimeMs', policy.session.absoluteLifetimeMs);
@@ -144,72 +137,6 @@ export class AuthService {
     }
 
     return principal;
-  }
-
-  async activatePersonalGate(
-    code: string,
-    clientIdempotencyKey: string,
-    context: PersonalGateRequestContext,
-  ): Promise<PersonalGateActivation | null> {
-    const normalizedCode = normalizePersonalGateCode(code);
-    if (normalizedCode === null) return null;
-    const normalizedClientKey = clientIdempotencyKey.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/u.test(normalizedClientKey)) {
-      throw new AuthError('auth.invalid-input', 'A valid activation idempotency key is required');
-    }
-    const sourceKey = this.personalGateSourceKey(context);
-    const protector = this.dependencies.gateAbuseProtector;
-    if (protector === undefined) {
-      throw new AuthError('auth.unavailable', 'Personal gate protection is unavailable');
-    }
-    const sourceDecision = await protector.checkSource(sourceKey);
-    if (sourceDecision === 'unavailable') {
-      throw new AuthError('auth.unavailable', 'Personal gate protection is unavailable');
-    }
-    if (sourceDecision === 'blocked') return null;
-
-    const credentials = this.dependencies.crypto.personalGateActivationCredentials(
-      normalizedCode,
-      normalizedClientKey,
-    );
-    const result = await this.dependencies.repository.activatePersonalGate({
-      clientIdempotencyKey: normalizedClientKey,
-      codeVerifier: this.dependencies.crypto.personalGateCodeVerifier(normalizedCode),
-      correlationId: context.correlationId,
-      gateSessionId: credentials.gateSessionId,
-      gateTokenVerifier: credentials.gateTokenVerifier,
-      now: this.dependencies.clock.now(),
-    });
-    if (result.kind === 'invalid') {
-      const decision = await protector.recordSyntacticallyValidMiss({
-        correlationId: context.correlationId,
-        now: this.dependencies.clock.now(),
-        sourceKey,
-      });
-      if (decision === 'unavailable') {
-        throw new AuthError('auth.unavailable', 'Personal gate protection is unavailable');
-      }
-      return null;
-    }
-    const activationRecorded = await protector.recordActivation({
-      activationId: result.gateSessionId,
-      correlationId: context.correlationId,
-      now: this.dependencies.clock.now(),
-      sourceKey,
-    });
-    if (activationRecorded === 'unavailable') {
-      throw new AuthError('auth.unavailable', 'Personal gate protection is unavailable');
-    }
-    return Object.freeze({ ...result, gateToken: credentials.gateToken });
-  }
-
-  async validatePersonalGate(gateToken: string): Promise<boolean> {
-    if (!/^[A-Za-z0-9_-]{43}$/u.test(gateToken)) return false;
-    const result = await this.dependencies.repository.validatePersonalGateSession(
-      this.dependencies.crypto.personalGateTokenVerifier(gateToken),
-      this.dependencies.clock.now(),
-    );
-    return result.kind === 'active';
   }
 
   async validateSession(sessionToken: string): Promise<SessionPrincipal> {
@@ -299,14 +226,15 @@ export class AuthService {
     }
   }
 
-  async requestEmailChallenge(input: ChallengeRequestInput): Promise<ChallengeRequestAccepted> {
+  async requestEmailChallenge(input: ChallengeRequestInput): Promise<EmailChallengeResponse> {
+    const responseStartedAt = performance.now();
     const now = this.dependencies.clock.now();
-    const email = normalizeEmail(input.email);
+    const email = normalizeEmailSubmission(input.email);
     const fingerprint = normalizeRateLimitDimension('fingerprint', input.fingerprint);
     const networkAddress = normalizeRateLimitDimension('networkAddress', input.networkAddress);
-    await this.consumeRateLimits([
+    const allowed = await this.consumeNeutralChallengeRateLimits([
       {
-        key: this.dependencies.crypto.rateLimitKey('challenge-email', email),
+        key: this.dependencies.crypto.rateLimitKey('challenge-email', email.normalizedEmail),
         rule: this.dependencies.policy.rateLimits.challengeByEmail,
       },
       {
@@ -320,91 +248,44 @@ export class AuthService {
     ]);
 
     const challengeId = this.dependencies.random.uuid();
+    const correlationId =
+      input.correlationId ?? (`email-challenge-${challengeId}` as CorrelationId);
     const code = this.dependencies.random.challengeCode(
       this.dependencies.policy.challenge.codeDigits,
     );
-    const result = await this.dependencies.repository.issueChallengeForActiveAccount({
-      challenge: {
-        challengeId,
-        codeVerifier: this.dependencies.crypto.challengeCodeVerifier(challengeId, code),
-        expiresAt: now + this.dependencies.policy.challenge.ttlMs,
-        issuedAt: now,
-        maxAttempts: this.dependencies.policy.challenge.maxAttempts,
-      },
-      email,
-      resendCooldownMs: this.dependencies.policy.challenge.resendCooldownMs,
-    });
-
-    if (result.kind === 'issued') {
-      void this.deliverChallenge(
-        {
-          challengeId: result.challengeId,
-          code,
+    if (allowed) {
+      const result = await this.dependencies.repository.issueEmailChallenge({
+        challenge: {
+          challengeId,
+          codeVerifier: this.dependencies.crypto.challengeCodeVerifier(challengeId, code),
           expiresAt: now + this.dependencies.policy.challenge.ttlMs,
-          recipient: result.recipient,
+          issuedAt: now,
+          maxAttempts: this.dependencies.policy.challenge.maxAttempts,
         },
-        now,
-      );
-    }
+        correlationId,
+        email: email.normalizedEmail,
+        resendCooldownMs: this.dependencies.policy.challenge.resendCooldownMs,
+      });
 
-    return Object.freeze({ challengeId, status: 'accepted' });
-  }
-
-  async requestPersonalGateEmailChallenge(
-    gateToken: string,
-    input: ChallengeRequestInput & { readonly correlationId: CorrelationId },
-  ): Promise<PersonalGateChallengeResponse> {
-    if (!/^[A-Za-z0-9_-]{43}$/u.test(gateToken)) {
-      throw new AuthError('auth.invalid-gate', 'Personal gate is invalid');
+      if (result.kind === 'issued') {
+        void this.deliverChallenge(
+          {
+            challengeId: result.challengeId,
+            code,
+            expiresAt: now + this.dependencies.policy.challenge.ttlMs,
+            recipient: result.recipient,
+          },
+          now,
+        );
+      }
     }
-    const now = this.dependencies.clock.now();
-    const email = normalizeEmail(input.email);
-    const fingerprint = normalizeRateLimitDimension('fingerprint', input.fingerprint);
-    const networkAddress = normalizeRateLimitDimension('networkAddress', input.networkAddress);
-    await this.consumeRateLimits([
-      {
-        key: this.dependencies.crypto.rateLimitKey('challenge-email', email),
-        rule: this.dependencies.policy.rateLimits.challengeByEmail,
-      },
-      {
-        key: this.dependencies.crypto.rateLimitKey('challenge-fingerprint', fingerprint),
-        rule: this.dependencies.policy.rateLimits.challengeByFingerprint,
-      },
-      {
-        key: this.dependencies.crypto.rateLimitKey('challenge-network', networkAddress),
-        rule: this.dependencies.policy.rateLimits.challengeByNetwork,
-      },
-    ]);
-    const challengeId = this.dependencies.random.uuid();
-    const code = this.dependencies.random.challengeCode(
-      this.dependencies.policy.challenge.codeDigits,
-    );
-    const result = await this.dependencies.repository.issueChallengeForPersonalGate({
-      challenge: {
-        challengeId,
-        codeVerifier: this.dependencies.crypto.challengeCodeVerifier(challengeId, code),
-        expiresAt: now + this.dependencies.policy.challenge.ttlMs,
-        issuedAt: now,
-        maxAttempts: this.dependencies.policy.challenge.maxAttempts,
-      },
-      correlationId: input.correlationId,
-      email,
-      gateTokenVerifier: this.dependencies.crypto.personalGateTokenVerifier(gateToken),
-      resendCooldownMs: this.dependencies.policy.challenge.resendCooldownMs,
+    await this.waitForNeutralResponseEnvelope(responseStartedAt);
+    return Object.freeze({
+      challengeId,
+      email: email.displayEmail,
+      next: 'code',
+      status: 'accepted',
     });
-    if (result.kind === 'neutral') {
-      return Object.freeze({ next: 'email', status: 'accepted' });
-    }
-    void this.deliverChallenge(
-      {
-        challengeId: result.challengeId,
-        code,
-        expiresAt: now + this.dependencies.policy.challenge.ttlMs,
-        recipient: result.recipient,
-      },
-      now,
-    );
-    return Object.freeze({ challengeId, next: 'code', status: 'accepted' });
   }
 
   async revokeAllSessions(
@@ -591,102 +472,11 @@ export class AuthService {
     });
   }
 
-  async verifyPersonalGateEmailChallenge(
-    gateToken: string,
-    input: ChallengeVerificationInput,
-  ): Promise<AuthenticatedSession> {
-    if (!/^[A-Za-z0-9_-]{43}$/u.test(gateToken)) {
-      throw new AuthError('auth.invalid-gate', 'Personal gate is invalid');
-    }
-    return this.verifyChallengeWithRepository(input, async (sessionInput) =>
-      this.dependencies.repository.consumePersonalGateChallengeAndCreateSession({
-        ...sessionInput,
-        gateTokenVerifier: this.dependencies.crypto.personalGateTokenVerifier(gateToken),
-      }),
-    );
-  }
-
-  async issuePersonalGate(
-    administratorSessionToken: string,
-    accountId: UserId,
-    correlationId: CorrelationId,
-  ): Promise<PersonalGateIssueResult> {
-    const normalizedCode = this.dependencies.random.personalGateCode();
-    const code = formatPersonalGateCode(normalizedCode);
-    const familyId = this.dependencies.random.uuid();
-    try {
-      await this.dependencies.repository.adminIssuePersonalGate({
-        ...this.administrativeContext(administratorSessionToken, correlationId),
-        accountId,
-        codeVerifier: this.dependencies.crypto.personalGateCodeVerifier(normalizedCode),
-        familyId,
-      });
-      return Object.freeze({ accountId, code, familyId });
-    } catch (error) {
-      this.mapAdministrativeError(error);
-    }
-  }
-
-  async reissuePersonalGate(
-    administratorSessionToken: string,
-    accountId: UserId,
-    correlationId: CorrelationId,
-  ): Promise<PersonalGateIssueResult & { readonly revokedGateSessionCount: number }> {
-    const normalizedCode = this.dependencies.random.personalGateCode();
-    const code = formatPersonalGateCode(normalizedCode);
-    const familyId = this.dependencies.random.uuid();
-    try {
-      const result = await this.dependencies.repository.adminReissuePersonalGate({
-        ...this.administrativeContext(administratorSessionToken, correlationId),
-        accountId,
-        codeVerifier: this.dependencies.crypto.personalGateCodeVerifier(normalizedCode),
-        familyId,
-      });
-      return Object.freeze({ accountId, code, ...result });
-    } catch (error) {
-      this.mapAdministrativeError(error);
-    }
-  }
-
-  async revokePersonalGate(
-    administratorSessionToken: string,
-    accountId: UserId,
-    familyId: Uuid,
-    correlationId: CorrelationId,
-  ): Promise<number> {
-    try {
-      return await this.dependencies.repository.adminRevokePersonalGate({
-        ...this.administrativeContext(administratorSessionToken, correlationId),
-        accountId,
-        familyId,
-      });
-    } catch (error) {
-      this.mapAdministrativeError(error);
-    }
-  }
-
-  async resumePersonalGate(
-    administratorSessionToken: string,
-    accountId: UserId,
-    familyId: Uuid,
-    correlationId: CorrelationId,
-  ): Promise<boolean> {
-    try {
-      return await this.dependencies.repository.adminResumePersonalGate({
-        ...this.administrativeContext(administratorSessionToken, correlationId),
-        accountId,
-        familyId,
-      });
-    } catch (error) {
-      this.mapAdministrativeError(error);
-    }
-  }
-
   async securityResetAuthAccess(
     administratorSessionToken: string,
     accountId: UserId,
     correlationId: CorrelationId,
-  ): Promise<PersonalGateSecurityResetResult> {
+  ): Promise<AuthSecurityResetResult> {
     try {
       return await this.dependencies.repository.adminSecurityResetAuthAccess({
         ...this.administrativeContext(administratorSessionToken, correlationId),
@@ -697,69 +487,33 @@ export class AuthService {
     }
   }
 
-  private async verifyChallengeWithRepository(
-    input: ChallengeVerificationInput,
-    consume: (
-      sessionInput: Parameters<AuthRepository['consumeChallengeAndCreateSession']>[0],
-    ) => Promise<Awaited<ReturnType<AuthRepository['consumeChallengeAndCreateSession']>>>,
-  ): Promise<AuthenticatedSession> {
+  private async consumeNeutralChallengeRateLimits(
+    limits: readonly { readonly key: string; readonly rule: RateLimitRule }[],
+  ): Promise<boolean> {
     const now = this.dependencies.clock.now();
-    const networkAddress = normalizeRateLimitDimension('networkAddress', input.networkAddress);
-    await this.consumeRateLimits([
-      {
-        key: this.dependencies.crypto.rateLimitKey('verify-challenge', input.challengeId),
-        rule: this.dependencies.policy.rateLimits.verifyByChallenge,
-      },
-      {
-        key: this.dependencies.crypto.rateLimitKey('verify-network', networkAddress),
-        rule: this.dependencies.policy.rateLimits.verifyByNetwork,
-      },
-    ]);
-    const sessionToken = this.dependencies.random.opaqueToken();
-    const sessionId = this.dependencies.random.sessionId();
-    const code = /^\d{4,9}$/u.test(input.code) ? input.code : 'invalid';
-    const result = await consume({
-      candidateCodeVerifier: this.dependencies.crypto.challengeCodeVerifier(
-        input.challengeId,
-        code,
-      ),
-      challengeId: input.challengeId,
-      now,
-      session: {
-        absoluteExpiresAt: now + this.dependencies.policy.session.absoluteLifetimeMs,
-        idleLifetimeMs: this.dependencies.policy.session.idleLifetimeMs,
-        issuedAt: now,
-        sessionId,
-        tokenVerifier: this.dependencies.crypto.sessionTokenVerifier(sessionToken),
-      },
-    });
-    if (result.kind === 'invalid') {
-      throw new AuthError(
-        'auth.invalid-or-expired-challenge',
-        'The challenge is invalid or expired',
-      );
+    let allowed = true;
+    for (const limit of limits) {
+      const decision = await this.dependencies.rateLimiter.consume({
+        key: limit.key,
+        now,
+        rule: limit.rule,
+      });
+      if (decision === 'limited') allowed = false;
+      if (decision === 'unavailable') {
+        throw new AuthError('auth.unavailable', 'Authentication rate limiting is unavailable');
+      }
     }
-    return Object.freeze({
-      absoluteExpiresAt: now + this.dependencies.policy.session.absoluteLifetimeMs,
-      idleExpiresAt:
-        now +
-        Math.min(
-          this.dependencies.policy.session.idleLifetimeMs,
-          this.dependencies.policy.session.absoluteLifetimeMs,
-        ),
-      sessionId,
-      sessionToken,
-      userId: result.principal.userId,
-    });
+    return allowed;
   }
 
-  private personalGateSourceKey(context: PersonalGateRequestContext): string {
-    const fingerprint = normalizeRateLimitDimension('fingerprint', context.fingerprint);
-    const networkAddress = normalizeRateLimitDimension('networkAddress', context.networkAddress);
-    return this.dependencies.crypto.rateLimitKey(
-      'personal-gate-source',
-      `${networkAddress}\0${fingerprint}`,
-    );
+  private async waitForNeutralResponseEnvelope(startedAt: number): Promise<void> {
+    const bucketMs = this.dependencies.policy.challenge.responseMinimumMs;
+    const elapsed = Math.max(0, performance.now() - startedAt);
+    const remainder = elapsed % bucketMs;
+    const delayMs = remainder === 0 ? bucketMs : bucketMs - remainder;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, delayMs);
+    });
   }
 
   private async consumeRateLimits(

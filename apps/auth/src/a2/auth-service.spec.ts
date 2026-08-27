@@ -58,7 +58,6 @@ function createFixture(
   const delivery = options.delivery ?? new LocalEmailChallengeDelivery({ NODE_ENV: 'test' });
   const crypto = new HmacAuthCrypto({
     challengePepper: 'c'.repeat(64),
-    personalGatePepper: 'g'.repeat(64),
     rateLimitPepper: 'r'.repeat(64),
     sessionPepper: 's'.repeat(64),
   });
@@ -569,8 +568,89 @@ describe('A2 email challenge security', () => {
     expect(inactive.status).toBe('accepted');
     expect(Object.keys(known).sort()).toEqual(Object.keys(unknown).sort());
     expect(Object.keys(unknown).sort()).toEqual(Object.keys(inactive).sort());
+    expect([known.next, unknown.next, inactive.next]).toEqual(['code', 'code', 'code']);
+    expect([known.email, unknown.email, inactive.email]).toEqual([
+      'administrator@example.invalid',
+      'unknown@example.invalid',
+      'inactive@example.invalid',
+    ]);
     expect(delivery.messages).toHaveLength(before + 1);
     expect(delivery.messages.at(-1)?.recipient).toBe('administrator@example.invalid');
+  });
+
+  it('preserves dots and plus tags while matching case-insensitively after outer trim', async () => {
+    const fixture = createFixture();
+    await fixture.service.bootstrapAdministrator({
+      bootstrapId: 'synthetic-bootstrap-id-tagged',
+      displayName: 'Tagged Administrator',
+      email: 'user.name+tag@example.invalid',
+      userId: administratorId,
+    });
+
+    const response = await fixture.service.requestEmailChallenge({
+      email: '  USER.NAME+TAG@EXAMPLE.INVALID  ',
+      fingerprint: 'fingerprint-tagged',
+      networkAddress: 'network-tagged',
+    });
+
+    expect(response).toMatchObject({
+      email: 'USER.NAME+TAG@EXAMPLE.INVALID',
+      next: 'code',
+      status: 'accepted',
+    });
+    expect((fixture.delivery as LocalEmailChallengeDelivery).messages.at(-1)?.recipient).toBe(
+      'user.name+tag@example.invalid',
+    );
+  });
+
+  it('keeps resend and no-challenge verification neutral', async () => {
+    const fixture = createFixture();
+    await bootstrap(fixture);
+    const delivery = fixture.delivery as LocalEmailChallengeDelivery;
+    const first = await fixture.service.requestEmailChallenge({
+      email: 'administrator@example.invalid',
+      fingerprint: 'fingerprint-resend',
+      networkAddress: 'network-resend',
+    });
+    const second = await fixture.service.requestEmailChallenge({
+      email: 'administrator@example.invalid',
+      fingerprint: 'fingerprint-resend',
+      networkAddress: 'network-resend',
+    });
+
+    expect(Object.keys(first).sort()).toEqual(Object.keys(second).sort());
+    expect(second).toMatchObject({ next: 'code', status: 'accepted' });
+    expect(delivery.messages).toHaveLength(1);
+    await expect(
+      fixture.service.verifyEmailChallenge({
+        challengeId: second.challengeId,
+        code: '000000',
+        networkAddress: 'network-resend',
+      }),
+    ).rejects.toMatchObject({ code: 'auth.invalid-or-expired-challenge' });
+  });
+
+  it('holds successful neutral responses inside the configured timing envelope', async () => {
+    const basePolicy = createPolicy();
+    const responseMinimumMs = 25;
+    const fixture = createFixture({
+      policy: Object.freeze({
+        ...basePolicy,
+        challenge: Object.freeze({ ...basePolicy.challenge, responseMinimumMs }),
+      }),
+    });
+    await bootstrap(fixture);
+
+    const startedAt = performance.now();
+    await fixture.service.requestEmailChallenge({
+      email: 'unknown-timing@example.invalid',
+      fingerprint: 'fingerprint-timing',
+      networkAddress: 'network-timing',
+    });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(elapsedMs).toBeGreaterThanOrEqual(responseMinimumMs - 5);
+    expect(elapsedMs).toBeLessThan(responseMinimumMs * 10);
   });
 
   it('does not expose provider latency through the challenge response', async () => {
@@ -715,7 +795,7 @@ describe('A2 rate limiting and session expiry', () => {
     );
   });
 
-  it('atomically limits concurrent requests for the same normalized email', async () => {
+  it('atomically limits concurrent requests while keeping throttling neutral', async () => {
     const fixture = createFixture({
       policy: createPolicy({ challengeByEmail: { limit: 1, windowMs: 10 * 60_000 } }),
     });
@@ -733,9 +813,12 @@ describe('A2 rate limiting and session expiry', () => {
         networkAddress: 'network-rate-b',
       }),
     ]);
-    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
-    const rejected = attempts.find((attempt) => attempt.status === 'rejected');
-    expect(rejected).toMatchObject({ reason: { code: 'auth.rate-limited' } });
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(2);
+    const responses = attempts.flatMap((attempt) =>
+      attempt.status === 'fulfilled' ? [attempt.value] : [],
+    );
+    expect(responses.every((response) => response.next === 'code')).toBe(true);
+    expect((fixture.delivery as LocalEmailChallengeDelivery).messages).toHaveLength(1);
   });
 
   it('fails new auth attempts closed when limiting is unavailable but preserves an existing session', async () => {

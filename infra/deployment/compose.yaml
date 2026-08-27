@@ -159,7 +159,6 @@ services:
       AUTH_OIDC_COOKIE_KEYS_JSON_FILE: /run/secrets/auth_oidc_cookie_keys
       AUTH_OIDC_ISSUER: ${KOVCHEG_AUTH_OIDC_ISSUER:?OIDC issuer is required}
       AUTH_OIDC_JWKS_JSON_FILE: /run/secrets/auth_oidc_jwks
-      AUTH_PERSONAL_GATE_PEPPER_FILE: /run/secrets/auth_personal_gate_pepper
       AUTH_RATE_LIMIT_PEPPER_FILE: /run/secrets/auth_rate_limit_pepper
       AUTH_REDIS_URL: redis://redis:6379
       AUTH_RUNTIME_ENABLED: 'true'
@@ -202,7 +201,6 @@ services:
       - auth_oidc_clients
       - auth_oidc_cookie_keys
       - auth_oidc_jwks
-      - auth_personal_gate_pepper
       - auth_rate_limit_pepper
       - auth_session_pepper
       - postgres_auth_password
@@ -491,8 +489,6 @@ secrets:
     file: ${KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE:?OIDC cookie keys file is required}
   auth_oidc_jwks:
     file: ${KOVCHEG_AUTH_OIDC_JWKS_FILE:?OIDC JWKS file is required}
-  auth_personal_gate_pepper:
-    file: ${KOVCHEG_AUTH_PERSONAL_GATE_PEPPER_FILE:?personal gate pepper file is required}
   auth_rate_limit_pepper:
     file: ${KOVCHEG_AUTH_RATE_LIMIT_PEPPER_FILE:?auth rate-limit pepper file is required}
   auth_session_pepper:
