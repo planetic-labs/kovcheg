@@ -41,6 +41,11 @@ test('automatic Docker scripts contain no broad prune operation', async () => {
   }
 });
 
+test('nested realtime restarts retain the lifecycle ownership override', async () => {
+  const source = await readFile('infra/scripts/realtime-smoke.mjs', 'utf8');
+  assert.match(source, /infra\/testing\/compose\.lifecycle\.yaml/u);
+});
+
 test('lifecycle helper defaults to 20 GiB and supports diagnostic image retention', async () => {
   const source = await readFile('infra/scripts/docker-test-lifecycle.sh', 'utf8');
   assert.match(source, /KOVCHEG_DOCKER_MIN_FREE_GIB:-20/u);

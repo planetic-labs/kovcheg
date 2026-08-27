@@ -31,6 +31,8 @@ function compose(...args) {
       'compose.yaml',
       '-f',
       'infra/realtime/compose.test.yaml',
+      '-f',
+      'infra/testing/compose.lifecycle.yaml',
       '-p',
       composeProject,
       ...args,
