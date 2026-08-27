@@ -28,17 +28,24 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   const payload = (await upstream.json().catch(() => null)) as {
     readonly challengeId?: unknown;
+    readonly next?: unknown;
     readonly status?: unknown;
   } | null;
-  if (
-    payload?.status !== 'accepted' ||
-    typeof payload.challengeId !== 'string' ||
-    !uuidPattern.test(payload.challengeId)
-  ) {
+  if (payload?.status !== 'accepted' || (payload.next !== 'email' && payload.next !== 'code')) {
     return bffError(503, 'a6.unavailable');
   }
 
-  const response = NextResponse.json({ status: 'accepted' }, { status: 202 });
+  if (payload.next === 'email') {
+    return NextResponse.json(
+      { next: 'email', status: 'accepted' },
+      { headers: { 'cache-control': 'no-store' }, status: 202 },
+    );
+  }
+  if (typeof payload.challengeId !== 'string' || !uuidPattern.test(payload.challengeId)) {
+    return bffError(503, 'a6.unavailable');
+  }
+
+  const response = NextResponse.json({ next: 'code', status: 'accepted' }, { status: 202 });
   response.cookies.set({
     httpOnly: true,
     maxAge: 10 * 60,

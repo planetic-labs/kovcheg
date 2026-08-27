@@ -17,6 +17,7 @@ export function proxy(request: NextRequest): NextResponse {
   });
 
   response.headers.set('content-security-policy', policy);
+  response.headers.set('referrer-policy', 'no-referrer');
   return response;
 }
 

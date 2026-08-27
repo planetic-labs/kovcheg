@@ -6,6 +6,8 @@ import { HmacAuthCrypto, SystemAuthRandomSource, systemClock } from './crypto.js
 import { ConfiguredOidcClientRepository, createOidcProvider } from './oidc.js';
 import type { OidcClientRepository, OidcStorageAdapter } from './oidc.js';
 import type { AuthRandomSource, AuthRepository, Clock, EmailChallengeDelivery } from './ports.js';
+import { PersonalGateCookie } from './personal-gate-cookie.js';
+import { RedisPersonalGateAbuseProtector } from './personal-gate-abuse.js';
 import { RedisRateLimiter } from './redis-rate-limiter.js';
 import type { RedisScriptClientFactory } from './redis-rate-limiter.js';
 import type { EnabledAuthRuntimeConfig } from './runtime-config.js';
@@ -17,6 +19,7 @@ export interface AuthRuntime {
   close(): Promise<void>;
   isReady(): Promise<boolean>;
   readonly oidcProvider: Provider;
+  readonly personalGateCookie: PersonalGateCookie;
   readonly sessionCookie: SessionCookie;
 }
 
@@ -63,6 +66,7 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     clock,
     crypto: new HmacAuthCrypto(input.config.authSecrets),
     delivery: input.delivery,
+    gateAbuseProtector: new RedisPersonalGateAbuseProtector(redisClient),
     policy: input.config.policy,
     random: input.random ?? new SystemAuthRandomSource(),
     rateLimiter: new RedisRateLimiter(redisClient),
@@ -73,6 +77,7 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     environment: input.config.environment,
     secure: input.config.secureCookies,
   });
+  const personalGateCookie = new PersonalGateCookie();
   let oidcProvider: Provider;
   try {
     oidcProvider = await createOidcProvider({
@@ -110,6 +115,7 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     isReady: async () =>
       redisClient.isReady() && (await input.repository.isReady().catch(() => false)),
     oidcProvider,
+    personalGateCookie,
     sessionCookie,
   });
 }

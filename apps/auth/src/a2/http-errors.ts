@@ -7,6 +7,7 @@ const statusByCode: Readonly<Record<AuthError['code'], HttpStatus>> = Object.fre
   'auth.conflict': HttpStatus.CONFLICT,
   'auth.forbidden': HttpStatus.FORBIDDEN,
   'auth.invalid-input': HttpStatus.BAD_REQUEST,
+  'auth.invalid-gate': HttpStatus.UNAUTHORIZED,
   'auth.invalid-or-expired-challenge': HttpStatus.UNAUTHORIZED,
   'auth.invalid-session': HttpStatus.UNAUTHORIZED,
   'auth.not-found': HttpStatus.NOT_FOUND,

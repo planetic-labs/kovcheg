@@ -13,6 +13,7 @@ import type {
   BootstrapAdministratorInput,
   ChallengeRecordInput,
   EmailChallengeMessage,
+  PersonalGateSecurityResetResult,
   RateLimitRule,
   SessionPrincipal,
   SessionRecordInput,
@@ -35,14 +36,95 @@ export type ConsumeChallengeResult =
   | { readonly kind: 'authenticated'; readonly principal: SessionPrincipal }
   | { readonly kind: 'invalid' };
 
+type ActivatePersonalGateResult =
+  | {
+      readonly accountId: UserId;
+      readonly familyId: Uuid;
+      readonly gateSessionId: Uuid;
+      readonly kind: 'active';
+      readonly reused: boolean;
+    }
+  | { readonly kind: 'invalid' };
+
+type ValidatePersonalGateResult =
+  | {
+      readonly accountId: UserId;
+      readonly emailSubmissionAllowed: boolean;
+      readonly expiresAt: number;
+      readonly familyId: Uuid;
+      readonly gateSessionId: Uuid;
+      readonly kind: 'active';
+    }
+  | { readonly kind: 'invalid' };
+
+type IssuePersonalGateChallengeResult =
+  | {
+      readonly accountId: UserId;
+      readonly challengeId: Uuid;
+      readonly kind: 'issued';
+      readonly recipient: string;
+    }
+  | { readonly kind: 'neutral' };
+
 export interface AuthRepository {
   readonly productionSafe?: true;
   authenticateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null>;
   validateSession(tokenVerifier: string, now: number): Promise<SessionPrincipal | null>;
+  activatePersonalGate(input: {
+    readonly clientIdempotencyKey: string;
+    readonly codeVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly gateSessionId: Uuid;
+    readonly gateTokenVerifier: string;
+    readonly now: number;
+  }): Promise<ActivatePersonalGateResult>;
+  adminIssuePersonalGate(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly codeVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly familyId: Uuid;
+    readonly now: number;
+  }): Promise<Uuid>;
+  adminReissuePersonalGate(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly codeVerifier: string;
+    readonly correlationId: CorrelationId;
+    readonly familyId: Uuid;
+    readonly now: number;
+  }): Promise<{ readonly familyId: Uuid; readonly revokedGateSessionCount: number }>;
+  adminResumePersonalGate(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly correlationId: CorrelationId;
+    readonly familyId: Uuid;
+    readonly now: number;
+  }): Promise<boolean>;
+  adminRevokePersonalGate(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly correlationId: CorrelationId;
+    readonly familyId: Uuid;
+    readonly now: number;
+  }): Promise<number>;
+  adminSecurityResetAuthAccess(input: {
+    readonly actorSessionVerifier: string;
+    readonly accountId: UserId;
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+  }): Promise<PersonalGateSecurityResetResult>;
   bootstrapAdministrator(input: BootstrapAdministratorInput): Promise<BootstrapAdministratorResult>;
   consumeChallengeAndCreateSession(input: {
     readonly candidateCodeVerifier: string;
     readonly challengeId: Uuid;
+    readonly now: number;
+    readonly session: SessionRecordInput;
+  }): Promise<ConsumeChallengeResult>;
+  consumePersonalGateChallengeAndCreateSession(input: {
+    readonly candidateCodeVerifier: string;
+    readonly challengeId: Uuid;
+    readonly gateTokenVerifier: string;
     readonly now: number;
     readonly session: SessionRecordInput;
   }): Promise<ConsumeChallengeResult>;
@@ -71,6 +153,13 @@ export interface AuthRepository {
     readonly email: string;
     readonly resendCooldownMs: number;
   }): Promise<IssueChallengeResult>;
+  issueChallengeForPersonalGate(input: {
+    readonly challenge: ChallengeRecordInput;
+    readonly correlationId: CorrelationId;
+    readonly email: string;
+    readonly gateTokenVerifier: string;
+    readonly resendCooldownMs: number;
+  }): Promise<IssuePersonalGateChallengeResult>;
   revokeAllSessionsAsAdministrator(input: {
     readonly actorSessionVerifier: string;
     readonly correlationId: CorrelationId;
@@ -118,10 +207,24 @@ export interface AuthRepository {
     readonly now: number;
     readonly userId: UserId;
   }): Promise<AccountRecord>;
+  validatePersonalGateSession(
+    gateTokenVerifier: string,
+    now: number,
+  ): Promise<ValidatePersonalGateResult>;
 }
 
 export interface AuthCrypto {
   challengeCodeVerifier(challengeId: Uuid, code: string): string;
+  personalGateActivationCredentials(
+    normalizedCode: string,
+    clientIdempotencyKey: string,
+  ): {
+    readonly gateSessionId: Uuid;
+    readonly gateToken: string;
+    readonly gateTokenVerifier: string;
+  };
+  personalGateCodeVerifier(normalizedCode: string): string;
+  personalGateTokenVerifier(gateToken: string): string;
   rateLimitKey(namespace: string, value: string): string;
   sessionTokenVerifier(sessionToken: string): string;
 }
@@ -129,9 +232,28 @@ export interface AuthCrypto {
 export interface AuthRandomSource {
   challengeCode(digits: number): string;
   opaqueToken(): string;
+  personalGateCode(): string;
   sessionId(): SessionId;
   userId(): UserId;
   uuid(): Uuid;
+}
+
+export type PersonalGateSourceDecision = 'allowed' | 'blocked' | 'unavailable';
+export type PersonalGateInvalidDecision = 'allowed' | 'blocked' | 'critical' | 'unavailable';
+
+export interface PersonalGateAbuseProtector {
+  checkSource(sourceKey: string): Promise<PersonalGateSourceDecision>;
+  recordActivation(input: {
+    readonly activationId: Uuid;
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+    readonly sourceKey: string;
+  }): Promise<'recorded' | 'unavailable'>;
+  recordSyntacticallyValidMiss(input: {
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+    readonly sourceKey: string;
+  }): Promise<PersonalGateInvalidDecision>;
 }
 
 export interface Clock {

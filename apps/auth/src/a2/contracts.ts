@@ -70,6 +70,64 @@ export interface ChallengeRequestAccepted {
   readonly status: 'accepted';
 }
 
+export type PersonalGateChallengeResponse =
+  | {
+      readonly challengeId: Uuid;
+      readonly next: 'code';
+      readonly status: 'accepted';
+    }
+  | {
+      readonly next: 'email';
+      readonly status: 'accepted';
+    };
+
+export interface PersonalGateActivation {
+  readonly accountId: UserId;
+  readonly familyId: Uuid;
+  readonly gateSessionId: Uuid;
+  readonly gateToken: string;
+  readonly reused: boolean;
+}
+
+export interface PersonalGateIssueResult {
+  readonly accountId: UserId;
+  readonly code: string;
+  readonly familyId: Uuid;
+}
+
+export interface PersonalGateSecurityResetResult {
+  readonly invalidatedChallengeCount: number;
+  readonly revokedApplicationSessionCount: number;
+  readonly revokedFamilyCount: number;
+  readonly revokedGateSessionCount: number;
+}
+
+export const personalGateLifetimeMs = 7 * 24 * 60 * 60_000;
+const personalGateCodeAlphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+export function normalizePersonalGateCode(value: string): string | null {
+  const normalized = value
+    .trim()
+    .toUpperCase()
+    .replaceAll('-', '')
+    .replace(/[IL]/gu, '1')
+    .replaceAll('O', '0');
+  if (
+    normalized.length !== 8 ||
+    [...normalized].some((character) => !personalGateCodeAlphabet.includes(character))
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+export function formatPersonalGateCode(normalizedCode: string): string {
+  if (normalizePersonalGateCode(normalizedCode) !== normalizedCode) {
+    throw new AuthError('auth.invalid-input', 'Personal gate code has an invalid shape');
+  }
+  return `${normalizedCode.slice(0, 4)}-${normalizedCode.slice(4)}`;
+}
+
 export interface EmailChallengeMessage {
   readonly challengeId: Uuid;
   readonly code: string;
@@ -134,6 +192,7 @@ export type AuthErrorCode =
   | 'auth.conflict'
   | 'auth.forbidden'
   | 'auth.invalid-input'
+  | 'auth.invalid-gate'
   | 'auth.invalid-or-expired-challenge'
   | 'auth.invalid-session'
   | 'auth.not-found'

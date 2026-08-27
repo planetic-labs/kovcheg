@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { POST as requestChallenge } from '../../app/bff/auth/challenge/route';
 import { POST as verifyChallenge } from '../../app/bff/auth/challenge/verify/route';
-import { POST as createAccount } from '../../app/bff/admin/accounts/[[...path]]/route';
+import { GET as readGate, POST as activateGate } from '../../app/bff/auth/gate/route';
+import {
+  DELETE as adminDelete,
+  POST as createAccount,
+  PUT as adminPut,
+} from '../../app/bff/admin/accounts/[[...path]]/route';
 import { GET as readChats } from '../../app/bff/chats/route';
 import { DELETE as logout } from '../../app/bff/session/route';
 
@@ -52,7 +57,7 @@ function principal(canManageAccounts: boolean) {
 describe('A6 same-origin auth BFF', () => {
   it('keeps the external challenge response neutral and the challenge ID HTTP-only', async () => {
     const upstream = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ challengeId, status: 'accepted' }), {
+      new Response(JSON.stringify({ challengeId, next: 'code', status: 'accepted' }), {
         headers: { 'content-type': 'application/json' },
         status: 202,
       }),
@@ -68,7 +73,7 @@ describe('A6 same-origin auth BFF', () => {
     );
 
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({ status: 'accepted' });
+    expect(await response.json()).toEqual({ next: 'code', status: 'accepted' });
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
     expect(upstream).toHaveBeenCalledWith(
       'http://auth:3002/session/challenges',
@@ -80,7 +85,7 @@ describe('A6 same-origin auth BFF', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ challengeId, status: 'accepted' }), {
+        new Response(JSON.stringify({ challengeId, next: 'code', status: 'accepted' }), {
           headers: { 'content-type': 'application/json' },
           status: 202,
         }),
@@ -99,6 +104,70 @@ describe('A6 same-origin auth BFF', () => {
     );
 
     expect(response.headers.get('set-cookie')).toContain('Secure');
+  });
+
+  it('never creates a challenge cookie when a wrong email remains at email entry', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ next: 'email', status: 'accepted' }), {
+          headers: { 'content-type': 'application/json' },
+          status: 202,
+        }),
+      ),
+    );
+    const response = await requestChallenge(
+      request('/bff/auth/challenge', {
+        body: JSON.stringify({ email: 'wrong@example.invalid' }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      }),
+    );
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ next: 'email', status: 'accepted' });
+    expect(response.headers.has('set-cookie')).toBe(false);
+  });
+
+  it('exchanges a body-only gate code for the strict upstream host cookie', async () => {
+    const upstream = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: 'required' }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ next: 'email', status: 'accepted' }), {
+          headers: {
+            'content-type': 'application/json',
+            'set-cookie':
+              '__Host-kovcheg_gate=synthetic-gate-token; Path=/; HttpOnly; Secure; SameSite=Strict',
+          },
+          status: 202,
+        }),
+      );
+    vi.stubGlobal('fetch', upstream);
+    await expect(
+      readGate(request('/bff/auth/gate')).then(async (response) => response.json()),
+    ).resolves.toEqual({
+      status: 'required',
+    });
+    const response = await activateGate(
+      request('/bff/auth/gate', {
+        body: JSON.stringify({
+          clientIdempotencyKey: 'synthetic-browser-0001',
+          code: '0123-4567',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      }),
+    );
+    expect(response.status).toBe(202);
+    expect(response.headers.get('set-cookie')).toContain('__Host-kovcheg_gate=');
+    expect(response.headers.get('set-cookie')).toContain('SameSite=Strict');
+    expect(upstream.mock.calls[1]?.[0]).toBe('http://auth:3002/personal-gate/activate');
+    expect(upstream.mock.calls[1]?.[0]).not.toContain('0123-4567');
   });
 
   it('verifies the six digits server-side and forwards only the A2 session cookie', async () => {
@@ -231,6 +300,73 @@ describe('A6 administrative BFF gate', () => {
     );
     expect(body).not.toContain('role');
     expect(body).not.toContain('group');
+  });
+
+  it('whitelists only UUID-scoped personal-gate administration for an administrator', async () => {
+    const accountId = '00000000-0000-4000-8000-000000000604';
+    const familyId = '00000000-0000-4000-8000-000000000605';
+    const upstream = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(principal(true)), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: '0123-4567', familyId }), {
+          headers: { 'content-type': 'application/json' },
+          status: 201,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(principal(true)), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: '89AB-CDEF', familyId }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(principal(true)), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ revokedGateSessionCount: 1 }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      );
+    vi.stubGlobal('fetch', upstream);
+
+    await createAccount(
+      request(`/bff/admin/accounts/${accountId}/personal-gate`, { method: 'POST' }),
+      { params: Promise.resolve({ path: [accountId, 'personal-gate'] }) },
+    );
+    await adminPut(request(`/bff/admin/accounts/${accountId}/personal-gate`, { method: 'PUT' }), {
+      params: Promise.resolve({ path: [accountId, 'personal-gate'] }),
+    });
+    await adminDelete(
+      request(`/bff/admin/accounts/${accountId}/personal-gate/${familyId}`, {
+        method: 'DELETE',
+      }),
+      { params: Promise.resolve({ path: [accountId, 'personal-gate', familyId] }) },
+    );
+    expect(
+      upstream.mock.calls
+        .filter((call) => String(call[0]).includes('personal-gate'))
+        .map((call) => call[0]),
+    ).toEqual([
+      `http://auth:3002/admin/accounts/${accountId}/personal-gate`,
+      `http://auth:3002/admin/accounts/${accountId}/personal-gate`,
+      `http://auth:3002/admin/accounts/${accountId}/personal-gate/${familyId}`,
+    ]);
   });
 });
 

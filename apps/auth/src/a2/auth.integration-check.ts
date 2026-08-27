@@ -50,6 +50,7 @@ function runtimeConfig(): EnabledAuthRuntimeConfig {
   return Object.freeze({
     authSecrets: Object.freeze({
       challengePepper: 'integration-challenge-pepper'.repeat(3),
+      personalGatePepper: 'integration-personal-gate-pepper'.repeat(3),
       rateLimitPepper: 'integration-rate-limit-pepper'.repeat(3),
       sessionPepper: 'integration-session-pepper'.repeat(3),
     }),
@@ -119,15 +120,50 @@ function pkceChallenge(verifier: string): string {
   return createHash('sha256').update(verifier, 'ascii').digest('base64url');
 }
 
-async function requestChallenge(baseUrl: string, email: string, suffix: string): Promise<Response> {
+async function requestChallenge(
+  baseUrl: string,
+  email: string,
+  suffix: string,
+  gateCookie?: string,
+): Promise<Response> {
   return fetch(`${baseUrl}/session/challenges`, {
     body: JSON.stringify({ email }),
     headers: {
+      'content-type': 'application/json',
+      ...(gateCookie === undefined ? {} : { cookie: gateCookie }),
+      'user-agent': `synthetic-integration-${suffix}`,
+    },
+    method: 'POST',
+  });
+}
+
+async function activateGate(baseUrl: string, code: string, suffix: string): Promise<string> {
+  const response = await fetch(`${baseUrl}/personal-gate/activate`, {
+    body: JSON.stringify({
+      clientIdempotencyKey: `integration-browser-${suffix}`,
+      code,
+    }),
+    headers: {
+      [correlationIdHeaderName]: `integration-gate-activate-${suffix}`,
       'content-type': 'application/json',
       'user-agent': `synthetic-integration-${suffix}`,
     },
     method: 'POST',
   });
+  const body = await readJson(response);
+  assert(
+    response.status === 202 && body.status === 'accepted' && body.next === 'email',
+    'A valid personal gate must activate without authenticating the account',
+  );
+  const cookie = responseCookie(response);
+  assert(
+    response.headers.getSetCookie()[0]?.includes('__Host-kovcheg_gate=') === true &&
+      response.headers.getSetCookie()[0]?.includes('Secure') === true &&
+      response.headers.getSetCookie()[0]?.includes('HttpOnly') === true &&
+      response.headers.getSetCookie()[0]?.includes('SameSite=Strict') === true,
+    'Gate activation must issue the strict host-only cookie',
+  );
+  return cookie;
 }
 
 async function administrativeRequest(input: {
@@ -135,7 +171,7 @@ async function administrativeRequest(input: {
   readonly body?: unknown;
   readonly cookie?: string;
   readonly correlationId: string;
-  readonly method: 'DELETE' | 'PATCH' | 'POST';
+  readonly method: 'DELETE' | 'PATCH' | 'POST' | 'PUT';
   readonly path: string;
 }): Promise<Response> {
   return fetch(`${input.baseUrl}${input.path}`, {
@@ -226,6 +262,21 @@ async function main(): Promise<void> {
       },
       correlationId(`integration-admin-create-inactive-${suffix}`),
     );
+    const activeGate = await runtime.authService.issuePersonalGate(
+      administratorSession.sessionToken,
+      activeAccount.userId,
+      correlationId(`integration-gate-issue-active-${suffix}`),
+    );
+    const inactiveGate = await runtime.authService.issuePersonalGate(
+      administratorSession.sessionToken,
+      inactiveAccount.userId,
+      correlationId(`integration-gate-issue-inactive-${suffix}`),
+    );
+    const administratorGate = await runtime.authService.issuePersonalGate(
+      administratorSession.sessionToken,
+      administratorId,
+      correlationId(`integration-gate-issue-administrator-${suffix}`),
+    );
     await runtime.authService.setAccountStatus(
       administratorSession.sessionToken,
       inactiveAccount.userId,
@@ -305,10 +356,31 @@ async function main(): Promise<void> {
         'A missing administrator session must fail closed',
       );
 
+      const httpGateIssue = await administrativeRequest({
+        baseUrl,
+        cookie: administratorCookie,
+        correlationId: `integration-admin-http-gate-issue-${suffix}`,
+        method: 'POST',
+        path: `/admin/accounts/${httpManagedAccountId}/personal-gate`,
+      });
+      assert(httpGateIssue.status === 201, 'The protected HTTP API must issue a personal gate');
+      const httpGateIssueBody = await readJson(httpGateIssue);
+      assert(
+        typeof httpGateIssueBody.code === 'string' &&
+          typeof httpGateIssueBody.familyId === 'string',
+        'Gate issue must return the raw code exactly once to the administrator',
+      );
+      const firstManagedGateCookie = await activateGate(
+        baseUrl,
+        httpGateIssueBody.code,
+        `http-managed-first-${suffix}`,
+      );
+
       const firstManagedChallenge = await requestChallenge(
         baseUrl,
         httpManagedEmail,
         'http-managed-first',
+        firstManagedGateCookie,
       );
       const firstManagedChallengeBody = await readJson(firstManagedChallenge);
       const firstManagedMessage = delivery.messages.at(-1);
@@ -320,16 +392,22 @@ async function main(): Promise<void> {
         `${baseUrl}/session/challenges/${String(firstManagedChallengeBody.challengeId)}/verify`,
         {
           body: JSON.stringify({ code: firstManagedMessage.code }),
-          headers: { 'content-type': 'application/json' },
+          headers: { cookie: firstManagedGateCookie, 'content-type': 'application/json' },
           method: 'POST',
         },
       );
       const firstManagedCookie = responseCookie(firstManagedVerification);
       clock.advance(emailChallengePolicy.resendCooldownMs);
+      const secondManagedGateCookie = await activateGate(
+        baseUrl,
+        httpGateIssueBody.code,
+        `http-managed-second-${suffix}`,
+      );
       const secondManagedChallenge = await requestChallenge(
         baseUrl,
         httpManagedEmail,
         'http-managed-second',
+        secondManagedGateCookie,
       );
       const secondManagedChallengeBody = await readJson(secondManagedChallenge);
       const secondManagedMessage = delivery.messages.at(-1);
@@ -338,11 +416,69 @@ async function main(): Promise<void> {
         `${baseUrl}/session/challenges/${String(secondManagedChallengeBody.challengeId)}/verify`,
         {
           body: JSON.stringify({ code: secondManagedMessage.code }),
-          headers: { 'content-type': 'application/json' },
+          headers: { cookie: secondManagedGateCookie, 'content-type': 'application/json' },
           method: 'POST',
         },
       );
       const secondManagedCookie = responseCookie(secondManagedVerification);
+
+      const httpGateReissue = await administrativeRequest({
+        baseUrl,
+        cookie: administratorCookie,
+        correlationId: `integration-admin-http-gate-reissue-${suffix}`,
+        method: 'PUT',
+        path: `/admin/accounts/${httpManagedAccountId}/personal-gate`,
+      });
+      assert(httpGateReissue.status === 200, 'The protected HTTP API must reissue a personal gate');
+      const httpGateReissueBody = await readJson(httpGateReissue);
+      assert(
+        Number(httpGateReissueBody.revokedGateSessionCount) === 2 &&
+          typeof httpGateReissueBody.code === 'string' &&
+          typeof httpGateReissueBody.familyId === 'string',
+        'Gate reissue must revoke both browser gates and return one replacement code',
+      );
+      assert(
+        (await fetch(`${baseUrl}/personal-gate`, { headers: { cookie: firstManagedGateCookie } }))
+          .status === 200 &&
+          (
+            await readJson(
+              await fetch(`${baseUrl}/personal-gate`, {
+                headers: { cookie: firstManagedGateCookie },
+              }),
+            )
+          ).status === 'required',
+        'Reissue must invalidate the old gate cookie',
+      );
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: firstManagedCookie } })).status ===
+          200 &&
+          (await fetch(`${baseUrl}/session`, { headers: { cookie: secondManagedCookie } }))
+            .status === 200,
+        'Gate reissue must preserve application sessions',
+      );
+      const reissuedManagedGateCookie = await activateGate(
+        baseUrl,
+        httpGateReissueBody.code,
+        `http-managed-reissued-${suffix}`,
+      );
+      const httpGateRevoke = await administrativeRequest({
+        baseUrl,
+        cookie: administratorCookie,
+        correlationId: `integration-admin-http-gate-revoke-${suffix}`,
+        method: 'DELETE',
+        path: `/admin/accounts/${httpManagedAccountId}/personal-gate/${String(httpGateReissueBody.familyId)}`,
+      });
+      assert(httpGateRevoke.status === 200, 'The protected HTTP API must revoke a personal gate');
+      assert(
+        (
+          await readJson(
+            await fetch(`${baseUrl}/personal-gate`, {
+              headers: { cookie: reissuedManagedGateCookie },
+            }),
+          )
+        ).status === 'required',
+        'Gate revoke must invalidate its current browser cookie',
+      );
       const revokeAllResponses = await Promise.all(
         Array.from({ length: 8 }, async (_, index) =>
           administrativeRequest({
@@ -373,23 +509,50 @@ async function main(): Promise<void> {
 
       integrationStage = 'neutral-http-responses';
       const deliveredBeforeNeutralRequests = delivery.messages.length;
+      const activeGateCookie = await activateGate(
+        baseUrl,
+        activeGate.code,
+        `active-neutral-${suffix}`,
+      );
+      const inactiveGateActivation = await fetch(`${baseUrl}/personal-gate/activate`, {
+        body: JSON.stringify({
+          clientIdempotencyKey: `integration-browser-inactive-${suffix}`,
+          code: inactiveGate.code,
+        }),
+        headers: {
+          [correlationIdHeaderName]: `integration-gate-inactive-${suffix}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+      assert(
+        inactiveGateActivation.status === 202 &&
+          (await readJson(inactiveGateActivation)).next === 'gate' &&
+          inactiveGateActivation.headers.getSetCookie()[0]?.includes('Max-Age=0') === true,
+        'A deactivated account gate must remain neutral and create no gate session',
+      );
       const [known, inactive, unknown, unauthorized] = await Promise.all([
-        requestChallenge(baseUrl, activeEmail, 'known'),
-        requestChallenge(baseUrl, inactiveEmail, 'inactive'),
-        requestChallenge(baseUrl, `unknown-${suffix}@auth.invalid`, 'unknown'),
+        requestChallenge(baseUrl, activeEmail.toUpperCase(), 'known', activeGateCookie),
+        requestChallenge(baseUrl, inactiveEmail, 'inactive', activeGateCookie),
+        requestChallenge(baseUrl, `unknown-${suffix}@auth.invalid`, 'unknown', activeGateCookie),
         fetch(`${baseUrl}/session`),
       ]);
       assert(
         known.status === 202 && inactive.status === 202 && unknown.status === 202,
-        'Known, inactive, and unknown challenge requests must all return 202',
+        'Correct and wrong gated email submissions must all return 202',
       );
       const neutralBodies = await Promise.all([known, inactive, unknown].map(readJson));
       const knownBody = neutralBodies[0];
       assert(knownBody !== undefined, 'Known challenge response body must exist');
       const responseShapes = neutralBodies.map((body) => Object.keys(body).sort().join(','));
       assert(
-        new Set(responseShapes).size === 1 && responseShapes[0] === 'challengeId,status',
-        'Known, inactive, and unknown challenge responses must be externally identical',
+        responseShapes[0] === 'challengeId,next,status' &&
+          responseShapes[1] === 'next,status' &&
+          responseShapes[2] === 'next,status' &&
+          neutralBodies[0]?.next === 'code' &&
+          neutralBodies[1]?.next === 'email' &&
+          neutralBodies[2]?.next === 'email',
+        'Only the current UUID-bound email may advance to code entry',
       );
       assert(
         delivery.messages.length === deliveredBeforeNeutralRequests + 1,
@@ -406,7 +569,7 @@ async function main(): Promise<void> {
         Array.from({ length: 12 }, () =>
           fetch(`${baseUrl}/session/challenges/${knownChallengeId}/verify`, {
             body: JSON.stringify({ code: knownMessage.code }),
-            headers: { 'content-type': 'application/json' },
+            headers: { cookie: activeGateCookie, 'content-type': 'application/json' },
             method: 'POST',
           }),
         ),
@@ -447,7 +610,13 @@ async function main(): Promise<void> {
 
       integrationStage = 'logout';
       clock.advance(emailChallengePolicy.resendCooldownMs);
-      const logoutChallenge = await requestChallenge(baseUrl, activeEmail, 'logout');
+      const logoutGateCookie = await activateGate(baseUrl, activeGate.code, `logout-${suffix}`);
+      const logoutChallenge = await requestChallenge(
+        baseUrl,
+        activeEmail,
+        'logout',
+        logoutGateCookie,
+      );
       const logoutBody = await readJson(logoutChallenge);
       const logoutMessage = delivery.messages.at(-1);
       assert(logoutMessage !== undefined, 'Logout fixture challenge must be delivered');
@@ -455,14 +624,24 @@ async function main(): Promise<void> {
         `${baseUrl}/session/challenges/${String(logoutBody.challengeId)}/verify`,
         {
           body: JSON.stringify({ code: logoutMessage.code }),
-          headers: { 'content-type': 'application/json' },
+          headers: { cookie: logoutGateCookie, 'content-type': 'application/json' },
           method: 'POST',
         },
       );
       const logoutCookie = responseCookie(logoutVerification);
       const firstLogoutSession = await readJson(logoutVerification);
       clock.advance(emailChallengePolicy.resendCooldownMs);
-      const secondBrowserChallenge = await requestChallenge(baseUrl, activeEmail, 'second-browser');
+      const secondBrowserGateCookie = await activateGate(
+        baseUrl,
+        activeGate.code,
+        `second-browser-${suffix}`,
+      );
+      const secondBrowserChallenge = await requestChallenge(
+        baseUrl,
+        activeEmail,
+        'second-browser',
+        secondBrowserGateCookie,
+      );
       const secondBrowserBody = await readJson(secondBrowserChallenge);
       const secondBrowserMessage = delivery.messages.at(-1);
       assert(secondBrowserMessage !== undefined, 'Second browser challenge must be delivered');
@@ -471,7 +650,7 @@ async function main(): Promise<void> {
         `${baseUrl}/session/challenges/${String(secondBrowserBody.challengeId)}/verify`,
         {
           body: JSON.stringify({ code: secondBrowserMessage.code }),
-          headers: { 'content-type': 'application/json' },
+          headers: { cookie: secondBrowserGateCookie, 'content-type': 'application/json' },
           method: 'POST',
         },
       );
@@ -519,25 +698,37 @@ async function main(): Promise<void> {
 
       integrationStage = 'deactivation';
       clock.advance(emailChallengePolicy.resendCooldownMs);
-      const deactivationChallenge = await runtime.authService.requestEmailChallenge({
-        email: activeEmail,
-        fingerprint: `deactivation-${suffix}`,
-        networkAddress: 'integration-network-deactivation',
-      });
+      const deactivationGateCookie = await activateGate(
+        baseUrl,
+        activeGate.code,
+        `deactivation-${suffix}`,
+      );
+      const deactivationChallengeResponse = await requestChallenge(
+        baseUrl,
+        activeEmail,
+        `deactivation-${suffix}`,
+        deactivationGateCookie,
+      );
+      const deactivationChallenge = await readJson(deactivationChallengeResponse);
       const deactivationMessage = delivery.messages.at(-1);
       assert(deactivationMessage !== undefined, 'Deactivation fixture challenge must be delivered');
-      const deactivationSession = await runtime.authService.verifyEmailChallenge({
-        challengeId: deactivationChallenge.challengeId,
-        code: deactivationMessage.code,
-        networkAddress: 'integration-network-deactivation',
-      });
+      const deactivationVerification = await fetch(
+        `${baseUrl}/session/challenges/${String(deactivationChallenge.challengeId)}/verify`,
+        {
+          body: JSON.stringify({ code: deactivationMessage.code }),
+          headers: { cookie: deactivationGateCookie, 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert(deactivationVerification.status === 200, 'Gated authentication must succeed');
+      const deactivationSessionCookie = responseCookie(deactivationVerification);
       const forbiddenAdministrativeRequest = await administrativeRequest({
         baseUrl,
         body: {
           displayName: 'Forbidden Synthetic Account',
           email: `forbidden-${suffix}@auth.invalid`,
         },
-        cookie: `${runtime.sessionCookie.name}=${deactivationSession.sessionToken}`,
+        cookie: deactivationSessionCookie,
         correlationId: `integration-admin-forbidden-${suffix}`,
         method: 'POST',
         path: '/admin/accounts',
@@ -548,11 +739,13 @@ async function main(): Promise<void> {
         'A non-administrator must be rejected by the protected HTTP API',
       );
       clock.advance(emailChallengePolicy.resendCooldownMs);
-      const pendingChallenge = await runtime.authService.requestEmailChallenge({
-        email: activeEmail,
-        fingerprint: `pending-deactivation-${suffix}`,
-        networkAddress: 'integration-network-pending-deactivation',
-      });
+      const pendingChallengeResponse = await requestChallenge(
+        baseUrl,
+        activeEmail,
+        `pending-deactivation-${suffix}`,
+        deactivationGateCookie,
+      );
+      const pendingChallenge = await readJson(pendingChallengeResponse);
       const pendingChallengeMessage = delivery.messages.at(-1);
       assert(
         pendingChallengeMessage !== undefined &&
@@ -572,33 +765,33 @@ async function main(): Promise<void> {
           (await readJson(deactivateAccount)).status === 'deactivated',
         'Administrative deactivation must succeed through its protected HTTP wrapper',
       );
-      await runtime.authService
-        .verifyEmailChallenge({
-          challengeId: pendingChallenge.challengeId,
-          code: pendingChallengeMessage.code,
-          networkAddress: 'integration-network-pending-deactivation',
-        })
-        .then(
-          () => {
-            throw new Error('A pending challenge survived deactivation');
-          },
-          (error: unknown) => {
-            assert(
-              (error as { readonly code?: string }).code === 'auth.invalid-or-expired-challenge',
-              'Deactivation must invalidate every pending challenge',
-            );
-          },
-        );
-      await runtime.authService.authenticateSession(deactivationSession.sessionToken).then(
-        () => {
-          throw new Error('A deactivated account retained its session');
+      const pendingVerificationAfterDeactivation = await fetch(
+        `${baseUrl}/session/challenges/${String(pendingChallenge.challengeId)}/verify`,
+        {
+          body: JSON.stringify({ code: pendingChallengeMessage.code }),
+          headers: { cookie: deactivationGateCookie, 'content-type': 'application/json' },
+          method: 'POST',
         },
-        (error: unknown) => {
-          assert(
-            (error as { readonly code?: string }).code === 'auth.invalid-session',
-            'Deactivation must revoke every account session',
-          );
-        },
+      );
+      assert(
+        pendingVerificationAfterDeactivation.status === 401 &&
+          !pendingVerificationAfterDeactivation.headers.has('set-cookie'),
+        'Deactivation must invalidate pending challenge and gate before session creation',
+      );
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: deactivationSessionCookie } }))
+          .status === 401,
+        'Deactivation must revoke every account session',
+      );
+      assert(
+        (
+          await readJson(
+            await fetch(`${baseUrl}/personal-gate`, {
+              headers: { cookie: deactivationGateCookie },
+            }),
+          )
+        ).status === 'required',
+        'Deactivation must revoke every personal gate session',
       );
       assert(
         (await fetch(`${baseUrl}/session`, { headers: { cookie: secondBrowserCookie } })).status ===
@@ -780,11 +973,17 @@ async function main(): Promise<void> {
       );
 
       integrationStage = 'redis-failure';
+      const redisFailureGateCookie = await activateGate(
+        baseUrl,
+        administratorGate.code,
+        `redis-failure-${suffix}`,
+      );
       await redisClient.close?.();
       const redisFailure = await requestChallenge(
         baseUrl,
-        `redis-failure-${suffix}@auth.invalid`,
+        administratorEmail,
         'redis-failure',
+        redisFailureGateCookie,
       );
       assert(redisFailure.status === 503, 'Redis failure must fail new authentication closed');
     } finally {

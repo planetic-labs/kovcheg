@@ -37,6 +37,30 @@ class QueryFixture implements AuthPostgresClient {
   }
 }
 
+class TransactionFixture {
+  readonly calls: { readonly text: string; readonly values: readonly unknown[] }[] = [];
+  released = false;
+
+  constructor(
+    private readonly results: readonly (readonly QueryResultRow[] | { readonly error: unknown })[],
+  ) {}
+
+  query<Row extends QueryResultRow>(
+    text: string,
+    values: readonly unknown[] = [],
+  ): Promise<{ readonly rows: Row[] }> {
+    this.calls.push({ text, values });
+    const result = this.results[this.calls.length - 1];
+    if (result === undefined) return Promise.reject(new Error('Missing transaction result'));
+    if ('error' in result) return Promise.reject(result.error);
+    return Promise.resolve({ rows: [...result] as Row[] });
+  }
+
+  release(): void {
+    this.released = true;
+  }
+}
+
 describe('A2 PostgreSQL auth repository', () => {
   const principal = Object.freeze({
     accountAccess: 'member',
@@ -123,6 +147,157 @@ describe('A2 PostgreSQL auth repository', () => {
     expect(client.calls.every((call) => !/\b(?:INSERT|UPDATE|DELETE)\b/i.test(call.text))).toBe(
       true,
     );
+  });
+
+  it('consumes a gated challenge and extends the gate atomically through protected functions', async () => {
+    const transaction = new TransactionFixture([
+      [],
+      [
+        {
+          account_id: '00000000-0000-4000-8000-000000000050',
+          email_submission_allowed: true,
+          expires_at: new Date('2030-01-08T00:00:00Z'),
+          family_id: '00000000-0000-4000-8000-000000000055',
+          gate_session_id: '00000000-0000-4000-8000-000000000056',
+        },
+      ],
+      [{ outcome: 'authenticated', principal }],
+      [{ result: new Date('2030-01-08T00:00:00Z') }],
+      [],
+    ]);
+    const client: AuthPostgresClient = {
+      connect: () => Promise.resolve(transaction),
+      query: () => Promise.reject(new Error('Top-level query must not be used')),
+    };
+    const repository = new PostgresAuthRepository(client);
+    await expect(
+      repository.consumePersonalGateChallengeAndCreateSession({
+        candidateCodeVerifier: 'c'.repeat(43),
+        challengeId: '00000000-0000-4000-8000-000000000052',
+        gateTokenVerifier: 'g'.repeat(43),
+        now: Date.parse('2030-01-01T00:00:00Z'),
+        session: {
+          absoluteExpiresAt: Date.parse('2030-01-31T00:00:00Z'),
+          idleLifetimeMs: 7 * 24 * 60 * 60_000,
+          issuedAt: Date.parse('2030-01-01T00:00:00Z'),
+          sessionId: '00000000-0000-4000-8000-000000000054',
+          tokenVerifier: 's'.repeat(43),
+        },
+      }),
+    ).resolves.toMatchObject({ kind: 'authenticated' });
+    expect(transaction.calls.map((call) => call.text)).toEqual([
+      'BEGIN ISOLATION LEVEL SERIALIZABLE',
+      expect.stringContaining('validate_auth_personal_gate_session'),
+      expect.stringContaining('consume_challenge_and_read_principal'),
+      expect.stringContaining('extend_auth_personal_gate_after_login'),
+      'COMMIT',
+    ]);
+    expect(
+      transaction.calls.every((call) => !/\b(?:INSERT|UPDATE|DELETE)\b/iu.test(call.text)),
+    ).toBe(true);
+    expect(transaction.released).toBe(true);
+  });
+
+  it('retries the whole protected transaction after a serialization conflict', async () => {
+    const gateRow = {
+      account_id: '00000000-0000-4000-8000-000000000050',
+      email_submission_allowed: true,
+      expires_at: new Date('2030-01-08T00:00:00Z'),
+      family_id: '00000000-0000-4000-8000-000000000055',
+      gate_session_id: '00000000-0000-4000-8000-000000000056',
+    };
+    const conflicted = new TransactionFixture([[], [gateRow], { error: { code: '40001' } }, []]);
+    const retried = new TransactionFixture([[], [gateRow], [{ outcome: 'invalid' }], []]);
+    const transactions = [conflicted, retried];
+    const client: AuthPostgresClient = {
+      connect: () => Promise.resolve(transactions.shift()!),
+      query: () => Promise.reject(new Error('Top-level query must not be used')),
+    };
+    const repository = new PostgresAuthRepository(client);
+
+    await expect(
+      repository.consumePersonalGateChallengeAndCreateSession({
+        candidateCodeVerifier: 'c'.repeat(43),
+        challengeId: '00000000-0000-4000-8000-000000000052',
+        gateTokenVerifier: 'g'.repeat(43),
+        now: Date.parse('2030-01-01T00:00:00Z'),
+        session: {
+          absoluteExpiresAt: Date.parse('2030-01-31T00:00:00Z'),
+          idleLifetimeMs: 7 * 24 * 60 * 60_000,
+          issuedAt: Date.parse('2030-01-01T00:00:00Z'),
+          sessionId: '00000000-0000-4000-8000-000000000054',
+          tokenVerifier: 's'.repeat(43),
+        },
+      }),
+    ).resolves.toEqual({ kind: 'invalid' });
+    expect(conflicted.calls.at(-1)?.text).toBe('ROLLBACK');
+    expect(conflicted.released).toBe(true);
+    expect(retried.calls.map((call) => call.text)).toEqual([
+      'BEGIN ISOLATION LEVEL SERIALIZABLE',
+      expect.stringContaining('validate_auth_personal_gate_session'),
+      expect.stringContaining('consume_challenge_and_read_principal'),
+      'COMMIT',
+    ]);
+    expect(retried.released).toBe(true);
+  });
+
+  it('uses only protected personal-gate administration functions', async () => {
+    const familyId = '00000000-0000-4000-8000-000000000055' as const;
+    const client = new QueryFixture([
+      [{ result: familyId }],
+      [{ family_id: familyId, revoked_gate_session_count: 2 }],
+      [{ result: 2 }],
+      [{ result: true }],
+      [
+        {
+          result: {
+            invalidatedChallengeCount: 1,
+            revokedApplicationSessionCount: 2,
+            revokedFamilyCount: 1,
+            revokedGateSessionCount: 3,
+          },
+        },
+      ],
+    ]);
+    const repository = new PostgresAuthRepository(client);
+    const common = {
+      accountId: '00000000-0000-4000-8000-000000000050' as const,
+      actorSessionVerifier: 'a'.repeat(43),
+      correlationId: 'postgres-personal-gate-admin' as CorrelationId,
+      now: Date.parse('2030-01-01T00:00:00Z'),
+    };
+    await repository.adminIssuePersonalGate({
+      ...common,
+      codeVerifier: 'g'.repeat(43),
+      familyId,
+    });
+    await repository.adminReissuePersonalGate({
+      ...common,
+      codeVerifier: 'h'.repeat(43),
+      familyId,
+    });
+    await repository.adminRevokePersonalGate({ ...common, familyId });
+    await repository.adminResumePersonalGate({ ...common, familyId });
+    await expect(repository.adminSecurityResetAuthAccess(common)).resolves.toEqual({
+      invalidatedChallengeCount: 1,
+      revokedApplicationSessionCount: 2,
+      revokedFamilyCount: 1,
+      revokedGateSessionCount: 3,
+    });
+    expect(client.calls.map((call) => call.text)).toEqual([
+      expect.stringContaining('admin_issue_auth_personal_gate'),
+      expect.stringContaining('admin_reissue_auth_personal_gate'),
+      expect.stringContaining('admin_revoke_auth_personal_gate'),
+      expect.stringContaining('admin_resume_auth_personal_gate'),
+      expect.stringContaining('admin_security_reset_auth_access'),
+    ]);
+    expect(
+      client.calls.every(
+        (call) =>
+          call.values[0] === common.actorSessionVerifier &&
+          !/\b(?:INSERT|UPDATE|DELETE)\b/iu.test(call.text),
+      ),
+    ).toBe(true);
   });
 
   it('maps uniqueness failures to the repository conflict contract', async () => {
