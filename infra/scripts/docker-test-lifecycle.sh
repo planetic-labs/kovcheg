@@ -51,7 +51,7 @@ docker_test_begin() {
 
   export KOVCHEG_TEST_PROJECT='kovcheg'
   export KOVCHEG_TEST_PURPOSE="$purpose"
-  export KOVCHEG_TEST_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$run_token"
+  export KOVCHEG_TEST_RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-$$-$run_token"
   export KOVCHEG_TEST_SOURCE_SHA="$source_sha"
   export KOVCHEG_TEST_COMPOSE_PROJECT="$project_name"
   export KOVCHEG_TEST_STATE_DIRECTORY="$state_directory"
