@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { emailChallengePolicy } from './contracts.js';
+import { emailChallengePolicy, passkeyPolicy, passkeyRateLimitPolicy } from './contracts.js';
 import { LocalAuthRepository, LocalEmailChallengeDelivery } from './local-adapters.js';
 import { ResendEmailChallengeDelivery } from './resend-email-challenge-delivery.js';
 import { createAuthRuntime } from './runtime.js';
@@ -66,10 +66,12 @@ describe('A2 production runtime boundary', () => {
       },
       policy: {
         challenge: emailChallengePolicy,
+        passkey: passkeyPolicy,
         rateLimits: {
           challengeByEmail: rule,
           challengeByFingerprint: rule,
           challengeByNetwork: rule,
+          ...passkeyRateLimitPolicy,
           verifyByChallenge: rule,
           verifyByNetwork: rule,
         },
@@ -77,6 +79,11 @@ describe('A2 production runtime boundary', () => {
       },
       redisUrl: 'rediss://redis.invalid:6379',
       secureCookies: true,
+      webauthn: {
+        origins: ['https://auth.m6z.ru'],
+        rpId: 'auth.m6z.ru',
+        rpName: 'Kovcheg',
+      },
     };
 
     await expect(

@@ -3,11 +3,13 @@ import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { correlationIdHeaderName } from '@kovcheg/contracts';
 import type { CorrelationId, UserId } from '@kovcheg/contracts';
 import type { JWKS } from 'oidc-provider';
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 import { createAuthApplication } from '../application.js';
-import { emailChallengePolicy } from './contracts.js';
+import { emailChallengePolicy, passkeyPolicy, passkeyRateLimitPolicy } from './contracts.js';
 import { LocalEmailChallengeDelivery, ManualClock } from './local-adapters.js';
 import { StaticOidcClientRepository } from './oidc.js';
+import type { WebAuthnServer } from './ports.js';
 import {
   createAuthPostgresPool,
   createPostgresOidcStorageAdapter,
@@ -18,6 +20,7 @@ import { RedisRateLimiter } from './redis-rate-limiter.js';
 import type { RedisScriptClient } from './redis-rate-limiter.js';
 import { createAuthRuntime } from './runtime.js';
 import type { EnabledAuthRuntimeConfig } from './runtime-config.js';
+import { SimpleWebAuthnServer } from './webauthn-server.js';
 
 let integrationStage = 'startup';
 
@@ -44,6 +47,80 @@ function signingKeys(): JWKS {
     ],
   };
 }
+
+class IntegrationWebAuthn implements WebAuthnServer {
+  private readonly options = new SimpleWebAuthnServer();
+
+  generateAuthenticationOptions(
+    input: Parameters<WebAuthnServer['generateAuthenticationOptions']>[0],
+  ) {
+    return this.options.generateAuthenticationOptions(input);
+  }
+
+  generateRegistrationOptions(input: Parameters<WebAuthnServer['generateRegistrationOptions']>[0]) {
+    return this.options.generateRegistrationOptions(input);
+  }
+
+  verifyAuthentication(
+    input: Parameters<WebAuthnServer['verifyAuthentication']>[0],
+  ): ReturnType<WebAuthnServer['verifyAuthentication']> {
+    return Promise.resolve({
+      backupEligible: true,
+      backupState: true,
+      observedSignCount: Math.max(0, input.credential.signCount - 1),
+      userVerified: true,
+    });
+  }
+
+  verifyRegistration(
+    input: Parameters<WebAuthnServer['verifyRegistration']>[0],
+  ): ReturnType<WebAuthnServer['verifyRegistration']> {
+    return Promise.resolve({
+      aaguid: '00000000-0000-0000-0000-000000000000' as const,
+      attestationFormat: 'none',
+      backupEligible: true,
+      backupState: true,
+      credentialId: Uint8Array.from(Buffer.from(input.response.id, 'base64url')),
+      publicKey: Uint8Array.from([1, 2, 3, 4]),
+      signCount: 10,
+      transports: Object.freeze(['hybrid'] as const),
+      userVerified: true,
+    });
+  }
+}
+
+function integrationRegistrationResponse(credentialId: string): RegistrationResponseJSON {
+  return {
+    clientExtensionResults: {},
+    id: credentialId,
+    rawId: credentialId,
+    response: {
+      attestationObject: 'synthetic',
+      clientDataJSON: 'synthetic',
+      transports: ['hybrid'],
+    },
+    type: 'public-key',
+  };
+}
+
+function integrationAuthenticationResponse(credentialId: string): AuthenticationResponseJSON {
+  return {
+    clientExtensionResults: {},
+    id: credentialId,
+    rawId: credentialId,
+    response: {
+      authenticatorData: 'synthetic',
+      clientDataJSON: 'synthetic',
+      signature: 'synthetic',
+      userHandle: Buffer.from(administratorIdForHandle.replaceAll('-', ''), 'hex').toString(
+        'base64url',
+      ),
+    },
+    type: 'public-key',
+  };
+}
+
+const administratorIdForHandle = '00000000-0000-4000-8000-000000003001';
 
 function runtimeConfig(): EnabledAuthRuntimeConfig {
   const rule = Object.freeze({ limit: 100, windowMs: 15 * 60_000 });
@@ -75,10 +152,12 @@ function runtimeConfig(): EnabledAuthRuntimeConfig {
     }),
     policy: Object.freeze({
       challenge: emailChallengePolicy,
+      passkey: passkeyPolicy,
       rateLimits: Object.freeze({
         challengeByEmail: rule,
         challengeByFingerprint: rule,
         challengeByNetwork: rule,
+        ...passkeyRateLimitPolicy,
         verifyByChallenge: rule,
         verifyByNetwork: rule,
       }),
@@ -89,6 +168,11 @@ function runtimeConfig(): EnabledAuthRuntimeConfig {
     }),
     redisUrl: process.env.AUTH_REDIS_URL ?? 'redis://redis:6379',
     secureCookies: false,
+    webauthn: Object.freeze({
+      origins: Object.freeze(['https://auth-integration.invalid']),
+      rpId: 'auth-integration.invalid',
+      rpName: 'Synthetic Auth',
+    }),
   });
 }
 
@@ -212,6 +296,7 @@ async function main(): Promise<void> {
       },
     },
     repository,
+    webauthn: new IntegrationWebAuthn(),
   });
   try {
     integrationStage = 'administrator-bootstrap';
@@ -696,6 +781,97 @@ async function main(): Promise<void> {
         'Activity must extend idle expiry beyond the original seven-day boundary',
       );
 
+      integrationStage = 'passkey-http-postgres';
+      const registrationOptionsResponse = await fetch(`${baseUrl}/passkeys/registration/options`, {
+        headers: {
+          [correlationIdHeaderName]: `integration-passkey-register-begin-${suffix}`,
+          cookie: secondBrowserCookie,
+        },
+        method: 'POST',
+      });
+      assert(
+        registrationOptionsResponse.status === 200,
+        'An active application session must start passkey registration',
+      );
+      const registrationOptions = await readJson(registrationOptionsResponse);
+      const registrationCeremonyId = registrationOptions.ceremonyId;
+      assert(typeof registrationCeremonyId === 'string', 'Registration ceremony ID is required');
+      const passkeyCredentialId = Buffer.from(`integration-passkey-${suffix}`).toString(
+        'base64url',
+      );
+      const registrationFinish = await fetch(`${baseUrl}/passkeys/registration/verify`, {
+        body: JSON.stringify({
+          ceremonyId: registrationCeremonyId,
+          response: integrationRegistrationResponse(passkeyCredentialId),
+        }),
+        headers: {
+          [correlationIdHeaderName]: `integration-passkey-register-finish-${suffix}`,
+          'content-type': 'application/json',
+          cookie: secondBrowserCookie,
+        },
+        method: 'POST',
+      });
+      assert(
+        registrationFinish.status === 201,
+        'Protected A3 passkey registration must commit through HTTP',
+      );
+
+      const authenticationOptionsResponse = await fetch(
+        `${baseUrl}/passkeys/authentication/options`,
+        { method: 'POST' },
+      );
+      assert(
+        authenticationOptionsResponse.status === 200,
+        'Discoverable passkey options must not require gate or email',
+      );
+      const authenticationOptions = await readJson(authenticationOptionsResponse);
+      const authenticationCeremonyId = authenticationOptions.ceremonyId;
+      assert(
+        typeof authenticationCeremonyId === 'string' &&
+          authenticationOptions.mediation === 'conditional',
+        'Passkey authentication must return conditional discoverable options',
+      );
+      const passkeyFinishBody = JSON.stringify({
+        ceremonyId: authenticationCeremonyId,
+        response: integrationAuthenticationResponse(passkeyCredentialId),
+      });
+      const passkeyLogin = await fetch(`${baseUrl}/passkeys/authentication/verify`, {
+        body: passkeyFinishBody,
+        headers: {
+          [correlationIdHeaderName]: `integration-passkey-authenticate-${suffix}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+      assert(passkeyLogin.status === 200, 'A verified passkey must create a durable session');
+      const passkeyCookie = responseCookie(passkeyLogin);
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: passkeyCookie } })).status === 200,
+        'The passkey-created application session must authenticate',
+      );
+      const passkeyReplay = await fetch(`${baseUrl}/passkeys/authentication/verify`, {
+        body: passkeyFinishBody,
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      assert(passkeyReplay.status === 401, 'Consumed passkey state must reject replay');
+
+      const unknownOptions = await readJson(
+        await fetch(`${baseUrl}/passkeys/authentication/options`, { method: 'POST' }),
+      );
+      assert(typeof unknownOptions.ceremonyId === 'string', 'Unknown passkey test needs state');
+      const unknownPasskey = await fetch(`${baseUrl}/passkeys/authentication/verify`, {
+        body: JSON.stringify({
+          ceremonyId: unknownOptions.ceremonyId,
+          response: integrationAuthenticationResponse(
+            Buffer.from(`unknown-passkey-${suffix}`).toString('base64url'),
+          ),
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      assert(unknownPasskey.status === 401, 'Unknown passkeys must fail closed and neutral');
+
       integrationStage = 'deactivation';
       clock.advance(emailChallengePolicy.resendCooldownMs);
       const deactivationGateCookie = await activateGate(
@@ -797,6 +973,30 @@ async function main(): Promise<void> {
         (await fetch(`${baseUrl}/session`, { headers: { cookie: secondBrowserCookie } })).status ===
           401,
         'Deactivation must revoke every browser and PWA session for the account',
+      );
+      assert(
+        (await fetch(`${baseUrl}/session`, { headers: { cookie: passkeyCookie } })).status === 401,
+        'Deactivation must revoke the passkey-created application session',
+      );
+      const deactivatedPasskeyOptions = await readJson(
+        await fetch(`${baseUrl}/passkeys/authentication/options`, { method: 'POST' }),
+      );
+      assert(
+        typeof deactivatedPasskeyOptions.ceremonyId === 'string',
+        'Deactivated passkey test needs neutral ceremony state',
+      );
+      const deactivatedPasskey = await fetch(`${baseUrl}/passkeys/authentication/verify`, {
+        body: JSON.stringify({
+          ceremonyId: deactivatedPasskeyOptions.ceremonyId,
+          response: integrationAuthenticationResponse(passkeyCredentialId),
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      assert(
+        deactivatedPasskey.status === 401 &&
+          (await readJson(deactivatedPasskey)).error === 'auth.invalid-passkey',
+        'A deactivated passkey account must fail closed and neutral',
       );
 
       integrationStage = 'oidc-state';
@@ -986,6 +1186,13 @@ async function main(): Promise<void> {
         redisFailureGateCookie,
       );
       assert(redisFailure.status === 503, 'Redis failure must fail new authentication closed');
+      const redisPasskeyFailure = await fetch(`${baseUrl}/passkeys/authentication/options`, {
+        method: 'POST',
+      });
+      assert(
+        redisPasskeyFailure.status === 503,
+        'Redis failure must fail passkey authentication state closed',
+      );
     } finally {
       await app.close();
     }

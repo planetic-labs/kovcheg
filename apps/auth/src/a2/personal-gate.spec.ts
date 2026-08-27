@@ -5,6 +5,8 @@ import { AuthService } from './auth-service.js';
 import {
   emailChallengePolicy,
   normalizePersonalGateCode,
+  passkeyPolicy,
+  passkeyRateLimitPolicy,
   personalGateLifetimeMs,
 } from './contracts.js';
 import { HmacAuthCrypto, SystemAuthRandomSource } from './crypto.js';
@@ -53,10 +55,12 @@ function policy() {
   const rule = Object.freeze({ limit: 100, windowMs: 15 * 60_000 });
   return Object.freeze({
     challenge: emailChallengePolicy,
+    passkey: passkeyPolicy,
     rateLimits: Object.freeze({
       challengeByEmail: rule,
       challengeByFingerprint: rule,
       challengeByNetwork: rule,
+      ...passkeyRateLimitPolicy,
       verifyByChallenge: rule,
       verifyByNetwork: rule,
     }),

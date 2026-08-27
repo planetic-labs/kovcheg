@@ -1,11 +1,18 @@
 import type {
   CurrentPrincipalAuthorization,
+  CorrelationId,
   DomainStatus,
   FunctionalGrant,
   SessionId,
   UserId,
   Uuid,
 } from '@kovcheg/contracts';
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON,
+} from '@simplewebauthn/server';
 
 type AccountAccess = 'member';
 export type AccountStatus = 'active' | 'deactivated';
@@ -100,6 +107,63 @@ export interface PersonalGateSecurityResetResult {
   readonly revokedApplicationSessionCount: number;
   readonly revokedFamilyCount: number;
   readonly revokedGateSessionCount: number;
+  readonly revokedPasskeyCount: number;
+}
+
+export type AuthPasskeyTransport = 'ble' | 'hybrid' | 'internal' | 'nfc' | 'smart-card' | 'usb';
+
+export type AuthPasskeySignCountStatus =
+  'advanced' | 'not_advanced' | 'not_supported' | 'regressed';
+
+export interface AuthPasskeyCredential {
+  readonly aaguid: Uuid;
+  readonly accountId: UserId;
+  readonly attestationFormat: string;
+  readonly credentialId: Uint8Array;
+  readonly lastBackupEligible: boolean;
+  readonly lastBackupState: boolean;
+  readonly passkeyId: Uuid;
+  readonly publicKey: Uint8Array;
+  readonly registeredBackupEligible: boolean;
+  readonly registeredBackupState: boolean;
+  readonly signCount: number;
+  readonly transports: readonly AuthPasskeyTransport[];
+}
+
+export interface PasskeyRequestContext {
+  readonly correlationId: CorrelationId;
+  readonly fingerprint: string;
+  readonly networkAddress: string;
+}
+
+export interface PasskeyRegistrationOptionsResponse {
+  readonly ceremonyId: Uuid;
+  readonly options: PublicKeyCredentialCreationOptionsJSON;
+}
+
+export interface PasskeyAuthenticationOptionsResponse {
+  readonly ceremonyId: Uuid;
+  readonly mediation: 'conditional';
+  readonly options: PublicKeyCredentialRequestOptionsJSON;
+}
+
+export interface PasskeyRegistrationFinishInput {
+  readonly ceremonyId: Uuid;
+  readonly response: RegistrationResponseJSON;
+}
+
+export interface PasskeyAuthenticationFinishInput {
+  readonly ceremonyId: Uuid;
+  readonly response: AuthenticationResponseJSON;
+}
+
+export interface PasskeyRegistrationResult {
+  readonly passkeyId: Uuid;
+  readonly status: 'registered';
+}
+
+export interface PasskeyAuthenticationResult extends AuthenticatedSession {
+  readonly signCountStatus: AuthPasskeySignCountStatus;
 }
 
 export const personalGateLifetimeMs = 7 * 24 * 60 * 60_000;
@@ -146,8 +210,18 @@ export interface AuthPolicy {
     readonly challengeByEmail: RateLimitRule;
     readonly challengeByFingerprint: RateLimitRule;
     readonly challengeByNetwork: RateLimitRule;
+    readonly passkeyAuthenticationBeginByFingerprint: RateLimitRule;
+    readonly passkeyAuthenticationBeginByNetwork: RateLimitRule;
+    readonly passkeyAuthenticationFinishByFingerprint: RateLimitRule;
+    readonly passkeyAuthenticationFinishByNetwork: RateLimitRule;
+    readonly passkeyRegistrationBeginBySession: RateLimitRule;
+    readonly passkeyRegistrationFinishBySession: RateLimitRule;
     readonly verifyByChallenge: RateLimitRule;
     readonly verifyByNetwork: RateLimitRule;
+  };
+  readonly passkey: {
+    readonly challengeTtlMs: number;
+    readonly timeoutMs: number;
   };
   readonly session: {
     readonly absoluteLifetimeMs: number;
@@ -165,6 +239,26 @@ export const emailChallengePolicy = Object.freeze({
   maxAttempts: 5,
   resendCooldownMs: 60_000,
   ttlMs: 10 * 60_000,
+});
+
+export const passkeyPolicy = Object.freeze({
+  challengeTtlMs: 5 * 60_000,
+  timeoutMs: 60_000,
+});
+
+export const passkeyRateLimitPolicy = Object.freeze({
+  passkeyAuthenticationBeginByFingerprint: Object.freeze({
+    limit: 20,
+    windowMs: 15 * 60_000,
+  }),
+  passkeyAuthenticationBeginByNetwork: Object.freeze({ limit: 60, windowMs: 15 * 60_000 }),
+  passkeyAuthenticationFinishByFingerprint: Object.freeze({
+    limit: 10,
+    windowMs: 15 * 60_000,
+  }),
+  passkeyAuthenticationFinishByNetwork: Object.freeze({ limit: 30, windowMs: 15 * 60_000 }),
+  passkeyRegistrationBeginBySession: Object.freeze({ limit: 10, windowMs: 15 * 60_000 }),
+  passkeyRegistrationFinishBySession: Object.freeze({ limit: 20, windowMs: 15 * 60_000 }),
 });
 
 export function normalizeEmail(value: string): string {
@@ -194,6 +288,7 @@ export type AuthErrorCode =
   | 'auth.invalid-input'
   | 'auth.invalid-gate'
   | 'auth.invalid-or-expired-challenge'
+  | 'auth.invalid-passkey'
   | 'auth.invalid-session'
   | 'auth.not-found'
   | 'auth.rate-limited'

@@ -3,7 +3,12 @@ import { readFileSync } from 'node:fs';
 import type { JWKS } from 'oidc-provider';
 import type { UserId } from '@kovcheg/contracts';
 
-import { AuthError, emailChallengePolicy } from './contracts.js';
+import {
+  AuthError,
+  emailChallengePolicy,
+  passkeyPolicy,
+  passkeyRateLimitPolicy,
+} from './contracts.js';
 import type { AuthPolicy, BootstrapAdministratorInput } from './contracts.js';
 import type { AuthSecretMaterial } from './crypto.js';
 import type { RegisteredOidcClient } from './oidc.js';
@@ -29,6 +34,11 @@ export interface EnabledAuthRuntimeConfig {
   readonly policy: AuthPolicy;
   readonly redisUrl: string;
   readonly secureCookies: boolean;
+  readonly webauthn: {
+    readonly origins: readonly string[];
+    readonly rpId: string;
+    readonly rpName: string;
+  };
 }
 
 export type AuthRuntimeConfig = DisabledAuthRuntimeConfig | EnabledAuthRuntimeConfig;
@@ -51,16 +61,21 @@ export interface AuthRuntimeEnvironmentSource {
   readonly AUTH_RUNTIME_ENABLED?: string | undefined;
   readonly AUTH_SESSION_PEPPER?: string | undefined;
   readonly AUTH_SESSION_PEPPER_FILE?: string | undefined;
+  readonly AUTH_WEBAUTHN_ORIGINS_JSON?: string | undefined;
+  readonly AUTH_WEBAUTHN_RP_ID?: string | undefined;
+  readonly AUTH_WEBAUTHN_RP_NAME?: string | undefined;
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const defaultPolicy: AuthPolicy = Object.freeze({
   challenge: emailChallengePolicy,
+  passkey: passkeyPolicy,
   rateLimits: Object.freeze({
     challengeByEmail: Object.freeze({ limit: 5, windowMs: 15 * 60_000 }),
     challengeByFingerprint: Object.freeze({ limit: 10, windowMs: 15 * 60_000 }),
     challengeByNetwork: Object.freeze({ limit: 30, windowMs: 15 * 60_000 }),
+    ...passkeyRateLimitPolicy,
     verifyByChallenge: Object.freeze({ limit: 8, windowMs: 15 * 60_000 }),
     verifyByNetwork: Object.freeze({ limit: 40, windowMs: 15 * 60_000 }),
   }),
@@ -214,6 +229,81 @@ function validateRedisUrl(value: string): string {
   return value;
 }
 
+const productionPasskeyRpId = 'auth.m6z.ru';
+
+function passkeyRpId(environment: AuthRuntimeEnvironment, value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized.length > 253 ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u.test(
+      normalized,
+    )
+  ) {
+    throw new AuthError('auth.invalid-input', 'AUTH_WEBAUTHN_RP_ID must be a DNS name');
+  }
+  if (environment === 'production' && normalized !== productionPasskeyRpId) {
+    throw new AuthError('auth.invalid-input', 'Production WebAuthn RP ID is not permitted');
+  }
+  if (
+    environment !== 'production' &&
+    normalized !== productionPasskeyRpId &&
+    !normalized.endsWith('.invalid')
+  ) {
+    throw new AuthError('auth.invalid-input', 'Non-production WebAuthn RP ID must be synthetic');
+  }
+  return normalized;
+}
+
+function passkeyOrigins(
+  environment: AuthRuntimeEnvironment,
+  rpId: string,
+  value: unknown,
+): readonly string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) {
+    throw new AuthError('auth.invalid-input', 'AUTH_WEBAUTHN_ORIGINS_JSON must be a bounded array');
+  }
+  const origins = value.map((item): string => {
+    if (typeof item !== 'string') {
+      throw new AuthError('auth.invalid-input', 'WebAuthn origins must be strings');
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(item);
+    } catch {
+      throw new AuthError('auth.invalid-input', 'WebAuthn origins must be absolute URLs');
+    }
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.username !== '' ||
+      parsed.password !== '' ||
+      parsed.pathname !== '/' ||
+      parsed.search !== '' ||
+      parsed.hash !== '' ||
+      (parsed.hostname !== rpId && !parsed.hostname.endsWith(`.${rpId}`)) ||
+      (environment === 'production' && parsed.port !== '')
+    ) {
+      throw new AuthError('auth.invalid-input', 'WebAuthn origin is not permitted');
+    }
+    return parsed.origin;
+  });
+  if (new Set(origins).size !== origins.length) {
+    throw new AuthError('auth.invalid-input', 'WebAuthn origins must be unique');
+  }
+  return Object.freeze(origins);
+}
+
+function passkeyRpName(value: string): string {
+  const normalized = value.trim();
+  const hasControlCharacter = [...normalized].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || codePoint === 127;
+  });
+  if (normalized.length < 1 || normalized.length > 64 || hasControlCharacter) {
+    throw new AuthError('auth.invalid-input', 'AUTH_WEBAUTHN_RP_NAME is invalid');
+  }
+  return normalized;
+}
+
 export function loadAuthRuntimeConfig(
   environment: AuthRuntimeEnvironment,
   source: AuthRuntimeEnvironmentSource = process.env,
@@ -237,6 +327,7 @@ export function loadAuthRuntimeConfig(
       'AUTH_OIDC_JWKS_JSON',
     ),
   );
+  const rpId = passkeyRpId(environment, required(source, 'AUTH_WEBAUTHN_RP_ID'));
   return Object.freeze({
     authSecrets: Object.freeze({
       challengePepper: requiredSecret(
@@ -269,5 +360,14 @@ export function loadAuthRuntimeConfig(
     policy: defaultPolicy,
     redisUrl: validateRedisUrl(required(source, 'AUTH_REDIS_URL')),
     secureCookies: environment === 'production',
+    webauthn: Object.freeze({
+      origins: passkeyOrigins(
+        environment,
+        rpId,
+        parseJson(required(source, 'AUTH_WEBAUTHN_ORIGINS_JSON'), 'AUTH_WEBAUTHN_ORIGINS_JSON'),
+      ),
+      rpId,
+      rpName: passkeyRpName(required(source, 'AUTH_WEBAUTHN_RP_NAME')),
+    }),
   });
 }

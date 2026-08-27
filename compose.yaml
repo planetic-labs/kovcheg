@@ -213,6 +213,9 @@ services:
       AUTH_RATE_LIMIT_PEPPER_FILE: /run/secrets/auth_rate_limit_pepper
       AUTH_RUNTIME_ENABLED: 'true'
       AUTH_SESSION_PEPPER_FILE: /run/secrets/auth_session_pepper
+      AUTH_WEBAUTHN_ORIGINS_JSON: '["https://auth.m6z.ru"]'
+      AUTH_WEBAUTHN_RP_ID: auth.m6z.ru
+      AUTH_WEBAUTHN_RP_NAME: Kovcheg
       BUILD_IMAGE_DIGEST: ${BUILD_IMAGE_DIGEST:-}
       HOST: 0.0.0.0
       LOG_LEVEL: info

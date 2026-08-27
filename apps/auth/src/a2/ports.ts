@@ -10,6 +10,9 @@ import type {
 import type {
   AccountRecord,
   AccountStatus,
+  AuthPasskeyCredential,
+  AuthPasskeySignCountStatus,
+  AuthPasskeyTransport,
   BootstrapAdministratorInput,
   ChallengeRecordInput,
   EmailChallengeMessage,
@@ -18,6 +21,12 @@ import type {
   SessionPrincipal,
   SessionRecordInput,
 } from './contracts.js';
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON,
+} from '@simplewebauthn/server';
 
 export type BootstrapAdministratorResult =
   | { readonly account: AccountRecord; readonly created: false }
@@ -35,6 +44,87 @@ export type IssueChallengeResult =
 export type ConsumeChallengeResult =
   | { readonly kind: 'authenticated'; readonly principal: SessionPrincipal }
   | { readonly kind: 'invalid' };
+
+interface CompletePasskeyLoginResult {
+  readonly accountId: UserId;
+  readonly reused: boolean;
+  readonly sessionId: SessionId;
+  readonly signCountStatus: AuthPasskeySignCountStatus;
+}
+
+export type PasskeyCeremonyState =
+  | {
+      readonly accountId: UserId;
+      readonly challenge: string;
+      readonly clientContextKey: string;
+      readonly ceremony: 'registration';
+      readonly sessionVerifier: string;
+    }
+  | {
+      readonly challenge: string;
+      readonly clientContextKey: string;
+      readonly ceremony: 'authentication';
+    };
+
+export type TakePasskeyCeremonyResult =
+  | { readonly kind: 'found'; readonly state: PasskeyCeremonyState }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'unavailable' };
+
+export interface PasskeyCeremonyStore {
+  put(
+    ceremonyId: Uuid,
+    state: PasskeyCeremonyState,
+    ttlMs: number,
+  ): Promise<'stored' | 'unavailable'>;
+  take(ceremonyId: Uuid): Promise<TakePasskeyCeremonyResult>;
+}
+
+export interface PasskeyRegistrationVerification {
+  readonly aaguid: Uuid;
+  readonly attestationFormat: string;
+  readonly backupEligible: boolean;
+  readonly backupState: boolean;
+  readonly credentialId: Uint8Array;
+  readonly publicKey: Uint8Array;
+  readonly signCount: number;
+  readonly transports: readonly AuthPasskeyTransport[];
+  readonly userVerified: boolean;
+}
+
+export interface PasskeyAuthenticationVerification {
+  readonly backupEligible: boolean;
+  readonly backupState: boolean;
+  readonly observedSignCount: number;
+  readonly userVerified: boolean;
+}
+
+export interface WebAuthnServer {
+  generateAuthenticationOptions(input: {
+    readonly rpId: string;
+    readonly timeoutMs: number;
+  }): Promise<PublicKeyCredentialRequestOptionsJSON>;
+  generateRegistrationOptions(input: {
+    readonly accountId: UserId;
+    readonly accountLabel: string;
+    readonly rpId: string;
+    readonly rpName: string;
+    readonly timeoutMs: number;
+  }): Promise<PublicKeyCredentialCreationOptionsJSON>;
+  verifyAuthentication(input: {
+    readonly credential: AuthPasskeyCredential;
+    readonly expectedChallenge: string;
+    readonly expectedOrigins: readonly string[];
+    readonly expectedRpId: string;
+    readonly response: AuthenticationResponseJSON;
+  }): Promise<PasskeyAuthenticationVerification | null>;
+  verifyRegistration(input: {
+    readonly expectedChallenge: string;
+    readonly expectedOrigins: readonly string[];
+    readonly expectedRpId: string;
+    readonly response: RegistrationResponseJSON;
+  }): Promise<PasskeyRegistrationVerification | null>;
+}
 
 type ActivatePersonalGateResult =
   | {
@@ -115,6 +205,18 @@ export interface AuthRepository {
     readonly now: number;
   }): Promise<PersonalGateSecurityResetResult>;
   bootstrapAdministrator(input: BootstrapAdministratorInput): Promise<BootstrapAdministratorResult>;
+  completePasskeyLogin(input: {
+    readonly assertionId: Uuid;
+    readonly correlationId: CorrelationId;
+    readonly credentialId: Uint8Array;
+    readonly expectedSignCount: number;
+    readonly now: number;
+    readonly observedBackupEligible: boolean;
+    readonly observedBackupState: boolean;
+    readonly observedSignCount: number;
+    readonly session: SessionRecordInput;
+    readonly userVerified: boolean;
+  }): Promise<CompletePasskeyLoginResult | null>;
   consumeChallengeAndCreateSession(input: {
     readonly candidateCodeVerifier: string;
     readonly challengeId: Uuid;
@@ -160,6 +262,25 @@ export interface AuthRepository {
     readonly gateTokenVerifier: string;
     readonly resendCooldownMs: number;
   }): Promise<IssuePersonalGateChallengeResult>;
+  readPasskeyByCredentialId(
+    credentialId: Uint8Array,
+    now: number,
+  ): Promise<AuthPasskeyCredential | null>;
+  registerPasskey(input: {
+    readonly actorSessionVerifier: string;
+    readonly aaguid: Uuid;
+    readonly attestationFormat: string;
+    readonly backupEligible: boolean;
+    readonly backupState: boolean;
+    readonly correlationId: CorrelationId;
+    readonly credentialId: Uint8Array;
+    readonly now: number;
+    readonly passkeyId: Uuid;
+    readonly publicKey: Uint8Array;
+    readonly signCount: number;
+    readonly transports: readonly AuthPasskeyTransport[];
+    readonly userVerified: boolean;
+  }): Promise<{ readonly accountId: UserId; readonly passkeyId: Uuid }>;
   revokeAllSessionsAsAdministrator(input: {
     readonly actorSessionVerifier: string;
     readonly correlationId: CorrelationId;

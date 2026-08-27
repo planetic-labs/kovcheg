@@ -5,13 +5,22 @@ import { AuthError } from './contracts.js';
 import { HmacAuthCrypto, SystemAuthRandomSource, systemClock } from './crypto.js';
 import { ConfiguredOidcClientRepository, createOidcProvider } from './oidc.js';
 import type { OidcClientRepository, OidcStorageAdapter } from './oidc.js';
-import type { AuthRandomSource, AuthRepository, Clock, EmailChallengeDelivery } from './ports.js';
+import type {
+  AuthRandomSource,
+  AuthRepository,
+  Clock,
+  EmailChallengeDelivery,
+  WebAuthnServer,
+} from './ports.js';
 import { PersonalGateCookie } from './personal-gate-cookie.js';
 import { RedisPersonalGateAbuseProtector } from './personal-gate-abuse.js';
+import { RedisPasskeyCeremonyStore } from './passkey-ceremony-store.js';
+import { PasskeyService } from './passkey-service.js';
 import { RedisRateLimiter } from './redis-rate-limiter.js';
 import type { RedisScriptClientFactory } from './redis-rate-limiter.js';
 import type { EnabledAuthRuntimeConfig } from './runtime-config.js';
 import { SessionCookie } from './session-cookie.js';
+import { SimpleWebAuthnServer } from './webauthn-server.js';
 
 export interface AuthRuntime {
   readonly authService: AuthService;
@@ -19,6 +28,7 @@ export interface AuthRuntime {
   close(): Promise<void>;
   isReady(): Promise<boolean>;
   readonly oidcProvider: Provider;
+  readonly passkeyService: PasskeyService;
   readonly personalGateCookie: PersonalGateCookie;
   readonly sessionCookie: SessionCookie;
 }
@@ -36,6 +46,8 @@ export interface CreateAuthRuntimeInput {
   readonly redisClientFactory: RedisScriptClientFactory;
   readonly repository: AuthRepository;
   readonly clock?: Clock;
+  readonly webauthn?: WebAuthnServer | undefined;
+  readonly webauthnProductionSafe?: true | undefined;
 }
 
 export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<AuthRuntime> {
@@ -49,6 +61,7 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
       clientRepository.productionSafe !== true ||
       input.redisClientFactory.productionSafe !== true ||
       input.oidcStorageAdapterProductionSafe !== true ||
+      (input.webauthn !== undefined && input.webauthnProductionSafe !== true) ||
       clientRepository instanceof ConfiguredOidcClientRepository)
   ) {
     throw new AuthError('auth.unavailable', 'Test auth adapters are unavailable in production');
@@ -62,15 +75,29 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     throw error;
   }
   const clock = input.clock ?? systemClock;
+  const crypto = new HmacAuthCrypto(input.config.authSecrets);
+  const random = input.random ?? new SystemAuthRandomSource();
+  const rateLimiter = new RedisRateLimiter(redisClient);
   const authService = new AuthService({
     clock,
-    crypto: new HmacAuthCrypto(input.config.authSecrets),
+    crypto,
     delivery: input.delivery,
     gateAbuseProtector: new RedisPersonalGateAbuseProtector(redisClient),
     policy: input.config.policy,
-    random: input.random ?? new SystemAuthRandomSource(),
-    rateLimiter: new RedisRateLimiter(redisClient),
+    random,
+    rateLimiter,
     repository: input.repository,
+  });
+  const passkeyService = new PasskeyService({
+    ceremonyStore: new RedisPasskeyCeremonyStore(redisClient),
+    clock,
+    configuration: input.config.webauthn,
+    crypto,
+    policy: input.config.policy,
+    random,
+    rateLimiter,
+    repository: input.repository,
+    webauthn: input.webauthn ?? new SimpleWebAuthnServer(),
   });
   const sessionCookie = new SessionCookie({
     absoluteLifetimeMs: input.config.policy.session.absoluteLifetimeMs,
@@ -115,6 +142,7 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     isReady: async () =>
       redisClient.isReady() && (await input.repository.isReady().catch(() => false)),
     oidcProvider,
+    passkeyService,
     personalGateCookie,
     sessionCookie,
   });

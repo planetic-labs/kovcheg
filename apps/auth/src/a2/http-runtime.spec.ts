@@ -2,14 +2,17 @@ import { correlationIdHeaderName } from '@kovcheg/contracts';
 import type { CorrelationId, UserId } from '@kovcheg/contracts';
 import { loadServiceConfig } from '@kovcheg/config';
 import { exportJWK, generateKeyPair } from 'jose';
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createAuthApplication } from '../application.js';
-import { emailChallengePolicy } from './contracts.js';
+import { emailChallengePolicy, passkeyPolicy, passkeyRateLimitPolicy } from './contracts.js';
 import { LocalAuthRepository, LocalEmailChallengeDelivery, ManualClock } from './local-adapters.js';
+import type { WebAuthnServer } from './ports.js';
 import type { RedisScriptClient } from './redis-rate-limiter.js';
 import { createAuthRuntime } from './runtime.js';
 import type { EnabledAuthRuntimeConfig } from './runtime-config.js';
+import { SimpleWebAuthnServer } from './webauthn-server.js';
 
 const administratorId = '00000000-0000-4000-8000-000000000031' satisfies UserId;
 const setupCorrelationId = 'http-runtime-setup' as CorrelationId;
@@ -68,10 +71,12 @@ async function testConfig(
     }),
     policy: Object.freeze({
       challenge: emailChallengePolicy,
+      passkey: passkeyPolicy,
       rateLimits: Object.freeze({
         challengeByEmail: rule,
         challengeByFingerprint: rule,
         challengeByNetwork: rule,
+        ...passkeyRateLimitPolicy,
         verifyByChallenge: rule,
         verifyByNetwork: rule,
         ...rateLimitOverrides,
@@ -83,12 +88,18 @@ async function testConfig(
     }),
     redisUrl: 'redis://127.0.0.1:6379',
     secureCookies: false,
+    webauthn: Object.freeze({
+      origins: Object.freeze(['https://auth-http.invalid']),
+      rpId: 'auth-http.invalid',
+      rpName: 'Synthetic Auth',
+    }),
   });
 }
 
 async function createFixture(
   rateLimitOverrides: Partial<EnabledAuthRuntimeConfig['policy']['rateLimits']> = {},
   redisClient: RedisScriptClient = alwaysAllowRedis,
+  webauthn?: WebAuthnServer,
 ) {
   const clock = new ManualClock(Date.UTC(2026, 0, 1));
   const repository = new LocalAuthRepository({ NODE_ENV: 'test' });
@@ -101,6 +112,7 @@ async function createFixture(
       connect: () => Promise.resolve(redisClient),
     },
     repository,
+    ...(webauthn === undefined ? {} : { webauthn }),
   });
   await runtime.authService.bootstrapAdministrator({
     bootstrapId: 'synthetic-http-bootstrap-0001',
@@ -165,6 +177,104 @@ async function createFixture(
     clock,
     delivery,
     runtime,
+  };
+}
+
+class StatefulRedis implements RedisScriptClient {
+  private readonly values = new Map<string, string>();
+
+  eval(
+    script: string,
+    options?: { readonly arguments: readonly string[]; readonly keys: readonly string[] },
+  ): Promise<unknown> {
+    const key = options?.keys[0];
+    if (script.includes("'SET', KEYS[1], ARGV[1], 'NX', 'PX'") && key !== undefined) {
+      if (this.values.has(key)) return Promise.resolve(0);
+      const value = options?.arguments[0];
+      if (value === undefined) return Promise.resolve(0);
+      this.values.set(key, value);
+      return Promise.resolve(1);
+    }
+    if (script.includes("'GETDEL', KEYS[1]") && key !== undefined) {
+      const value = this.values.get(key);
+      this.values.delete(key);
+      return Promise.resolve(value ?? false);
+    }
+    return Promise.resolve(script.includes("'EXISTS', KEYS[1]") ? 0 : 1);
+  }
+
+  isReady(): boolean {
+    return true;
+  }
+}
+
+class HttpSyntheticWebAuthn implements WebAuthnServer {
+  private readonly options = new SimpleWebAuthnServer();
+
+  generateAuthenticationOptions(
+    input: Parameters<WebAuthnServer['generateAuthenticationOptions']>[0],
+  ) {
+    return this.options.generateAuthenticationOptions(input);
+  }
+
+  generateRegistrationOptions(input: Parameters<WebAuthnServer['generateRegistrationOptions']>[0]) {
+    return this.options.generateRegistrationOptions(input);
+  }
+
+  verifyAuthentication(
+    input: Parameters<WebAuthnServer['verifyAuthentication']>[0],
+  ): ReturnType<WebAuthnServer['verifyAuthentication']> {
+    return Promise.resolve({
+      backupEligible: true,
+      backupState: true,
+      observedSignCount: input.credential.signCount + 1,
+      userVerified: true,
+    });
+  }
+
+  verifyRegistration(
+    input: Parameters<WebAuthnServer['verifyRegistration']>[0],
+  ): ReturnType<WebAuthnServer['verifyRegistration']> {
+    return Promise.resolve({
+      aaguid: '00000000-0000-0000-0000-000000000000' as const,
+      attestationFormat: 'none',
+      backupEligible: true,
+      backupState: true,
+      credentialId: Uint8Array.from(Buffer.from(input.response.id, 'base64url')),
+      publicKey: Uint8Array.from([1, 2, 3, 4]),
+      signCount: 0,
+      transports: Object.freeze(['hybrid'] as const),
+      userVerified: true,
+    });
+  }
+}
+
+function httpRegistrationResponse(credentialId: string): RegistrationResponseJSON {
+  return {
+    clientExtensionResults: {},
+    id: credentialId,
+    rawId: credentialId,
+    response: {
+      attestationObject: 'synthetic',
+      clientDataJSON: 'synthetic',
+      transports: ['hybrid'],
+    },
+    type: 'public-key',
+  };
+}
+
+function httpAuthenticationResponse(credentialId: string): AuthenticationResponseJSON {
+  return {
+    clientExtensionResults: {},
+    id: credentialId,
+    rawId: credentialId,
+    response: {
+      authenticatorData: 'synthetic',
+      clientDataJSON: 'synthetic',
+      signature: 'synthetic',
+      userHandle: Buffer.from(administratorId.replaceAll('-', ''), 'hex').toString('base64url'),
+    },
+    type: 'public-key',
   };
 }
 
@@ -831,6 +941,95 @@ describe('A2 auth HTTP runtime', () => {
         headers: { cookie: applicationSession.cookie },
       }),
     ).toMatchObject({ status: 401 });
+  });
+
+  it('exposes session-bound registration and neutral discoverable passkey authentication', async () => {
+    const fixture = await createFixture({}, new StatefulRedis(), new HttpSyntheticWebAuthn());
+    const missingSession = await fetch(`${fixture.baseUrl}/passkeys/registration/options`, {
+      method: 'POST',
+    });
+    expect(missingSession.status).toBe(401);
+    await expect(missingSession.json()).resolves.toMatchObject({ error: 'auth.invalid-session' });
+
+    const applicationSession = await loginThroughHttp(fixture, 'active-http@example.invalid');
+    const registrationOptions = await fetch(`${fixture.baseUrl}/passkeys/registration/options`, {
+      headers: {
+        [correlationIdHeaderName]: 'http-passkey-registration-begin',
+        cookie: applicationSession.cookie,
+      },
+      method: 'POST',
+    });
+    expect(registrationOptions.status).toBe(200);
+    const registration = (await registrationOptions.json()) as {
+      readonly ceremonyId: string;
+      readonly options: { readonly authenticatorSelection?: { readonly residentKey?: string } };
+    };
+    expect(registration.options.authenticatorSelection?.residentKey).toBe('required');
+    const credentialId = Buffer.from('synthetic-http-passkey').toString('base64url');
+    const registrationFinish = await fetch(`${fixture.baseUrl}/passkeys/registration/verify`, {
+      body: JSON.stringify({
+        ceremonyId: registration.ceremonyId,
+        response: httpRegistrationResponse(credentialId),
+      }),
+      headers: {
+        [correlationIdHeaderName]: 'http-passkey-registration-finish',
+        'content-type': 'application/json',
+        cookie: applicationSession.cookie,
+      },
+      method: 'POST',
+    });
+    expect(registrationFinish.status).toBe(201);
+    await expect(registrationFinish.json()).resolves.toMatchObject({ status: 'registered' });
+
+    const authenticationOptions = await fetch(
+      `${fixture.baseUrl}/passkeys/authentication/options`,
+      { method: 'POST' },
+    );
+    expect(authenticationOptions.status).toBe(200);
+    const authentication = (await authenticationOptions.json()) as {
+      readonly ceremonyId: string;
+      readonly mediation: string;
+    };
+    expect(authentication.mediation).toBe('conditional');
+    const finishBody = JSON.stringify({
+      ceremonyId: authentication.ceremonyId,
+      response: httpAuthenticationResponse(credentialId),
+    });
+    const authenticationFinish = await fetch(`${fixture.baseUrl}/passkeys/authentication/verify`, {
+      body: finishBody,
+      headers: {
+        [correlationIdHeaderName]: 'http-passkey-authentication-finish',
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    expect(authenticationFinish.status).toBe(200);
+    expect(authenticationFinish.headers.getSetCookie()[0]).toContain('HttpOnly');
+    const authenticationBody = (await authenticationFinish.json()) as Record<string, unknown>;
+    expect(authenticationBody.userId).toBe(fixture.activeAccount.userId);
+    expect(authenticationBody.sessionToken).toBeUndefined();
+
+    const replay = await fetch(`${fixture.baseUrl}/passkeys/authentication/verify`, {
+      body: finishBody,
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    expect(replay.status).toBe(401);
+    await expect(replay.json()).resolves.toMatchObject({ error: 'auth.invalid-passkey' });
+
+    const unknownOptions = (await (
+      await fetch(`${fixture.baseUrl}/passkeys/authentication/options`, { method: 'POST' })
+    ).json()) as { readonly ceremonyId: string };
+    const unknown = await fetch(`${fixture.baseUrl}/passkeys/authentication/verify`, {
+      body: JSON.stringify({
+        ceremonyId: unknownOptions.ceremonyId,
+        response: httpAuthenticationResponse(Buffer.from('unknown-passkey').toString('base64url')),
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    expect(unknown.status).toBe(401);
+    await expect(unknown.json()).resolves.toMatchObject({ error: 'auth.invalid-passkey' });
   });
 
   it('rejects an existing session immediately after account deactivation', async () => {

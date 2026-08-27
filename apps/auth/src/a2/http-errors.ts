@@ -9,6 +9,7 @@ const statusByCode: Readonly<Record<AuthError['code'], HttpStatus>> = Object.fre
   'auth.invalid-input': HttpStatus.BAD_REQUEST,
   'auth.invalid-gate': HttpStatus.UNAUTHORIZED,
   'auth.invalid-or-expired-challenge': HttpStatus.UNAUTHORIZED,
+  'auth.invalid-passkey': HttpStatus.UNAUTHORIZED,
   'auth.invalid-session': HttpStatus.UNAUTHORIZED,
   'auth.not-found': HttpStatus.NOT_FOUND,
   'auth.rate-limited': HttpStatus.TOO_MANY_REQUESTS,

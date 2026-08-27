@@ -255,6 +255,7 @@ describe('A2 PostgreSQL auth repository', () => {
             revokedApplicationSessionCount: 2,
             revokedFamilyCount: 1,
             revokedGateSessionCount: 3,
+            revokedPasskeyCount: 4,
           },
         },
       ],
@@ -283,6 +284,7 @@ describe('A2 PostgreSQL auth repository', () => {
       revokedApplicationSessionCount: 2,
       revokedFamilyCount: 1,
       revokedGateSessionCount: 3,
+      revokedPasskeyCount: 4,
     });
     expect(client.calls.map((call) => call.text)).toEqual([
       expect.stringContaining('admin_issue_auth_personal_gate'),
@@ -298,6 +300,101 @@ describe('A2 PostgreSQL auth repository', () => {
           !/\b(?:INSERT|UPDATE|DELETE)\b/iu.test(call.text),
       ),
     ).toBe(true);
+  });
+
+  it('consumes only the three protected passkey functions without direct DML', async () => {
+    const credentialId = Uint8Array.from(Buffer.from('synthetic-postgres-passkey'));
+    const accountId = '00000000-0000-4000-8000-000000000050' as const;
+    const passkeyId = '00000000-0000-4000-8000-000000000057' as const;
+    const sessionId = '00000000-0000-4000-8000-000000000058' as const;
+    const client = new QueryFixture([
+      [
+        {
+          aaguid: '00000000-0000-0000-0000-000000000000',
+          account_id: accountId,
+          attestation_format: 'none',
+          last_backup_eligible: true,
+          last_backup_state: true,
+          passkey_id: passkeyId,
+          public_key: Buffer.from([1, 2, 3, 4]),
+          registered_backup_eligible: true,
+          registered_backup_state: true,
+          sign_count: '10',
+          transports: ['hybrid'],
+        },
+      ],
+      [{ account_id: accountId, passkey_id: passkeyId }],
+      [
+        {
+          account_id: accountId,
+          outcome: 'authenticated',
+          reused: false,
+          session_id: sessionId,
+          sign_count_status: 'regressed',
+        },
+      ],
+    ]);
+    const repository = new PostgresAuthRepository(client);
+    await expect(repository.readPasskeyByCredentialId(credentialId, 10_000)).resolves.toMatchObject(
+      {
+        accountId,
+        passkeyId,
+        signCount: 10,
+        transports: ['hybrid'],
+      },
+    );
+    await expect(
+      repository.registerPasskey({
+        actorSessionVerifier: 'a'.repeat(43),
+        aaguid: '00000000-0000-0000-0000-000000000000',
+        attestationFormat: 'none',
+        backupEligible: true,
+        backupState: true,
+        correlationId: 'postgres-passkey-registration' as CorrelationId,
+        credentialId,
+        now: 10_000,
+        passkeyId,
+        publicKey: Uint8Array.from([1, 2, 3, 4]),
+        signCount: 10,
+        transports: ['hybrid'],
+        userVerified: true,
+      }),
+    ).resolves.toEqual({ accountId, passkeyId });
+    await expect(
+      repository.completePasskeyLogin({
+        assertionId: '00000000-0000-4000-8000-000000000059',
+        correlationId: 'postgres-passkey-login' as CorrelationId,
+        credentialId,
+        expectedSignCount: 10,
+        now: 20_000,
+        observedBackupEligible: true,
+        observedBackupState: true,
+        observedSignCount: 5,
+        session: {
+          absoluteExpiresAt: 40_000,
+          idleLifetimeMs: 10_000,
+          issuedAt: 20_000,
+          sessionId,
+          tokenVerifier: 's'.repeat(43),
+        },
+        userVerified: true,
+      }),
+    ).resolves.toEqual({
+      accountId,
+      reused: false,
+      sessionId,
+      signCountStatus: 'regressed',
+    });
+    expect(client.calls.map((call) => call.text)).toEqual([
+      expect.stringContaining('read_auth_passkey_by_credential_id'),
+      expect.stringContaining('register_auth_passkey'),
+      expect.stringContaining('complete_auth_passkey_login'),
+    ]);
+    expect(client.calls.every((call) => !/\b(?:INSERT|UPDATE|DELETE)\b/iu.test(call.text))).toBe(
+      true,
+    );
+    expect(client.calls[1]?.values.at(-1)).toBe('postgres-passkey-registration');
+    expect(client.calls[2]?.values.at(-1)).toBe('postgres-passkey-login');
   });
 
   it('maps uniqueness failures to the repository conflict contract', async () => {

@@ -11,6 +11,9 @@ import {
 import type {
   AccountRecord,
   AccountStatus,
+  AuthPasskeyCredential,
+  AuthPasskeySignCountStatus,
+  AuthPasskeyTransport,
   BootstrapAdministratorInput,
   ChallengeRecordInput,
   EmailChallengeMessage,
@@ -78,6 +81,24 @@ interface StoredGateSession {
   lastLoginAt: number | null;
   revokedAt: number | null;
   tokenVerifier: string;
+}
+
+interface StoredPasskey {
+  aaguid: Uuid;
+  accountId: UserId;
+  attestationFormat: string;
+  credentialId: Uint8Array;
+  createdAt: number;
+  lastBackupEligible: boolean;
+  lastBackupState: boolean;
+  lastUsedAt: number | null;
+  passkeyId: Uuid;
+  publicKey: Uint8Array;
+  registeredBackupEligible: boolean;
+  registeredBackupState: boolean;
+  revokedAt: number | null;
+  signCount: number;
+  transports: readonly AuthPasskeyTransport[];
 }
 
 function cloneAccount(account: StoredAccount): AccountRecord {
@@ -149,6 +170,8 @@ export class LocalAuthRepository implements AuthRepository {
   private readonly latestChallengeAt = new Map<UserId, number>();
   private readonly gateFamilies = new Map<Uuid, StoredGateFamily>();
   private readonly gateSessionsByVerifier = new Map<string, StoredGateSession>();
+  private readonly passkeysByCredentialId = new Map<string, StoredPasskey>();
+  private readonly passkeysById = new Map<Uuid, StoredPasskey>();
   private readonly queue = new ExclusiveQueue();
   private readonly sessionsByVerifier = new Map<string, StoredSession>();
 
@@ -337,11 +360,19 @@ export class LocalAuthRepository implements AuthRepository {
           revokedApplicationSessionCount += 1;
         }
       }
+      let revokedPasskeyCount = 0;
+      for (const passkey of this.passkeysById.values()) {
+        if (passkey.accountId === input.accountId && passkey.revokedAt === null) {
+          passkey.revokedAt = input.now;
+          revokedPasskeyCount += 1;
+        }
+      }
       return {
         invalidatedChallengeCount,
         revokedApplicationSessionCount,
         revokedFamilyCount,
         revokedGateSessionCount,
+        revokedPasskeyCount,
       };
     });
   }
@@ -423,6 +454,65 @@ export class LocalAuthRepository implements AuthRepository {
       this.accountsByEmail.set(account.email, account);
       this.bootstrapAccounts.set(input.bootstrapId, account.userId);
       return { account: cloneAccount(account), created: true };
+    });
+  }
+
+  completePasskeyLogin(
+    input: Parameters<AuthRepository['completePasskeyLogin']>[0],
+  ): ReturnType<AuthRepository['completePasskeyLogin']> {
+    return this.queue.run(() => {
+      const passkey = this.passkeysByCredentialId.get(
+        Buffer.from(input.credentialId).toString('base64url'),
+      );
+      const account = passkey === undefined ? undefined : this.accountsById.get(passkey.accountId);
+      if (
+        passkey === undefined ||
+        passkey.revokedAt !== null ||
+        account?.status !== 'active' ||
+        !input.userVerified
+      ) {
+        return null;
+      }
+      if (passkey.signCount !== input.expectedSignCount) {
+        throw new AuthRepositoryConflictError();
+      }
+      if (
+        this.sessionsByVerifier.has(input.session.tokenVerifier) ||
+        [...this.sessionsByVerifier.values()].some(
+          (session) => session.sessionId === input.session.sessionId,
+        )
+      ) {
+        throw new AuthRepositoryConflictError();
+      }
+      const signCountStatus: AuthPasskeySignCountStatus =
+        passkey.signCount === 0 && input.observedSignCount === 0
+          ? 'not_supported'
+          : input.observedSignCount > passkey.signCount
+            ? 'advanced'
+            : input.observedSignCount === passkey.signCount
+              ? 'not_advanced'
+              : 'regressed';
+      passkey.signCount = Math.max(passkey.signCount, input.observedSignCount);
+      passkey.lastBackupEligible = input.observedBackupEligible;
+      passkey.lastBackupState = input.observedBackupState;
+      passkey.lastUsedAt = input.now;
+      const session: StoredSession = {
+        ...input.session,
+        accountId: passkey.accountId,
+        idleExpiresAt: Math.min(
+          input.session.absoluteExpiresAt,
+          input.now + input.session.idleLifetimeMs,
+        ),
+        lastSeenAt: input.now,
+        revokedAt: null,
+      };
+      this.sessionsByVerifier.set(session.tokenVerifier, session);
+      return {
+        accountId: passkey.accountId,
+        reused: false,
+        sessionId: session.sessionId,
+        signCountStatus,
+      };
     });
   }
 
@@ -705,6 +795,87 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
+  readPasskeyByCredentialId(
+    credentialId: Uint8Array,
+    now: number,
+  ): Promise<AuthPasskeyCredential | null> {
+    return this.queue.run(() => {
+      const passkey = this.passkeysByCredentialId.get(
+        Buffer.from(credentialId).toString('base64url'),
+      );
+      const account = passkey === undefined ? undefined : this.accountsById.get(passkey.accountId);
+      if (
+        passkey === undefined ||
+        passkey.revokedAt !== null ||
+        now < passkey.createdAt ||
+        account?.status !== 'active'
+      ) {
+        return null;
+      }
+      return Object.freeze({
+        aaguid: passkey.aaguid,
+        accountId: passkey.accountId,
+        attestationFormat: passkey.attestationFormat,
+        credentialId: Uint8Array.from(passkey.credentialId),
+        lastBackupEligible: passkey.lastBackupEligible,
+        lastBackupState: passkey.lastBackupState,
+        passkeyId: passkey.passkeyId,
+        publicKey: Uint8Array.from(passkey.publicKey),
+        registeredBackupEligible: passkey.registeredBackupEligible,
+        registeredBackupState: passkey.registeredBackupState,
+        signCount: passkey.signCount,
+        transports: Object.freeze([...passkey.transports]),
+      });
+    });
+  }
+
+  registerPasskey(
+    input: Parameters<AuthRepository['registerPasskey']>[0],
+  ): ReturnType<AuthRepository['registerPasskey']> {
+    return this.queue.run(() => {
+      const session = this.sessionsByVerifier.get(input.actorSessionVerifier);
+      const account = session === undefined ? undefined : this.accountsById.get(session.accountId);
+      if (
+        session === undefined ||
+        session.revokedAt !== null ||
+        input.now < session.issuedAt ||
+        input.now >= session.idleExpiresAt ||
+        input.now >= session.absoluteExpiresAt ||
+        account?.status !== 'active' ||
+        !input.userVerified
+      ) {
+        throw new AuthRepositoryAuthorizationError();
+      }
+      const credentialKey = Buffer.from(input.credentialId).toString('base64url');
+      if (
+        this.passkeysByCredentialId.has(credentialKey) ||
+        this.passkeysById.has(input.passkeyId)
+      ) {
+        throw new AuthRepositoryConflictError();
+      }
+      const passkey: StoredPasskey = {
+        aaguid: input.aaguid,
+        accountId: account.userId,
+        attestationFormat: input.attestationFormat,
+        credentialId: Uint8Array.from(input.credentialId),
+        createdAt: input.now,
+        lastBackupEligible: input.backupEligible,
+        lastBackupState: input.backupState,
+        lastUsedAt: null,
+        passkeyId: input.passkeyId,
+        publicKey: Uint8Array.from(input.publicKey),
+        registeredBackupEligible: input.backupEligible,
+        registeredBackupState: input.backupState,
+        revokedAt: null,
+        signCount: input.signCount,
+        transports: Object.freeze([...input.transports]),
+      };
+      this.passkeysByCredentialId.set(credentialKey, passkey);
+      this.passkeysById.set(passkey.passkeyId, passkey);
+      return { accountId: account.userId, passkeyId: passkey.passkeyId };
+    });
+  }
+
   revokeAllSessionsAsAdministrator(
     input: Parameters<AuthRepository['revokeAllSessionsAsAdministrator']>[0],
   ): Promise<number> {
@@ -807,6 +978,11 @@ export class LocalAuthRepository implements AuthRepository {
             challenge.usedAt === null
           ) {
             challenge.invalidatedAt = input.now;
+          }
+        }
+        for (const passkey of this.passkeysById.values()) {
+          if (passkey.accountId === input.userId && passkey.revokedAt === null) {
+            passkey.revokedAt = input.now;
           }
         }
       }

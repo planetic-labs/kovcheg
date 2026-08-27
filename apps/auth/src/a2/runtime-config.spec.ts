@@ -29,6 +29,9 @@ function enabledSource() {
     AUTH_REDIS_URL: 'redis://127.0.0.1:6379',
     AUTH_RUNTIME_ENABLED: 'true',
     AUTH_SESSION_PEPPER: 's'.repeat(64),
+    AUTH_WEBAUTHN_ORIGINS_JSON: JSON.stringify(['https://auth-config.invalid']),
+    AUTH_WEBAUTHN_RP_ID: 'auth-config.invalid',
+    AUTH_WEBAUTHN_RP_NAME: 'Synthetic Auth',
   } as const;
 }
 
@@ -59,6 +62,11 @@ describe('A2 runtime configuration', () => {
       },
       redisUrl: 'redis://127.0.0.1:6379',
       secureCookies: false,
+      webauthn: {
+        origins: ['https://auth-config.invalid'],
+        rpId: 'auth-config.invalid',
+        rpName: 'Synthetic Auth',
+      },
     });
   });
 
@@ -72,6 +80,28 @@ describe('A2 runtime configuration', () => {
         AUTH_REDIS_URL: 'https://example.invalid',
       }),
     ).toThrow('AUTH_REDIS_URL must use redis or rediss');
+  });
+
+  it('allows only the exact production RP and bounded synthetic test origins', () => {
+    expect(() =>
+      loadAuthRuntimeConfig('production', {
+        ...enabledSource(),
+        AUTH_WEBAUTHN_ORIGINS_JSON: JSON.stringify(['https://auth-config.invalid']),
+        AUTH_WEBAUTHN_RP_ID: 'auth-config.invalid',
+      }),
+    ).toThrow('Production WebAuthn RP ID is not permitted');
+    expect(() =>
+      loadAuthRuntimeConfig('test', {
+        ...enabledSource(),
+        AUTH_WEBAUTHN_ORIGINS_JSON: JSON.stringify(['https://auth-config.invalid/not-an-origin']),
+      }),
+    ).toThrow('WebAuthn origin is not permitted');
+    expect(() =>
+      loadAuthRuntimeConfig('test', {
+        ...enabledSource(),
+        AUTH_WEBAUTHN_ORIGINS_JSON: JSON.stringify(['https://unrelated.invalid']),
+      }),
+    ).toThrow('WebAuthn origin is not permitted');
   });
 
   it('loads secret material from container secret files without inline duplication', () => {

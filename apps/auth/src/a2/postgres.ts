@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { functionalGrants, parseCurrentPrincipalAuthorization } from '@kovcheg/contracts';
-import type { FunctionalGrant, UserId, Uuid } from '@kovcheg/contracts';
+import type { FunctionalGrant, SessionId, UserId, Uuid } from '@kovcheg/contracts';
 import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
 import type { PoolConfig, QueryResultRow } from 'pg';
 import { Pool } from 'pg';
@@ -15,6 +15,9 @@ import {
 import type {
   AccountRecord,
   AccountStatus,
+  AuthPasskeyCredential,
+  AuthPasskeySignCountStatus,
+  AuthPasskeyTransport,
   PersonalGateSecurityResetResult,
   SessionPrincipal,
 } from './contracts.js';
@@ -84,6 +87,33 @@ interface PersonalGateReissueRow extends QueryResultRow {
   readonly revoked_gate_session_count: number;
 }
 
+interface PasskeyRow extends QueryResultRow {
+  readonly aaguid: string;
+  readonly account_id: string;
+  readonly attestation_format: string;
+  readonly last_backup_eligible: boolean;
+  readonly last_backup_state: boolean;
+  readonly passkey_id: string;
+  readonly public_key: Uint8Array;
+  readonly registered_backup_eligible: boolean;
+  readonly registered_backup_state: boolean;
+  readonly sign_count: number | string;
+  readonly transports: unknown;
+}
+
+interface PasskeyRegistrationRow extends QueryResultRow {
+  readonly account_id: string;
+  readonly passkey_id: string;
+}
+
+interface PasskeyLoginRow extends QueryResultRow {
+  readonly account_id: string;
+  readonly outcome: string;
+  readonly reused: boolean;
+  readonly session_id: string;
+  readonly sign_count_status: string;
+}
+
 interface JsonResultRow extends QueryResultRow {
   readonly result: unknown;
 }
@@ -122,6 +152,7 @@ interface OidcArtifactRow extends QueryResultRow {
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const genericUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const oidcModelPattern = /^[A-Za-z][A-Za-z0-9]{1,63}$/;
 
 function unavailable(): AuthError {
@@ -141,6 +172,9 @@ function mapPostgresError(error: unknown): Error {
     return new AuthRepositoryAuthorizationError();
   }
   if (postgresError.code === '23505') {
+    return new AuthRepositoryConflictError();
+  }
+  if (postgresError.code === '40001') {
     return new AuthRepositoryConflictError();
   }
   if (postgresError.code === 'P0002') {
@@ -175,6 +209,11 @@ function identifier<T extends string>(value: string | null): T {
   return value as T;
 }
 
+function genericUuid(value: string | null): Uuid {
+  if (value === null || !genericUuidPattern.test(value)) throw unavailable();
+  return value as Uuid;
+}
+
 function timestamp(value: Date | string): number {
   const milliseconds = value instanceof Date ? value.getTime() : Date.parse(value);
   if (!Number.isFinite(milliseconds)) throw unavailable();
@@ -186,6 +225,56 @@ function countField(value: unknown, name: string): number {
   const field = (value as Record<string, unknown>)[name];
   if (!Number.isSafeInteger(field) || (field as number) < 0) throw unavailable();
   return field as number;
+}
+
+function boundedInteger(value: unknown, maximum = Number.MAX_SAFE_INTEGER): number {
+  const parsed = typeof value === 'string' && /^\d+$/u.test(value) ? Number(value) : value;
+  if (!Number.isSafeInteger(parsed) || (parsed as number) < 0 || (parsed as number) > maximum) {
+    throw unavailable();
+  }
+  return parsed as number;
+}
+
+function passkeyTransports(value: unknown): readonly AuthPasskeyTransport[] {
+  const parsed =
+    typeof value === 'string' && /^\{(?:[a-z-]+(?:,[a-z-]+)*)?\}$/u.test(value)
+      ? value.slice(1, -1).split(',')
+      : value;
+  if (!Array.isArray(parsed)) throw unavailable();
+  if (parsed.length === 1 && parsed[0] === '') return Object.freeze([]);
+  if (
+    parsed.some(
+      (transport) =>
+        transport !== 'ble' &&
+        transport !== 'hybrid' &&
+        transport !== 'internal' &&
+        transport !== 'nfc' &&
+        transport !== 'smart-card' &&
+        transport !== 'usb',
+    )
+  ) {
+    throw unavailable();
+  }
+  return Object.freeze([...parsed] as AuthPasskeyTransport[]);
+}
+
+function passkeySignCountStatus(value: string): AuthPasskeySignCountStatus {
+  if (
+    value !== 'advanced' &&
+    value !== 'not_advanced' &&
+    value !== 'not_supported' &&
+    value !== 'regressed'
+  ) {
+    throw unavailable();
+  }
+  return value;
+}
+
+function bytes(value: unknown, maximum: number): Uint8Array {
+  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > maximum) {
+    throw unavailable();
+  }
+  return Uint8Array.from(value);
 }
 
 function grants(value: unknown): readonly FunctionalGrant[] {
@@ -344,6 +433,7 @@ export class PostgresAuthRepository implements AuthRepository {
       revokedApplicationSessionCount: countField(result, 'revokedApplicationSessionCount'),
       revokedFamilyCount: countField(result, 'revokedFamilyCount'),
       revokedGateSessionCount: countField(result, 'revokedGateSessionCount'),
+      revokedPasskeyCount: countField(result, 'revokedPasskeyCount'),
     });
   }
 
@@ -383,6 +473,42 @@ export class PostgresAuthRepository implements AuthRepository {
       throw unavailable();
     }
     return Object.freeze({ account, created: row.created });
+  }
+
+  async completePasskeyLogin(
+    input: Parameters<AuthRepository['completePasskeyLogin']>[0],
+  ): ReturnType<AuthRepository['completePasskeyLogin']> {
+    const rows = await query<PasskeyLoginRow>(
+      this.client,
+      `SELECT outcome, account_id, session_id, sign_count_status, reused
+       FROM kovcheg.complete_auth_passkey_login(
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+       )`,
+      [
+        Buffer.from(input.credentialId),
+        input.expectedSignCount,
+        input.observedSignCount,
+        input.observedBackupEligible,
+        input.observedBackupState,
+        input.userVerified,
+        input.assertionId,
+        input.session.sessionId,
+        input.session.tokenVerifier,
+        input.session.idleLifetimeMs,
+        new Date(input.session.absoluteExpiresAt),
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const row = rows[0];
+    if (row === undefined) return null;
+    if (row.outcome !== 'authenticated' || typeof row.reused !== 'boolean') throw unavailable();
+    return Object.freeze({
+      accountId: identifier<UserId>(row.account_id),
+      reused: row.reused,
+      sessionId: identifier<SessionId>(row.session_id),
+      signCountStatus: passkeySignCountStatus(row.sign_count_status),
+    });
   }
 
   async consumeChallengeAndCreateSession(
@@ -626,6 +752,79 @@ export class PostgresAuthRepository implements AuthRepository {
       challengeId: identifier<Uuid>(row.challenge_id),
       kind: 'issued',
       recipient: row.recipient,
+    });
+  }
+
+  async readPasskeyByCredentialId(
+    credentialId: Uint8Array,
+    now: number,
+  ): Promise<AuthPasskeyCredential | null> {
+    const rows = await query<PasskeyRow>(
+      this.client,
+      `SELECT passkey_id, account_id, public_key, sign_count, transports, aaguid,
+              attestation_format, registered_backup_eligible, registered_backup_state,
+              last_backup_eligible, last_backup_state
+       FROM kovcheg.read_auth_passkey_by_credential_id($1, $2)`,
+      [Buffer.from(credentialId), new Date(now)],
+    );
+    const row = rows[0];
+    if (row === undefined) return null;
+    if (
+      typeof row.attestation_format !== 'string' ||
+      typeof row.registered_backup_eligible !== 'boolean' ||
+      typeof row.registered_backup_state !== 'boolean' ||
+      typeof row.last_backup_eligible !== 'boolean' ||
+      typeof row.last_backup_state !== 'boolean'
+    ) {
+      throw unavailable();
+    }
+    return Object.freeze({
+      aaguid: genericUuid(row.aaguid),
+      accountId: identifier<UserId>(row.account_id),
+      attestationFormat: row.attestation_format,
+      credentialId: Uint8Array.from(credentialId),
+      lastBackupEligible: row.last_backup_eligible,
+      lastBackupState: row.last_backup_state,
+      passkeyId: identifier<Uuid>(row.passkey_id),
+      publicKey: bytes(row.public_key, 8192),
+      registeredBackupEligible: row.registered_backup_eligible,
+      registeredBackupState: row.registered_backup_state,
+      signCount: boundedInteger(row.sign_count, 4_294_967_295),
+      transports: passkeyTransports(row.transports),
+    });
+  }
+
+  async registerPasskey(
+    input: Parameters<AuthRepository['registerPasskey']>[0],
+  ): ReturnType<AuthRepository['registerPasskey']> {
+    const rows = await query<PasskeyRegistrationRow>(
+      this.client,
+      `SELECT passkey_id, account_id
+       FROM kovcheg.register_auth_passkey(
+         $1, $2, $3, $4, $5, $6::kovcheg.auth_passkey_transport[], $7, $8,
+         $9, $10, $11, $12, $13
+       )`,
+      [
+        input.actorSessionVerifier,
+        input.passkeyId,
+        Buffer.from(input.credentialId),
+        Buffer.from(input.publicKey),
+        input.signCount,
+        [...input.transports],
+        input.aaguid,
+        input.attestationFormat,
+        input.backupEligible,
+        input.backupState,
+        input.userVerified,
+        new Date(input.now),
+        input.correlationId,
+      ],
+    );
+    const row = rows[0];
+    if (row === undefined) throw unavailable();
+    return Object.freeze({
+      accountId: identifier<UserId>(row.account_id),
+      passkeyId: identifier<Uuid>(row.passkey_id),
     });
   }
 
