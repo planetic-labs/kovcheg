@@ -59,7 +59,11 @@ run_clean_scenario() {
   compose --profile data run --rm migrate
   compose --profile data run --rm -e TEST_SCENARIO=clean database-test
   compose --profile data run --rm message-flow-test
-  compose --profile data run --rm auth-integration-test
+  if [ "${KOVCHEG_DATABASE_TEST_SKIP_AUTH_INTEGRATION:-0}" = '1' ]; then
+    echo 'Auth runtime integration skipped by explicit A3 contract-test mode.'
+  else
+    compose --profile data run --rm auth-integration-test
+  fi
   compose --profile data run --rm migrate
   cleanup_project "$COMPOSE_PROJECT_NAME"
 }
@@ -95,6 +99,8 @@ run_upgrade_scenario() {
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-v13 database-test
   compose --profile data run --rm -e MIGRATION_TARGET=0014 migrate
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-v14 database-test
+  compose --profile data run --rm -e MIGRATION_TARGET=0015 migrate
+  compose --profile data run --rm -e TEST_SCENARIO=upgrade-v15 database-test
   compose --profile data run --rm migrate
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-latest database-test
   compose --profile data run --rm migrate

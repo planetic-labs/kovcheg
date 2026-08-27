@@ -57,14 +57,15 @@ SELECT pg_temp.assert_true(
   )
   AND (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-passkey-reset@auth.invalid',
       '00000000-0000-4000-8000-000000005101',
       repeat('A', 43),
       '2030-01-01 01:00:01+00',
       '2030-01-01 01:10:01+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'passkey-email-5101'
     )
   )
   AND (
@@ -398,14 +399,15 @@ SELECT pg_temp.assert_true(
   )
   AND (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-passkey-deactivate@auth.invalid',
       '00000000-0000-4000-8000-000000005102',
       repeat('G', 43),
       '2030-01-01 01:06:01+00',
       '2030-01-01 01:16:01+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'passkey-email-5102'
     )
   )
   AND (
@@ -480,14 +482,15 @@ SELECT pg_temp.assert_true(
   )
   AND (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-passkey-race@auth.invalid',
       '00000000-0000-4000-8000-000000005103',
       repeat('I', 43),
       '2030-01-01 01:07:01+00',
       '2030-01-01 01:17:01+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'passkey-email-5103'
     )
   )
   AND (

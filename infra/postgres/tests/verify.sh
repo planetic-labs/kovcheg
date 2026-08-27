@@ -150,8 +150,8 @@ verify_latest_migration_state() {
       FROM kovcheg_meta.schema_migrations
     "
   )
-  if [ "$latest_state" != '0015:15' ]; then
-    echo 'The complete fifteen-migration chain was not recorded.' >&2
+  if [ "$latest_state" != '0016:16' ]; then
+    echo 'The complete sixteen-migration chain was not recorded.' >&2
     exit 1
   fi
 }
@@ -306,26 +306,29 @@ run_message_flow_tests() {
 run_auth_tests() {
   run_sql kovcheg_auth_app "$auth_password" "$test_root/verify-auth-runtime.sql"
   run_sql kovcheg_auth_app "$auth_password" \
-    "$test_root/verify-auth-personal-entry-gate.sql"
+    "$test_root/verify-auth-variant-e.sql"
   run_sql kovcheg_auth_app "$auth_password" \
     "$test_root/verify-auth-passkey.sql"
 
-  gate_race_result_root="/tmp/kovcheg-gate-race-$$"
+  variant_email_race_result_root="/tmp/kovcheg-variant-email-race-$$"
   parallel_number=1
   parallel_pids=''
   while [ "$parallel_number" -le 12 ]; do
+    challenge_suffix=$(printf '%012d' "$parallel_number")
     PGPASSWORD="$auth_password" psql --no-psqlrc --tuples-only --no-align --quiet \
       --set=ON_ERROR_STOP=1 --username kovcheg_auth_app --command="
-        SELECT outcome || ':' || reused
-        FROM kovcheg.activate_auth_personal_gate(
-          repeat('R', 43),
-          '00000000-0000-4000-8000-000000004210',
-          repeat('S', 43),
-          'synthetic-client-race-001',
-          '2030-01-01 00:56:02+00',
-          'gate-race-activate'
+        SELECT outcome
+        FROM kovcheg.issue_auth_email_challenge(
+          'synthetic-variant-race@auth.invalid',
+          '00000000-0000-4000-8006-$challenge_suffix',
+          lpad('$parallel_number', 43, 'E'),
+          '2030-01-01 00:33:01+00',
+          '2030-01-01 00:43:01+00',
+          5,
+          interval '60 seconds',
+          'variant-email-race-$parallel_number'
         )
-      " >"$gate_race_result_root-$parallel_number" &
+      " >"$variant_email_race_result_root-$parallel_number" &
     parallel_pids="$parallel_pids $!"
     parallel_number=$((parallel_number + 1))
   done
@@ -334,26 +337,32 @@ run_auth_tests() {
     wait "$parallel_pid"
   done
 
-  race_active_count=$(grep -h -c '^active:' "$gate_race_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
-  if [ "$race_active_count" -ne 12 ]; then
-    echo 'Concurrent gate activation did not return twelve successful idempotent outcomes.' >&2
+  variant_email_issued_count=$(grep -h -c '^issued$' "$variant_email_race_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
+  variant_email_neutral_count=$(grep -h -c '^neutral$' "$variant_email_race_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
+  if [ "$variant_email_issued_count" -ne 1 ] \
+    || [ "$variant_email_neutral_count" -ne 11 ]; then
+    echo 'Concurrent Variant E challenge issuance was not serialized to one delivery.' >&2
     exit 1
   fi
 
-  gate_race_state=$(query_as_migration "
+  variant_email_race_state=$(query_as_migration "
     SELECT
       (SELECT count(*)
-       FROM kovcheg.auth_personal_gate_sessions
-       WHERE family_id = '00000000-0000-4000-8000-000000004110'
-         AND client_idempotency_key = 'synthetic-client-race-001') || ':' ||
+       FROM kovcheg.auth_email_challenges
+       WHERE account_id = '00000000-0000-4000-8000-000000006004'
+         AND gate_session_id IS NULL
+         AND used_at IS NULL
+         AND invalidated_at IS NULL) || ':' ||
       (SELECT count(*)
        FROM kovcheg.audit_events
-       WHERE correlation_id = 'gate-race-activate')
+       WHERE correlation_id LIKE 'variant-email-race-%'
+         AND action = 'auth.email-challenge.issued')
   ")
-  if [ "$gate_race_state" != '1:1' ]; then
-    echo 'Concurrent gate activation did not preserve one session and one audit event.' >&2
+  if [ "$variant_email_race_state" != '1:1' ]; then
+    echo 'Concurrent Variant E issuance did not preserve one challenge and one audit event.' >&2
     exit 1
   fi
+  find /tmp -maxdepth 1 -name 'kovcheg-variant-email-race-*' -type f -delete
 
   passkey_race_result_root="/tmp/kovcheg-passkey-race-$$"
   parallel_number=1
@@ -398,9 +407,9 @@ run_auth_tests() {
   find /tmp -maxdepth 1 -name 'kovcheg-passkey-race-*' -type f -delete
 
   run_sql kovcheg_migrator "$migration_password" \
-    "$test_root/verify-auth-personal-entry-gate-owner.sql"
-  run_sql kovcheg_migrator "$migration_password" \
     "$test_root/verify-auth-passkey-owner.sql"
+  run_sql kovcheg_migrator "$migration_password" \
+    "$test_root/verify-auth-variant-e-owner.sql"
 
   parallel_number=1
   parallel_pids=''
@@ -748,6 +757,10 @@ case "$scenario" in
   upgrade-v14)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v14.sql"
+    ;;
+  upgrade-v15)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v15.sql"
     ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"

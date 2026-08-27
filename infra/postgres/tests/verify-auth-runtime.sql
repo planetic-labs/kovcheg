@@ -160,14 +160,15 @@ $$;
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-administrator@auth.invalid',
       '00000000-0000-4000-8000-000000003090',
       repeat('i', 43),
       '2029-12-31 23:50:00+00',
-      '2030-01-02 00:00:00+00',
+      '2030-01-01 00:00:00+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'auth-email-3090'
     )
   ),
   'the bootstrap administrator must receive a challenge for an acting session'
@@ -335,17 +336,17 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'neutral'
-      AND account_id IS NULL
       AND challenge_id IS NULL
       AND recipient IS NULL
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-unknown@auth.invalid',
       '00000000-0000-4000-8000-000000003101',
       repeat('u', 43),
       '2030-01-01 00:00:00+00',
       '2030-01-01 00:10:00+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3101-neutral'
     )
   ),
   'unknown accounts must receive the neutral result without identity disclosure'
@@ -354,17 +355,17 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-      AND account_id = '00000000-0000-4000-8000-000000003002'
       AND challenge_id = '00000000-0000-4000-8000-000000003102'
       AND recipient = 'synthetic-member@auth.invalid'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003102',
       repeat('a', 43),
       '2030-01-01 00:00:00+00',
       '2030-01-01 00:10:00+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3102'
     )
   ),
   'an active account must receive one durable HMAC challenge verifier'
@@ -373,14 +374,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'neutral'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003103',
       repeat('b', 43),
       '2030-01-01 00:00:30+00',
       '2030-01-01 00:10:30+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3103-cooldown'
     )
   ),
   'the resend cooldown must return the same neutral result without a new challenge'
@@ -389,14 +391,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003104',
       repeat('c', 43),
       '2030-01-01 00:01:01+00',
       '2030-01-01 00:11:01+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3104'
     )
   ),
   'a later challenge must invalidate the previous open challenge atomically'
@@ -517,14 +520,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003105',
       repeat('d', 43),
       '2030-01-01 00:03:00+00',
       '2030-01-01 00:13:00+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3105'
     )
   ),
   'a later active-account challenge must be issuable'
@@ -555,14 +559,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003106',
       repeat('e', 43),
       '2030-01-01 00:05:00+00',
       '2030-01-01 00:15:00+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3106'
     )
   ),
   'a challenge must be available for account deactivation testing'
@@ -588,14 +593,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003107',
       repeat('f', 43),
       '2030-01-01 00:07:00+00',
       '2030-01-01 00:17:00+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3107'
     )
   ),
   'one live challenge must exist before the atomic account-status transition'
@@ -624,14 +630,15 @@ SELECT pg_temp.assert_true(
   )
   AND (
     SELECT outcome = 'neutral'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003108',
       repeat('g', 43),
       '2030-01-01 00:08:30+00',
       '2030-01-01 00:18:30+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3108-deactivated'
     )
   )
   AND (
@@ -677,14 +684,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-secondary@auth.invalid',
       '00000000-0000-4000-8000-000000003120',
       repeat('l', 43),
       '2030-01-01 00:09:10+00',
-      '2030-01-01 00:49:10+00',
+      '2030-01-01 00:19:10+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'auth-email-3120'
     )
   ),
   'the second target account must receive a challenge'
@@ -728,14 +736,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003121',
       repeat('o', 43),
       '2030-01-01 00:10:00+00',
-      '2030-01-01 00:40:00+00',
+      '2030-01-01 00:20:00+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'auth-email-3121'
     )
   )
   AND (
@@ -786,14 +795,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-administrator@auth.invalid',
       '00000000-0000-4000-8000-000000003122',
       repeat('p', 43),
       '2030-01-01 00:11:00+00',
       '2030-01-01 00:11:10+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'auth-email-3122'
     )
   )
   AND (
@@ -843,14 +853,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-administrator@auth.invalid',
       '00000000-0000-4000-8000-000000003123',
       repeat('q', 43),
       '2030-01-01 00:12:00+00',
-      '2030-01-01 00:30:00+00',
+      '2030-01-01 00:22:00+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'auth-email-3123'
     )
   )
   AND (
@@ -951,14 +962,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-administrator-two@auth.invalid',
       '00000000-0000-4000-8000-000000003124',
       repeat('s', 43),
       '2030-01-01 00:13:00+00',
-      '2030-01-01 00:30:00+00',
+      '2030-01-01 00:23:00+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'auth-email-3124'
     )
   )
   AND (
@@ -1065,17 +1077,18 @@ BEGIN
       '00000000-0000-4000-8003-' || pg_catalog.lpad(fixture_number::text, 12, '0')
     )::uuid;
     fixture_issued_at :=
-      '2030-01-01 00:14:00+00'::timestamptz + fixture_number * interval '1 second';
+      '2030-01-01 00:14:00+00'::timestamptz + fixture_number * interval '61 seconds';
 
     SELECT outcome INTO fixture_outcome
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-revoke-all@auth.invalid',
       fixture_challenge_id,
       pg_catalog.lpad(fixture_number::text, 43, 'c'),
       fixture_issued_at,
-      fixture_issued_at + interval '1 hour',
+      fixture_issued_at + interval '10 minutes',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'auth-email-revoke-all-' || fixture_number::text
     );
     IF fixture_outcome <> 'issued' THEN
       RAISE EXCEPTION 'concurrent revoke-all challenge fixture was not issued';
@@ -1191,14 +1204,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003126',
       repeat('u', 43),
       '2030-01-01 00:16:00+00',
       '2030-01-01 00:26:00+00',
       5,
-      interval '0 seconds'
+      interval '60 seconds',
+      'auth-email-3126'
     )
   )
   AND (
@@ -1260,14 +1274,15 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT outcome = 'issued'
-    FROM kovcheg.issue_auth_challenge_for_active_account(
+    FROM kovcheg.issue_auth_email_challenge(
       'synthetic-member@auth.invalid',
       '00000000-0000-4000-8000-000000003109',
       repeat('k', 43),
       '2030-01-01 00:20:00+00',
       '2030-01-01 00:30:00+00',
       5,
-      interval '60 seconds'
+      interval '60 seconds',
+      'auth-email-3109'
     )
   ),
   'the concurrent verification fixture must have one live challenge'
