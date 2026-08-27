@@ -53,9 +53,12 @@ test('deployment amd64 builds use Buildx and load exact local images', async () 
   assert.match(source, /docker buildx version/u);
 });
 
-test('web container build uses the supported webpack fallback under amd64 emulation', async () => {
-  const source = await readFile('apps/web/Dockerfile', 'utf8');
-  assert.match(source, /next build --webpack/u);
+test('web container cross-build compiles natively with x64 runtime dependencies', async () => {
+  const dockerfile = await readFile('apps/web/Dockerfile', 'utf8');
+  const workspace = await readFile('pnpm-workspace.yaml', 'utf8');
+  assert.match(dockerfile, /^FROM --platform=\$BUILDPLATFORM .+ AS build$/mu);
+  assert.match(workspace, /supportedArchitectures:[\s\S]*- current[\s\S]*- linux/u);
+  assert.match(workspace, /cpu:[\s\S]*- current[\s\S]*- x64/u);
 });
 
 test('lifecycle helper defaults to 20 GiB and supports diagnostic image retention', async () => {
