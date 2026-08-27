@@ -83,4 +83,15 @@ test('lifecycle helper defaults to 20 GiB and supports diagnostic image retentio
   assert.match(source, /No automatic cleanup was attempted/u);
   assert.match(source, /Docker Buildx is required before project-owned image builds/u);
   assert.match(source, /Refusing to remove image without exact current-run ownership/u);
+  assert.match(source, /KOVCHEG_TEST_VOLUME_BASELINE_FILE/u);
+  assert.match(source, /No unowned volume was removed automatically/u);
+});
+
+test('PostgreSQL deployment image avoids inherited-volume build leakage', async () => {
+  const dockerfile = await readFile('infra/postgres/Dockerfile', 'utf8');
+  const disabledGosu = await readFile('infra/postgres/gosu-disabled.sh', 'utf8');
+  assert.doesNotMatch(dockerfile, /^RUN\s/mu);
+  assert.match(dockerfile, /COPY --chown=999:999 gosu-disabled\.sh \/usr\/local\/bin\/gosu/u);
+  assert.match(dockerfile, /KOVCHEG_TEST_ROOT=\/opt\/kovcheg\/tests/u);
+  assert.match(disabledGosu, /exit 126/u);
 });

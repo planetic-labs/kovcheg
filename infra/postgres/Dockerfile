@@ -4,19 +4,13 @@ ARG BUILD_COMMIT_SHA=""
 
 LABEL org.opencontainers.image.revision=$BUILD_COMMIT_SHA
 
-ENV KOVCHEG_MIGRATION_ROOT=/opt/kovcheg/migrations
+ENV KOVCHEG_MIGRATION_ROOT=/opt/kovcheg/migrations \
+    KOVCHEG_TEST_ROOT=/opt/kovcheg/tests
 
 COPY --chown=999:999 init/010_roles.sh /docker-entrypoint-initdb.d/010_roles.sh
 COPY --chown=999:999 migrations/ /opt/kovcheg/migrations/
 COPY --chown=999:999 tests/ /opt/kovcheg/tests/
 COPY --chown=999:999 migrate.sh deploy-migrate.sh configure-oidc-clients.sh backup-local.sh restore-smoke.sh /opt/kovcheg/
-
-RUN chmod 0555 /opt/kovcheg/migrate.sh /opt/kovcheg/deploy-migrate.sh \
-    /opt/kovcheg/configure-oidc-clients.sh /opt/kovcheg/backup-local.sh \
-    /opt/kovcheg/restore-smoke.sh /opt/kovcheg/tests/verify.sh \
-  && find /opt/kovcheg/migrations /opt/kovcheg/tests -type f -exec chmod 0444 {} + \
-  && mkdir -p /workspace/infra/postgres \
-  && ln -s /opt/kovcheg/tests /workspace/infra/postgres/tests \
-  && rm -f /usr/local/bin/gosu
+COPY --chown=999:999 gosu-disabled.sh /usr/local/bin/gosu
 
 USER 999:999

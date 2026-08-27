@@ -57,10 +57,12 @@ docker_test_begin() {
   export KOVCHEG_TEST_STATE_DIRECTORY="$state_directory"
   export KOVCHEG_TEST_IMAGE_TAGS_FILE="$state_directory/image-tags"
   export KOVCHEG_TEST_IMAGE_RECORDS_FILE="$state_directory/image-records.tsv"
+  export KOVCHEG_TEST_VOLUME_BASELINE_FILE="$state_directory/volume-baseline"
   export KOVCHEG_KEEP_TEST_IMAGES="$keep_images"
 
   : >"$KOVCHEG_TEST_IMAGE_TAGS_FILE"
   : >"$KOVCHEG_TEST_IMAGE_RECORDS_FILE"
+  docker volume ls --quiet | sort >"$KOVCHEG_TEST_VOLUME_BASELINE_FILE"
 }
 
 docker_test_label_arguments() {
@@ -237,10 +239,25 @@ docker_test_assert_clean() {
   fi
 }
 
+docker_test_assert_no_new_unowned_volumes() {
+  [ -f "$KOVCHEG_TEST_VOLUME_BASELINE_FILE" ] || return 0
+  current_volumes="$KOVCHEG_TEST_STATE_DIRECTORY/volume-current"
+  new_volumes="$KOVCHEG_TEST_STATE_DIRECTORY/volume-new"
+  docker volume ls --quiet | sort >"$current_volumes"
+  comm -13 "$KOVCHEG_TEST_VOLUME_BASELINE_FILE" "$current_volumes" >"$new_volumes"
+  [ ! -s "$new_volumes" ] || {
+    echo 'Docker test run created volumes without removable current-run ownership:' >&2
+    sed 's/^/  /' "$new_volumes" >&2
+    echo 'No unowned volume was removed automatically.' >&2
+    return 1
+  }
+}
+
 docker_test_finish() {
   docker_test_remove_owned_resources
   docker_test_cleanup_images
   docker_test_assert_clean
+  docker_test_assert_no_new_unowned_volumes
 }
 
 docker_test_remove_state() {

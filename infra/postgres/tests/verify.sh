@@ -2,7 +2,7 @@
 
 set -eu
 
-test_root=/workspace/infra/postgres/tests
+test_root=${KOVCHEG_TEST_ROOT:-/workspace/infra/postgres/tests}
 scenario=${TEST_SCENARIO:-clean}
 
 read_secret() {
