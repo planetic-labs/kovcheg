@@ -14,7 +14,7 @@ foreign_container="kovcheg-lifecycle-foreign-container-$foreign_suffix"
 base_image='redis:8.2.1-bookworm@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621'
 
 cleanup_foreign() {
-  docker rm --force "$foreign_container" >/dev/null 2>&1 || true
+  docker rm --force --volumes "$foreign_container" >/dev/null 2>&1 || true
   docker network rm "$foreign_network" >/dev/null 2>&1 || true
   docker volume rm "$foreign_volume" >/dev/null 2>&1 || true
   docker image rm "$foreign_image" >/dev/null 2>&1 || true
@@ -22,6 +22,8 @@ cleanup_foreign() {
   find "$regression_root" -depth -type d -empty -delete 2>/dev/null || true
 }
 trap cleanup_foreign EXIT INT TERM
+
+volume_count_before=$(docker volume ls --quiet | sort -u | wc -l | tr -d ' ')
 
 docker pull "$base_image" >/dev/null
 if (KOVCHEG_DOCKER_MIN_FREE_GIB=invalid; docker_storage_preflight) >/dev/null 2>&1; then
@@ -94,6 +96,15 @@ docker image inspect "$foreign_image" >/dev/null
 docker inspect "$foreign_container" >/dev/null
 docker network inspect "$foreign_network" >/dev/null
 docker volume inspect "$foreign_volume" >/dev/null
+
+cleanup_foreign
+trap - EXIT INT TERM
+
+volume_count_after=$(docker volume ls --quiet | sort -u | wc -l | tr -d ' ')
+if [ "$volume_count_after" != "$volume_count_before" ]; then
+  echo "Docker lifecycle regression changed volume count: before=$volume_count_before after=$volume_count_after" >&2
+  exit 1
+fi
 
 dangling_after=$(docker image ls --quiet --filter dangling=true | sort -u | wc -l | tr -d ' ')
 if [ "$dangling_after" != "$dangling_before" ]; then

@@ -99,3 +99,11 @@ test('container security scans exact saved images without Docker runtime volumes
   assert.match(source, /trivy image \\\n+ {4}--input/u);
   assert.doesNotMatch(source, /trivy image \\\n+ {4}--scanners/u);
 });
+
+test('lifecycle regression removes foreign-container anonymous volumes', async () => {
+  const source = await readFile('verification/docker-lifecycle-smoke.sh', 'utf8');
+  assert.match(source, /docker rm --force --volumes "\$foreign_container"/u);
+  assert.match(source, /volume_count_before=/u);
+  assert.match(source, /volume_count_after=/u);
+  assert.match(source, /Docker lifecycle regression changed volume count/u);
+});
