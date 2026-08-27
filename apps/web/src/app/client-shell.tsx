@@ -285,13 +285,10 @@ function LoginPanel({
               disabled={busy}
               onClick={() => {
                 setError(null);
-                setEmail('');
+                setEmail(submittedEmail);
                 setStatusNotice('');
                 setStep('email');
-                requestAnimationFrame(() => {
-                  setEmail(submittedEmail);
-                  requestAnimationFrame(() => emailInput.current?.focus());
-                });
+                requestAnimationFrame(() => emailInput.current?.focus());
               }}
               type="button"
             >

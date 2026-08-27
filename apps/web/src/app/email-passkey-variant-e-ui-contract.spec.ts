@@ -15,7 +15,13 @@ describe('A6 Variant E email/passkey UI contract', () => {
     expect(existsSync(retiredBffRoute)).toBe(false);
   });
 
-  it('keeps one current email or code surface and exposes the local edit action', () => {
+  it('keeps one current email or code surface and restores edit-back state directly', () => {
+    const editBackStart = source.indexOf('aria-label="Вернуться к вводу email"');
+    const editBackEnd = source.indexOf('type="button"', editBackStart);
+    const editBackAction = source.slice(editBackStart, editBackEnd);
+    const restoreEmail = editBackAction.indexOf('setEmail(submittedEmail);');
+    const showEmailStep = editBackAction.indexOf("setStep('email');");
+
     expect(source).toContain("step === 'email'");
     expect(source).toContain("step === 'code'");
     expect(source).toContain('email.length > 0');
@@ -23,8 +29,11 @@ describe('A6 Variant E email/passkey UI contract', () => {
     expect(source).toContain('aria-label="Вернуться к вводу email"');
     expect(source).toContain('className="auth-email-display"');
     expect(source).toContain('{submittedEmail}');
-    expect(source).toContain("setEmail('')");
-    expect(source).toContain('setEmail(submittedEmail)');
+    expect(restoreEmail).toBeGreaterThan(-1);
+    expect(restoreEmail).toBeLessThan(showEmailStep);
+    expect(editBackAction).not.toContain("setEmail('')");
+    expect(editBackAction.match(/requestAnimationFrame/gu)).toHaveLength(1);
+    expect(editBackAction).toContain('requestAnimationFrame(() => emailInput.current?.focus());');
     expect(source).toContain('Запросить новый код');
   });
 
