@@ -12,6 +12,7 @@ base_project="kovcheg-db-$$"
 docker_test_begin database-test "$base_project"
 docker_test_configure_compose_images "kovcheg-test-database-$KOVCHEG_TEST_RUN_ID"
 docker_storage_preflight
+docker_buildx_preflight
 
 mkdir -p "$secret_root"
 export KOVCHEG_LOCAL_SECRET_DIR="$secret_root"

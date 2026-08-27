@@ -8,6 +8,7 @@ realtime_project="kovcheg-realtime-$$"
 docker_test_begin realtime-smoke "$realtime_project"
 docker_test_configure_compose_images "kovcheg-test-realtime-$KOVCHEG_TEST_RUN_ID"
 docker_storage_preflight
+docker_buildx_preflight
 mkdir -p "$PWD/.local"
 realtime_secret_directory=$(mktemp -d "$PWD/.local/realtime-smoke.XXXXXX")
 export KOVCHEG_LOCAL_SECRET_DIR="$realtime_secret_directory"

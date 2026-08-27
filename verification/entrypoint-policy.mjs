@@ -68,6 +68,7 @@ const dockerBuildEntrypoints = [
   'infra/scripts/docker-up.sh',
   'infra/scripts/realtime-smoke.sh',
   'verification/container-security.sh',
+  'verification/docker-lifecycle-smoke.sh',
 ];
 for (const entrypoint of dockerBuildEntrypoints) {
   const source = await readFile(path.join(repositoryRoot, entrypoint), 'utf8');
@@ -76,6 +77,13 @@ for (const entrypoint of dockerBuildEntrypoints) {
       kind: 'docker-storage-preflight',
       path: entrypoint,
       reason: 'Docker build entrypoint does not measure daemon storage before a heavy build',
+    });
+  }
+  if (!source.includes('docker_buildx_preflight')) {
+    findings.push({
+      kind: 'docker-buildx-preflight',
+      path: entrypoint,
+      reason: 'Docker build entrypoint does not fail closed when Buildx is unavailable',
     });
   }
   if (

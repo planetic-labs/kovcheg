@@ -102,6 +102,18 @@ docker_storage_preflight() {
   echo "Docker storage preflight passed: available=${available_gib}GiB required=${required_gib}GiB."
 }
 
+docker_buildx_preflight() {
+  if ! docker buildx version >/dev/null 2>&1; then
+    echo 'Docker Buildx is required before project-owned image builds.' >&2
+    echo 'Install or expose the official Docker Buildx CLI plugin; no automatic installation was attempted.' >&2
+    return 1
+  fi
+
+  export DOCKER_BUILDKIT=1
+  export COMPOSE_DOCKER_CLI_BUILD=1
+  export COMPOSE_BAKE=true
+}
+
 docker_test_register_image() {
   image=$1
   case "$image" in

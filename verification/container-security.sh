@@ -14,6 +14,7 @@ sh verification/docker-lifecycle-smoke.sh
 
 docker_test_begin container-security "kovcheg-container-security-$$"
 docker_storage_preflight
+docker_buildx_preflight
 image_prefix="kovcheg-test-container-security-$KOVCHEG_TEST_RUN_ID"
 export KOVCHEG_TEST_API_IMAGE="$image_prefix-api"
 export KOVCHEG_TEST_AUTH_IMAGE="$image_prefix-auth"

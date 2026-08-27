@@ -8,6 +8,7 @@ smoke_project="kovcheg-smoke-$$"
 docker_test_begin docker-smoke "$smoke_project"
 docker_test_configure_compose_images "kovcheg-test-docker-smoke-$KOVCHEG_TEST_RUN_ID"
 docker_storage_preflight
+docker_buildx_preflight
 mkdir -p "$PWD/.local"
 smoke_secret_directory=$(mktemp -d "$PWD/.local/docker-smoke.XXXXXX")
 export KOVCHEG_LOCAL_SECRET_DIR="$smoke_secret_directory"

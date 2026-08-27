@@ -22,10 +22,7 @@ fi
 project="kovcheg-deployment-smoke-$$"
 docker_test_begin deployment-smoke "$project"
 docker_storage_preflight
-if ! docker buildx version >/dev/null 2>&1; then
-  echo 'Deployment smoke requires the official Docker Buildx plugin for linux/amd64 images.' >&2
-  exit 1
-fi
+docker_buildx_preflight
 target_image_prefix="kovcheg-test-deployment-$KOVCHEG_TEST_RUN_ID-amd64"
 export KOVCHEG_LOCAL_SECRET_DIR="$PWD/.local/$project-secrets"
 export KOVCHEG_LOOPBACK_PORT=$((32000 + ($$ % 1000)))

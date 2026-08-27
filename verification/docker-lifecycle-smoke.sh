@@ -59,6 +59,7 @@ run_owned_build() {
     trap cleanup EXIT INT TERM
 
     docker_storage_preflight
+    docker_buildx_preflight
     docker build --platform linux/amd64 \
       --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
       --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \

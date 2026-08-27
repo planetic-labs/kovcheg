@@ -9,12 +9,14 @@ const dockerEntrypoints = [
   'infra/scripts/docker-up.sh',
   'infra/scripts/realtime-smoke.sh',
   'verification/container-security.sh',
+  'verification/docker-lifecycle-smoke.sh',
 ];
 
 test('Docker build entrypoints run a free-storage preflight', async () => {
   for (const path of dockerEntrypoints) {
     const source = await readFile(path, 'utf8');
     assert.match(source, /docker_storage_preflight/u, path);
+    assert.match(source, /docker_buildx_preflight/u, path);
   }
 });
 
@@ -51,7 +53,7 @@ test('deployment amd64 builds use Buildx and load exact local images', async () 
   const source = await readFile('infra/deployment/smoke.sh', 'utf8');
   const imageSetBuilds = source.match(/build_image "\$1"/gu) ?? [];
   assert.equal(imageSetBuilds.length, 6);
-  assert.match(source, /docker buildx version/u);
+  assert.match(source, /docker_buildx_preflight/u);
   assert.match(source, /docker buildx build --load --platform "\$platform"/u);
   assert.match(source, /build_image_set linux\/amd64/u);
   assert.match(source, /"\$architecture" != 'amd64'/u);
@@ -61,6 +63,7 @@ test('Compose builds use BuildKit for cross-platform Dockerfiles', async () => {
   const source = await readFile('infra/scripts/compose.sh', 'utf8');
   assert.match(source, /export DOCKER_BUILDKIT=\$\{DOCKER_BUILDKIT:-1\}/u);
   assert.match(source, /export COMPOSE_DOCKER_CLI_BUILD=\$\{COMPOSE_DOCKER_CLI_BUILD:-1\}/u);
+  assert.match(source, /export COMPOSE_BAKE=\$\{COMPOSE_BAKE:-true\}/u);
 });
 
 test('web container cross-build compiles natively with x64 runtime dependencies', async () => {
@@ -78,5 +81,6 @@ test('lifecycle helper defaults to 20 GiB and supports diagnostic image retentio
   assert.match(source, /date -u \+%Y%m%dt%H%M%Sz/u);
   assert.match(source, /tr '\[:upper:\]' '\[:lower:\]'/u);
   assert.match(source, /No automatic cleanup was attempted/u);
+  assert.match(source, /Docker Buildx is required before project-owned image builds/u);
   assert.match(source, /Refusing to remove image without exact current-run ownership/u);
 });

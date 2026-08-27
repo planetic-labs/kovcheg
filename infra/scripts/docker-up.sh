@@ -9,6 +9,7 @@ export KOVCHEG_TEST_PURPOSE='local-development'
 export KOVCHEG_TEST_RUN_ID="local-development-$$"
 export KOVCHEG_TEST_SOURCE_SHA="$(git rev-parse HEAD)"
 docker_storage_preflight
+docker_buildx_preflight
 
 compose() {
   sh infra/scripts/compose.sh "$@"
