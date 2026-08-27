@@ -46,6 +46,13 @@ test('nested realtime restarts retain the lifecycle ownership override', async (
   assert.match(source, /infra\/testing\/compose\.lifecycle\.yaml/u);
 });
 
+test('deployment amd64 builds use the integrated BuildKit builder', async () => {
+  const source = await readFile('infra/deployment/smoke.sh', 'utf8');
+  const buildCommands =
+    source.match(/DOCKER_BUILDKIT=1 docker build --platform linux\/amd64/gu) ?? [];
+  assert.equal(buildCommands.length, 6);
+});
+
 test('lifecycle helper defaults to 20 GiB and supports diagnostic image retention', async () => {
   const source = await readFile('infra/scripts/docker-test-lifecycle.sh', 'utf8');
   assert.match(source, /KOVCHEG_DOCKER_MIN_FREE_GIB:-20/u);

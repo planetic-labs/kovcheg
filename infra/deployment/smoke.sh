@@ -78,37 +78,37 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file apps/api/Dockerfile --tag "$KOVCHEG_API_IMAGE" .
-docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file apps/auth/Dockerfile --tag "$KOVCHEG_AUTH_IMAGE" .
-docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file apps/web/Dockerfile --tag "$KOVCHEG_WEB_IMAGE" .
-docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file apps/worker/Dockerfile --tag "$KOVCHEG_WORKER_IMAGE" .
-docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
   --file infra/edge/Dockerfile --tag "$KOVCHEG_EDGE_IMAGE" infra/edge
-docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
