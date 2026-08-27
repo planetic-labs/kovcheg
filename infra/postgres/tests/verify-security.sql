@@ -498,6 +498,108 @@ END;
 $$;
 
 DO $$
+DECLARE
+  protected_function regprocedure;
+BEGIN
+  IF to_regclass('kovcheg.auth_personal_gate_families') IS NULL THEN
+    RETURN;
+  END IF;
+
+  PERFORM pg_temp.assert_true(
+    NOT has_table_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.auth_personal_gate_families',
+      'SELECT,INSERT,UPDATE,DELETE'
+    )
+    AND NOT has_table_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.auth_personal_gate_sessions',
+      'SELECT,INSERT,UPDATE,DELETE'
+    )
+    AND NOT has_table_privilege(
+      'kovcheg_app',
+      'kovcheg.auth_personal_gate_families',
+      'SELECT,INSERT,UPDATE,DELETE'
+    )
+    AND NOT has_table_privilege(
+      'kovcheg_audit_writer',
+      'kovcheg.auth_personal_gate_sessions',
+      'SELECT,INSERT,UPDATE,DELETE'
+    ),
+    'personal gate state must expose no direct runtime or audit DML'
+  );
+
+  PERFORM pg_temp.assert_true(
+    has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.activate_auth_personal_gate(text,uuid,text,text,timestamp with time zone,character varying)',
+      'EXECUTE'
+    )
+    AND has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.validate_auth_personal_gate_session(text,timestamp with time zone)',
+      'EXECUTE'
+    )
+    AND has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.issue_auth_challenge_for_personal_gate(text,text,uuid,text,timestamp with time zone,timestamp with time zone,integer,interval,character varying)',
+      'EXECUTE'
+    )
+    AND has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.extend_auth_personal_gate_after_login(text,text,timestamp with time zone)',
+      'EXECUTE'
+    )
+    AND has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.admin_security_reset_auth_access(text,uuid,timestamp with time zone,character varying)',
+      'EXECUTE'
+    )
+    AND NOT has_function_privilege(
+      'kovcheg_app',
+      'kovcheg.activate_auth_personal_gate(text,uuid,text,text,timestamp with time zone,character varying)',
+      'EXECUTE'
+    )
+    AND NOT has_function_privilege(
+      'kovcheg_audit_writer',
+      'kovcheg.validate_auth_personal_gate_session(text,timestamp with time zone)',
+      'EXECUTE'
+    )
+    AND NOT has_function_privilege(
+      'kovcheg_auth_app',
+      'kovcheg.auth_personal_gate_audit(character varying,uuid,character varying,character varying,uuid,jsonb)',
+      'EXECUTE'
+    ),
+    'only the auth runtime may execute the protected personal gate surface'
+  );
+
+  FOREACH protected_function IN ARRAY ARRAY[
+    'kovcheg.admin_issue_auth_personal_gate(text,uuid,uuid,text,timestamp with time zone,character varying)'::regprocedure,
+    'kovcheg.admin_reissue_auth_personal_gate(text,uuid,uuid,text,timestamp with time zone,character varying)'::regprocedure,
+    'kovcheg.admin_revoke_auth_personal_gate(text,uuid,uuid,timestamp with time zone,character varying)'::regprocedure,
+    'kovcheg.admin_resume_auth_personal_gate(text,uuid,uuid,timestamp with time zone,character varying)'::regprocedure,
+    'kovcheg.activate_auth_personal_gate(text,uuid,text,text,timestamp with time zone,character varying)'::regprocedure,
+    'kovcheg.validate_auth_personal_gate_session(text,timestamp with time zone)'::regprocedure,
+    'kovcheg.issue_auth_challenge_for_personal_gate(text,text,uuid,text,timestamp with time zone,timestamp with time zone,integer,interval,character varying)'::regprocedure,
+    'kovcheg.extend_auth_personal_gate_after_login(text,text,timestamp with time zone)'::regprocedure,
+    'kovcheg.admin_security_reset_auth_access(text,uuid,timestamp with time zone,character varying)'::regprocedure
+  ] LOOP
+    PERFORM pg_temp.assert_true(
+      (
+        SELECT procedure.prosecdef
+          AND procedure.proconfig = ARRAY['search_path=pg_catalog, kovcheg']
+          AND owner.rolname = 'kovcheg_migration'
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_roles AS owner ON owner.oid = procedure.proowner
+        WHERE procedure.oid = protected_function
+      ),
+      'personal gate functions must be migration-owned security definers with fixed search paths'
+    );
+  END LOOP;
+END;
+$$;
+
+DO $$
 BEGIN
   IF to_regprocedure(
     'kovcheg.create_group_chat_for_session(uuid,uuid,uuid,character varying,timestamp with time zone,character varying)'
