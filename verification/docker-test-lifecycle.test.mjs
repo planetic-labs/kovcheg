@@ -45,6 +45,7 @@ test('lifecycle helper defaults to 20 GiB and supports diagnostic image retentio
   const source = await readFile('infra/scripts/docker-test-lifecycle.sh', 'utf8');
   assert.match(source, /KOVCHEG_DOCKER_MIN_FREE_GIB:-20/u);
   assert.match(source, /KOVCHEG_KEEP_TEST_IMAGES:-0/u);
+  assert.match(source, /tr '\[:upper:\]' '\[:lower:\]'/u);
   assert.match(source, /No automatic cleanup was attempted/u);
   assert.match(source, /Refusing to remove image without exact current-run ownership/u);
 });

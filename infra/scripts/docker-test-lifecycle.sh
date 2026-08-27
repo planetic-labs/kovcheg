@@ -47,7 +47,7 @@ docker_test_begin() {
 
   mkdir -p "$PWD/.local"
   state_directory=$(mktemp -d "$PWD/.local/docker-test-lifecycle.XXXXXX")
-  run_token=$(basename "$state_directory" | sed 's/^docker-test-lifecycle\.//')
+  run_token=$(basename "$state_directory" | sed 's/^docker-test-lifecycle\.//' | tr '[:upper:]' '[:lower:]')
 
   export KOVCHEG_TEST_PROJECT='kovcheg'
   export KOVCHEG_TEST_PURPOSE="$purpose"
