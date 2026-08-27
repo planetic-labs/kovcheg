@@ -165,6 +165,8 @@ test('container security scans exact saved images without Docker runtime volumes
 
 test('lifecycle regression removes foreign-container anonymous volumes', async () => {
   const source = await readFile('verification/docker-lifecycle-smoke.sh', 'utf8');
+  assert.match(source, /docker buildx build --load --platform linux\/amd64/u);
+  assert.doesNotMatch(source, /docker build --platform linux\/amd64/u);
   assert.match(source, /docker rm --force --volumes "\$foreign_container"/u);
   assert.match(source, /volume_count_before=/u);
   assert.match(source, /volume_count_after=/u);
