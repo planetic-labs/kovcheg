@@ -165,6 +165,13 @@ test('container security scans exact saved images without Docker runtime volumes
 
 test('lifecycle regression removes foreign-container anonymous volumes', async () => {
   const source = await readFile('verification/docker-lifecycle-smoke.sh', 'utf8');
+  const warmupIndex = source.indexOf('\ndocker_storage_preflight\n');
+  const danglingBaselineIndex = source.indexOf('\ndangling_before=');
+  const foreignTagIndex = source.indexOf('\ndocker image tag "$base_image" "$foreign_image"');
+  assert.ok(warmupIndex >= 0);
+  assert.ok(warmupIndex < danglingBaselineIndex);
+  assert.ok(danglingBaselineIndex < foreignTagIndex);
+  assert.doesNotMatch(source, /docker pull "\$base_image"/u);
   assert.match(source, /docker buildx build --load --platform linux\/amd64/u);
   assert.doesNotMatch(source, /docker build --platform linux\/amd64/u);
   assert.match(source, /docker rm --force --volumes "\$foreign_container"/u);

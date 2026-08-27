@@ -25,7 +25,6 @@ trap cleanup_foreign EXIT INT TERM
 
 volume_count_before=$(docker volume ls --quiet | sort -u | wc -l | tr -d ' ')
 
-docker pull "$base_image" >/dev/null
 if (KOVCHEG_DOCKER_MIN_FREE_GIB=invalid; docker_storage_preflight) >/dev/null 2>&1; then
   echo 'Docker storage preflight accepted an invalid threshold.' >&2
   exit 1
@@ -34,6 +33,9 @@ if (KOVCHEG_DOCKER_MIN_FREE_GIB=999999; docker_storage_preflight) >/dev/null 2>&
   echo 'Docker storage preflight did not fail closed below its required threshold.' >&2
   exit 1
 fi
+docker_storage_preflight
+dangling_before=$(docker image ls --quiet --filter dangling=true | sort -u | wc -l | tr -d ' ')
+
 docker image tag "$base_image" "$foreign_image"
 docker network create --label io.kovcheg.test.project=foreign "$foreign_network" >/dev/null
 docker volume create --label io.kovcheg.test.project=foreign "$foreign_volume" >/dev/null
@@ -42,8 +44,6 @@ docker create --name "$foreign_container" --network "$foreign_network" \
 
 printf 'lifecycle regression\n' >"$regression_root/marker"
 printf '%s\n' 'FROM scratch' 'COPY marker /marker' >"$regression_root/Dockerfile"
-
-dangling_before=$(docker image ls --quiet --filter dangling=true | sort -u | wc -l | tr -d ' ')
 
 run_owned_build() {
   expected_failure=$1
