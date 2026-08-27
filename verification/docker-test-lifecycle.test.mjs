@@ -87,11 +87,15 @@ test('lifecycle helper defaults to 20 GiB and supports diagnostic image retentio
   assert.match(source, /No unowned volume was removed automatically/u);
 });
 
-test('PostgreSQL deployment image avoids inherited-volume build leakage', async () => {
+test('PostgreSQL deployment image removes the unused vulnerable privilege helper', async () => {
   const dockerfile = await readFile('infra/postgres/Dockerfile', 'utf8');
-  const disabledGosu = await readFile('infra/postgres/gosu-disabled.sh', 'utf8');
-  assert.doesNotMatch(dockerfile, /^RUN\s/mu);
-  assert.match(dockerfile, /COPY --chown=999:999 gosu-disabled\.sh \/usr\/local\/bin\/gosu/u);
+  assert.match(dockerfile, /RUN rm -f \/usr\/local\/bin\/gosu/u);
   assert.match(dockerfile, /KOVCHEG_TEST_ROOT=\/opt\/kovcheg\/tests/u);
-  assert.match(disabledGosu, /exit 126/u);
+});
+
+test('container security scans exact saved images without Docker runtime volumes', async () => {
+  const source = await readFile('verification/container-security.sh', 'utf8');
+  assert.match(source, /docker image save --output/u);
+  assert.match(source, /trivy image \\\n+    --input/u);
+  assert.doesNotMatch(source, /trivy image \\\n+    --scanners/u);
 });

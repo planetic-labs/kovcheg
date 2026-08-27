@@ -56,6 +56,46 @@ scan_status=0
 blocking_status=0
 build_revision=${GITHUB_SHA:-local}
 
+scan_image_artifacts() {
+  application=$1
+  image=$2
+  image_archive="$KOVCHEG_TEST_STATE_DIRECTORY/$application-image.tar"
+
+  if ! docker image save --output "$image_archive" "$image"; then
+    scan_status=1
+    return
+  fi
+
+  if ! trivy image \
+    --input "$image_archive" \
+    --scanners vuln \
+    --format json \
+    --exit-code 0 \
+    --output "$artifact_directory/$application-image.json"; then
+    scan_status=1
+  fi
+
+  if ! trivy image \
+    --input "$image_archive" \
+    --format cyclonedx \
+    --output "$artifact_directory/$application-sbom.cdx.json"; then
+    scan_status=1
+  fi
+
+  if ! trivy image \
+    --input "$image_archive" \
+    --scanners vuln \
+    --severity HIGH,CRITICAL \
+    --ignore-unfixed \
+    --format json \
+    --exit-code 1 \
+    --output "$artifact_directory/$application-fixed-high-critical.json"; then
+    blocking_status=1
+  fi
+
+  rm -f "$image_archive"
+}
+
 if ! trivy fs \
   --scanners vuln,misconfig \
   --skip-dirs .artifacts \
@@ -95,32 +135,7 @@ for application in api auth web worker; do
     scan_status=1
   fi
 
-  if ! trivy image \
-    --scanners vuln \
-    --format json \
-    --exit-code 0 \
-    --output "$artifact_directory/$application-image.json" \
-    "$image"; then
-    scan_status=1
-  fi
-
-  if ! trivy image \
-    --format cyclonedx \
-    --output "$artifact_directory/$application-sbom.cdx.json" \
-    "$image"; then
-    scan_status=1
-  fi
-
-  if ! trivy image \
-    --scanners vuln \
-    --severity HIGH,CRITICAL \
-    --ignore-unfixed \
-    --format json \
-    --exit-code 1 \
-    --output "$artifact_directory/$application-fixed-high-critical.json" \
-    "$image"; then
-    blocking_status=1
-  fi
+  scan_image_artifacts "$application" "$image"
 done
 
 for deployment_image in edge postgres; do
@@ -153,30 +168,7 @@ for deployment_image in edge postgres; do
   if [ "$(docker image inspect --format '{{.Architecture}}' "$image")" != 'amd64' ]; then
     scan_status=1
   fi
-  if ! trivy image \
-    --scanners vuln \
-    --format json \
-    --exit-code 0 \
-    --output "$artifact_directory/$deployment_image-image.json" \
-    "$image"; then
-    scan_status=1
-  fi
-  if ! trivy image \
-    --format cyclonedx \
-    --output "$artifact_directory/$deployment_image-sbom.cdx.json" \
-    "$image"; then
-    scan_status=1
-  fi
-  if ! trivy image \
-    --scanners vuln \
-    --severity HIGH,CRITICAL \
-    --ignore-unfixed \
-    --format json \
-    --exit-code 1 \
-    --output "$artifact_directory/$deployment_image-fixed-high-critical.json" \
-    "$image"; then
-    blocking_status=1
-  fi
+  scan_image_artifacts "$deployment_image" "$image"
 done
 
 TRIVY_SCAN_STATUS=$scan_status TRIVY_BLOCKING_STATUS=$blocking_status \

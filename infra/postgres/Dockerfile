@@ -11,6 +11,7 @@ COPY --chown=999:999 init/010_roles.sh /docker-entrypoint-initdb.d/010_roles.sh
 COPY --chown=999:999 migrations/ /opt/kovcheg/migrations/
 COPY --chown=999:999 tests/ /opt/kovcheg/tests/
 COPY --chown=999:999 migrate.sh deploy-migrate.sh configure-oidc-clients.sh backup-local.sh restore-smoke.sh /opt/kovcheg/
-COPY --chown=999:999 gosu-disabled.sh /usr/local/bin/gosu
+
+RUN rm -f /usr/local/bin/gosu
 
 USER 999:999
