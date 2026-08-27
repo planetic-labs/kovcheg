@@ -80,8 +80,8 @@ describe('A2 production runtime boundary', () => {
       redisUrl: 'rediss://redis.invalid:6379',
       secureCookies: true,
       webauthn: {
-        origins: ['https://auth.m6z.ru'],
-        rpId: 'auth.m6z.ru',
+        origins: ['https://auth.example.invalid'],
+        rpId: 'auth.example.invalid',
         rpName: 'Kovcheg',
       },
     };
