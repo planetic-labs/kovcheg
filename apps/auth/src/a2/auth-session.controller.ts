@@ -69,12 +69,8 @@ export class AuthSessionController {
     @Body() body: Readonly<{ email?: unknown }> | undefined,
     @Req() request: AuthHttpRequest,
   ) {
-    const gateToken = this.runtime.personalGateCookie.read(cookieHeader(request));
-    if (gateToken === null) {
-      throw authHttpException('auth.invalid-gate', correlationId(request));
-    }
     try {
-      return await this.runtime.authService.requestPersonalGateEmailChallenge(gateToken, {
+      return await this.runtime.authService.requestEmailChallenge({
         correlationId: correlationId(request),
         email: typeof body?.email === 'string' ? body.email : '',
         ...requestDimensions(request),
@@ -100,12 +96,8 @@ export class AuthSessionController {
     ) {
       throw authHttpException('auth.invalid-or-expired-challenge', correlationId(request));
     }
-    const gateToken = this.runtime.personalGateCookie.read(cookieHeader(request));
-    if (gateToken === null) {
-      throw authHttpException('auth.invalid-gate', correlationId(request));
-    }
     try {
-      const session = await this.runtime.authService.verifyPersonalGateEmailChallenge(gateToken, {
+      const session = await this.runtime.authService.verifyEmailChallenge({
         challengeId: challengeId as Uuid,
         code: typeof body?.code === 'string' ? body.code : '',
         networkAddress: requestDimensions(request).networkAddress,

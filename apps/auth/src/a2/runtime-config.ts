@@ -55,8 +55,6 @@ export interface AuthRuntimeEnvironmentSource {
   readonly AUTH_OIDC_ISSUER?: string | undefined;
   readonly AUTH_OIDC_JWKS_JSON?: string | undefined;
   readonly AUTH_OIDC_JWKS_JSON_FILE?: string | undefined;
-  readonly AUTH_PERSONAL_GATE_PEPPER?: string | undefined;
-  readonly AUTH_PERSONAL_GATE_PEPPER_FILE?: string | undefined;
   readonly AUTH_RATE_LIMIT_PEPPER?: string | undefined;
   readonly AUTH_RATE_LIMIT_PEPPER_FILE?: string | undefined;
   readonly AUTH_REDIS_URL?: string | undefined;
@@ -344,11 +342,6 @@ export function loadAuthRuntimeConfig(
         source,
         'AUTH_CHALLENGE_PEPPER',
         'AUTH_CHALLENGE_PEPPER_FILE',
-      ),
-      personalGatePepper: requiredSecret(
-        source,
-        'AUTH_PERSONAL_GATE_PEPPER',
-        'AUTH_PERSONAL_GATE_PEPPER_FILE',
       ),
       rateLimitPepper: requiredSecret(
         source,

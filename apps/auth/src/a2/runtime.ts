@@ -12,8 +12,6 @@ import type {
   EmailChallengeDelivery,
   WebAuthnServer,
 } from './ports.js';
-import { PersonalGateCookie } from './personal-gate-cookie.js';
-import { RedisPersonalGateAbuseProtector } from './personal-gate-abuse.js';
 import { RedisPasskeyCeremonyStore } from './passkey-ceremony-store.js';
 import { PasskeyService } from './passkey-service.js';
 import { RedisRateLimiter } from './redis-rate-limiter.js';
@@ -29,7 +27,6 @@ export interface AuthRuntime {
   isReady(): Promise<boolean>;
   readonly oidcProvider: Provider;
   readonly passkeyService: PasskeyService;
-  readonly personalGateCookie: PersonalGateCookie;
   readonly sessionCookie: SessionCookie;
 }
 
@@ -82,7 +79,6 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     clock,
     crypto,
     delivery: input.delivery,
-    gateAbuseProtector: new RedisPersonalGateAbuseProtector(redisClient),
     policy: input.config.policy,
     random,
     rateLimiter,
@@ -104,7 +100,6 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     environment: input.config.environment,
     secure: input.config.secureCookies,
   });
-  const personalGateCookie = new PersonalGateCookie();
   let oidcProvider: Provider;
   try {
     oidcProvider = await createOidcProvider({
@@ -143,7 +138,6 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
       redisClient.isReady() && (await input.repository.isReady().catch(() => false)),
     oidcProvider,
     passkeyService,
-    personalGateCookie,
     sessionCookie,
   });
 }

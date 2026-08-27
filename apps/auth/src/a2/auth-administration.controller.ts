@@ -5,7 +5,6 @@ import type {
   FunctionalGrant,
   SessionId,
   UserId,
-  Uuid,
 } from '@kovcheg/contracts';
 import {
   Body,
@@ -113,13 +112,6 @@ function sessionId(value: string, request: AdministrationRequest): SessionId {
     throw authHttpException('auth.invalid-input', correlationId(request));
   }
   return value as SessionId;
-}
-
-function uuid(value: string, request: AdministrationRequest): Uuid {
-  if (!uuidPattern.test(value)) {
-    throw authHttpException('auth.invalid-input', correlationId(request));
-  }
-  return value as Uuid;
 }
 
 function accountInput(
@@ -433,142 +425,17 @@ export class AuthAdministrationController {
   }
 
   @ApiParam(accountIdParameter)
-  @ApiCreatedResponse({
-    schema: {
-      additionalProperties: false,
-      properties: {
-        accountId: { format: 'uuid', type: 'string' },
-        code: { pattern: '^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$', type: 'string' },
-        familyId: { format: 'uuid', type: 'string' },
-      },
-      required: ['accountId', 'code', 'familyId'],
-      type: 'object',
-    },
-  })
-  @Post(':accountId/personal-gate')
-  @Header('Cache-Control', 'no-store')
-  async issuePersonalGate(
-    @Param('accountId') accountId: string,
-    @Req() request: AdministrationRequest,
-  ) {
-    try {
-      return await this.runtime.authService.issuePersonalGate(
-        this.administratorSessionToken(request),
-        userId(accountId, request),
-        correlationId(request),
-      );
-    } catch (error) {
-      toAuthHttpException(error, correlationId(request));
-    }
-  }
-
-  @ApiParam(accountIdParameter)
-  @ApiOkResponse({
-    schema: {
-      additionalProperties: false,
-      properties: {
-        accountId: { format: 'uuid', type: 'string' },
-        code: { pattern: '^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$', type: 'string' },
-        familyId: { format: 'uuid', type: 'string' },
-        revokedGateSessionCount: { minimum: 0, type: 'integer' },
-      },
-      required: ['accountId', 'code', 'familyId', 'revokedGateSessionCount'],
-      type: 'object',
-    },
-  })
-  @Put(':accountId/personal-gate')
-  @Header('Cache-Control', 'no-store')
-  async reissuePersonalGate(
-    @Param('accountId') accountId: string,
-    @Req() request: AdministrationRequest,
-  ) {
-    try {
-      return await this.runtime.authService.reissuePersonalGate(
-        this.administratorSessionToken(request),
-        userId(accountId, request),
-        correlationId(request),
-      );
-    } catch (error) {
-      toAuthHttpException(error, correlationId(request));
-    }
-  }
-
-  @ApiParam(accountIdParameter)
-  @ApiParam({ format: 'uuid', name: 'familyId', type: 'string' })
-  @ApiOkResponse({
-    schema: {
-      additionalProperties: false,
-      properties: { revokedGateSessionCount: { minimum: 0, type: 'integer' } },
-      required: ['revokedGateSessionCount'],
-      type: 'object',
-    },
-  })
-  @Delete(':accountId/personal-gate/:familyId')
-  @Header('Cache-Control', 'no-store')
-  async revokePersonalGate(
-    @Param('accountId') accountId: string,
-    @Param('familyId') familyId: string,
-    @Req() request: AdministrationRequest,
-  ) {
-    try {
-      const revokedGateSessionCount = await this.runtime.authService.revokePersonalGate(
-        this.administratorSessionToken(request),
-        userId(accountId, request),
-        uuid(familyId, request),
-        correlationId(request),
-      );
-      return Object.freeze({ revokedGateSessionCount });
-    } catch (error) {
-      toAuthHttpException(error, correlationId(request));
-    }
-  }
-
-  @ApiParam(accountIdParameter)
-  @ApiParam({ format: 'uuid', name: 'familyId', type: 'string' })
-  @ApiOkResponse({
-    schema: {
-      additionalProperties: false,
-      properties: { resumed: { type: 'boolean' } },
-      required: ['resumed'],
-      type: 'object',
-    },
-  })
-  @Post(':accountId/personal-gate/:familyId/resume')
-  @Header('Cache-Control', 'no-store')
-  async resumePersonalGate(
-    @Param('accountId') accountId: string,
-    @Param('familyId') familyId: string,
-    @Req() request: AdministrationRequest,
-  ) {
-    try {
-      const resumed = await this.runtime.authService.resumePersonalGate(
-        this.administratorSessionToken(request),
-        userId(accountId, request),
-        uuid(familyId, request),
-        correlationId(request),
-      );
-      return Object.freeze({ resumed });
-    } catch (error) {
-      toAuthHttpException(error, correlationId(request));
-    }
-  }
-
-  @ApiParam(accountIdParameter)
   @ApiOkResponse({
     schema: {
       additionalProperties: false,
       properties: {
         invalidatedChallengeCount: { minimum: 0, type: 'integer' },
         revokedApplicationSessionCount: { minimum: 0, type: 'integer' },
-        revokedFamilyCount: { minimum: 0, type: 'integer' },
-        revokedGateSessionCount: { minimum: 0, type: 'integer' },
         revokedPasskeyCount: { minimum: 0, type: 'integer' },
       },
       required: [
         'invalidatedChallengeCount',
         'revokedApplicationSessionCount',
-        'revokedFamilyCount',
-        'revokedGateSessionCount',
         'revokedPasskeyCount',
       ],
       type: 'object',
