@@ -1,0 +1,225 @@
+name: Publish immutable GHCR images
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full commit SHA that must equal the current main head
+        required: true
+        type: string
+
+concurrency:
+  group: publish-ghcr-images-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  validate-source:
+    name: Validate published source
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Require exact current main commit
+        id: source
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'')
+              echo 'source_sha must be a lowercase hexadecimal full commit SHA' >&2
+              exit 1
+              ;;
+          esac
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then
+            echo 'source_sha must contain exactly 40 hexadecimal characters' >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_REF" != 'refs/heads/main' ] || [ "$WORKFLOW_SHA" != "$SOURCE_SHA" ]; then
+            echo 'the workflow must run from the exact current main commit' >&2
+            exit 1
+          fi
+          live_main="$(git ls-remote "https://github.com/${REPOSITORY}.git" refs/heads/main | awk '{print $1}')"
+          if [ -z "$live_main" ] || [ "$SOURCE_SHA" != "$live_main" ]; then
+            echo 'source_sha is not the current main head' >&2
+            exit 1
+          fi
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish ${{ matrix.service }}
+    needs: validate-source
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - service: api
+            package: ghcr.io/planetic-labs/kovcheg-api
+            context: .
+            dockerfile: apps/api/Dockerfile
+          - service: auth
+            package: ghcr.io/planetic-labs/kovcheg-auth
+            context: .
+            dockerfile: apps/auth/Dockerfile
+          - service: web
+            package: ghcr.io/planetic-labs/kovcheg-web
+            context: .
+            dockerfile: apps/web/Dockerfile
+          - service: worker
+            package: ghcr.io/planetic-labs/kovcheg-worker
+            context: .
+            dockerfile: apps/worker/Dockerfile
+          - service: edge
+            package: ghcr.io/planetic-labs/kovcheg-edge
+            context: infra/edge
+            dockerfile: infra/edge/Dockerfile
+          - service: postgres
+            package: ghcr.io/planetic-labs/kovcheg-postgres
+            context: infra/postgres
+            dockerfile: infra/postgres/Dockerfile
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate-source.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build exact linux/amd64 image locally
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          build-args: BUILD_COMMIT_SHA=${{ needs.validate-source.outputs.source_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.validate-source.outputs.source_sha }}
+          tags: ${{ matrix.package }}:sha-${{ needs.validate-source.outputs.source_sha }}
+
+      - name: Revalidate source and publish an unused immutable tag
+        id: publish
+        env:
+          PACKAGE: ${{ matrix.package }}
+          REPOSITORY: ${{ github.repository }}
+          SERVICE: ${{ matrix.service }}
+          SOURCE_SHA: ${{ needs.validate-source.outputs.source_sha }}
+        run: |
+          set -eu
+          tag="sha-${SOURCE_SHA}"
+          reference="${PACKAGE}:${tag}"
+
+          live_main="$(git ls-remote "https://github.com/${REPOSITORY}.git" refs/heads/main | awk '{print $1}')"
+          if [ -z "$live_main" ] || [ "$SOURCE_SHA" != "$live_main" ]; then
+            echo 'main changed after source validation; refusing publication' >&2
+            exit 1
+          fi
+
+          inspect_error="$(mktemp)"
+          trap 'rm -f "$inspect_error"' EXIT
+          if docker buildx imagetools inspect "$reference" >/dev/null 2>"$inspect_error"; then
+            echo 'the exact source tag already exists; refusing overwrite' >&2
+            exit 1
+          fi
+          if ! grep -Eqi 'manifest unknown|not found' "$inspect_error"; then
+            echo 'registry preflight failed without proving tag absence' >&2
+            exit 1
+          fi
+
+          architecture="$(docker image inspect "$reference" --format '{{.Architecture}}')"
+          source_label="$(docker image inspect "$reference" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')"
+          revision_label="$(docker image inspect "$reference" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          if [ "$architecture" != 'amd64' ] || [ "$source_label" != "https://github.com/${REPOSITORY}" ] || [ "$revision_label" != "$SOURCE_SHA" ]; then
+            echo 'local image provenance validation failed' >&2
+            exit 1
+          fi
+
+          push_output="$(docker push "$reference" 2>&1)"
+          digest="$(printf '%s\n' "$push_output" | sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' | tail -n 1)"
+          digest_value="${digest#sha256:}"
+          case "$digest_value" in
+            *[!0-9a-f]*|'') echo 'registry did not return an immutable digest' >&2; exit 1 ;;
+          esac
+          if [ "${#digest_value}" -ne 64 ]; then
+            echo 'registry returned an invalid digest' >&2
+            exit 1
+          fi
+
+          readback="$(docker buildx imagetools inspect "$reference" | sed -n 's/^Digest:[[:space:]]*//p' | head -n 1)"
+          if [ "$readback" != "$digest" ]; then
+            echo 'registry digest readback does not match the pushed manifest' >&2
+            exit 1
+          fi
+
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Attest exact image provenance
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.package }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      - name: Write machine-readable digest mapping
+        env:
+          ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          PACKAGE: ${{ steps.publish.outputs.package }}
+          SERVICE: ${{ matrix.service }}
+          SOURCE_SHA: ${{ steps.publish.outputs.source_sha }}
+          TAG: ${{ steps.publish.outputs.tag }}
+        run: |
+          set -eu
+          node -e '
+            const fs = require("node:fs");
+            const mapping = {
+              service: process.env.SERVICE,
+              package: process.env.PACKAGE,
+              digest: process.env.DIGEST,
+              sourceSha: process.env.SOURCE_SHA,
+              navigationTag: process.env.TAG,
+              platform: "linux/amd64",
+              deploymentRef: `${process.env.PACKAGE}@${process.env.DIGEST}`,
+              attestation: {
+                id: process.env.ATTESTATION_ID,
+                url: process.env.ATTESTATION_URL,
+              },
+            };
+            fs.writeFileSync(`${process.env.SERVICE}.json`, `${JSON.stringify(mapping, null, 2)}\n`);
+          '
+
+      - name: Upload digest mapping
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ghcr-digest-${{ matrix.service }}-${{ needs.validate-source.outputs.source_sha }}
+          path: ${{ matrix.service }}.json
+          if-no-files-found: error
+          retention-days: 30

@@ -36,6 +36,21 @@ Mutable tags and a local build are verification inputs only. A future handoff re
 reference by immutable digest for every repository-built image and direct provenance from every
 digest to the same published source commit.
 
+## Manual GHCR publication
+
+The `Publish immutable GHCR images` workflow is a manual-only publication candidate for `api`,
+`auth`, `web`, `worker`, `edge`, and `postgres`. It accepts one full source SHA and fails unless that
+SHA is the current public `main` head immediately before publication. Each `linux/amd64` image uses
+the single navigation tag `sha-<full-source-sha>`, carries OCI source and revision labels, receives a
+registry provenance attestation, and produces a machine-readable service-to-package-to-digest
+mapping. Deployment references use only `ghcr.io/planetic-labs/kovcheg-<service>@sha256:<digest>`.
+
+The workflow uses the repository `GITHUB_TOKEN`, creates no mutable `latest` tag, refuses an existing
+exact-source tag, and does not change package visibility. New packages therefore retain the registry
+default visibility. Merging the workflow does not run it: publication, package existence, digest
+readback, anonymous pull, visibility changes, server handoff, and deployment all remain separate
+operations and evidence gates.
+
 The local deployment smoke uses unique temporary tags and exact ownership labels for its six
 images. It first requires 20 GiB of measured free Docker-daemon storage by default, then records
 image IDs, architecture, and source provenance before removing its own images and Compose resources.
