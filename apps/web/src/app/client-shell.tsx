@@ -5,6 +5,7 @@ import type { FormEvent } from 'react';
 
 import { parseSessionPrincipal } from '../a6/contracts';
 import type { SessionPrincipal } from '../a6/contracts';
+import { attemptConditionalPasskey, registerPasskey } from '../a6/passkey-client';
 import { AdministrationPanel } from './administration-panel';
 import { ChatPanel } from './chat-panel';
 import { CodeInput } from './code-input';
@@ -122,6 +123,7 @@ function LoginPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const emailInput = useRef<HTMLInputElement>(null);
+  const conditionalPasskeyStarted = useRef(false);
   const verifyingCode = useRef(false);
   const statusId = 'authentication-status';
   const volatileClientKey = useRef<string | null>(null);
@@ -179,6 +181,14 @@ function LoginPanel({
         setError('Не удалось проверить доступ. Попробуйте снова.');
       });
   }, [activateGate, initialGateCode]);
+
+  useEffect(() => {
+    if (step === 'loading' || conditionalPasskeyStarted.current) return;
+    conditionalPasskeyStarted.current = true;
+    void attemptConditionalPasskey().then(async (result) => {
+      if (result === 'authenticated') await onAuthenticated();
+    });
+  }, [onAuthenticated, step]);
 
   async function submitGate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -277,7 +287,7 @@ function LoginPanel({
           <input
             aria-describedby={statusId}
             aria-invalid={authState === 'error'}
-            autoComplete="off"
+            autoComplete="webauthn"
             autoFocus={step === 'gate'}
             disabled={busy}
             id="gate-code"
@@ -303,7 +313,7 @@ function LoginPanel({
           <input
             aria-describedby={statusId}
             aria-invalid={authState === 'error'}
-            autoComplete="email"
+            autoComplete="username webauthn"
             autoFocus={step === 'email'}
             disabled={busy}
             id="email"
@@ -374,6 +384,23 @@ function Workspace({
   const hasAdministrativeAccess = Object.values(principal.administrativeCapabilities).some(Boolean);
   const [view, setView] = useState<WorkspaceView>('chats');
   const [logoutBusy, setLogoutBusy] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyStatus, setPasskeyStatus] = useState('');
+
+  async function addPasskey(): Promise<void> {
+    if (passkeyBusy) return;
+    setPasskeyBusy(true);
+    setPasskeyStatus('');
+    const result = await registerPasskey();
+    setPasskeyStatus(
+      result === 'registered'
+        ? 'Passkey добавлен.'
+        : result === 'failed'
+          ? 'Не удалось добавить passkey.'
+          : '',
+    );
+    setPasskeyBusy(false);
+  }
 
   async function logout(): Promise<void> {
     setLogoutBusy(true);
@@ -412,6 +439,25 @@ function Workspace({
         </nav>
         <div className="header-actions">
           <ProblemReportEntry />
+          <button
+            aria-describedby="passkey-registration-status"
+            aria-busy={passkeyBusy}
+            className="passkey-button"
+            disabled={passkeyBusy}
+            onClick={() => void addPasskey()}
+            type="button"
+          >
+            Добавить passkey
+          </button>
+          <span
+            aria-atomic="true"
+            aria-live="polite"
+            className="visually-hidden"
+            id="passkey-registration-status"
+            role="status"
+          >
+            {passkeyStatus}
+          </span>
           <button className="session-button" disabled={logoutBusy} onClick={() => void logout()}>
             {logoutBusy ? 'Завершаем…' : 'Завершить сеанс'}
           </button>

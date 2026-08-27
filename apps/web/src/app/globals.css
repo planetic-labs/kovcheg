@@ -281,6 +281,7 @@ textarea {
 }
 
 .text-button,
+.passkey-button,
 .session-button,
 .main-nav button {
   background: transparent;
@@ -529,6 +530,15 @@ textarea {
   font-size: 0.88rem;
   justify-self: end;
   padding: 10px 0;
+}
+
+.passkey-button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--green);
+  font-size: 0.84rem;
+  padding: 8px 12px;
+  white-space: nowrap;
 }
 
 .admin-layout {
@@ -889,7 +899,7 @@ textarea {
 
   .main-nav {
     grid-column: 1 / -1;
-    grid-row: 2;
+    grid-row: 3;
     justify-self: stretch;
   }
 
@@ -903,8 +913,11 @@ textarea {
   }
 
   .header-actions {
-    grid-column: 2;
-    grid-row: 1;
+    flex-wrap: wrap;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: stretch;
+    justify-content: flex-end;
   }
 
   .admin-grid,
@@ -1018,6 +1031,7 @@ textarea {
   }
 
   .problem-report-entry details > summary,
+  .passkey-button,
   .session-button {
     font-size: 0.8rem;
   }
