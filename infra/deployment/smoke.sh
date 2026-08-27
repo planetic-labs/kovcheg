@@ -26,21 +26,20 @@ if ! docker buildx version >/dev/null 2>&1; then
   echo 'Deployment smoke requires the official Docker Buildx plugin for linux/amd64 images.' >&2
   exit 1
 fi
-image_prefix="kovcheg-test-deployment-$KOVCHEG_TEST_RUN_ID"
+target_image_prefix="kovcheg-test-deployment-$KOVCHEG_TEST_RUN_ID-amd64"
 export KOVCHEG_LOCAL_SECRET_DIR="$PWD/.local/$project-secrets"
 export KOVCHEG_LOOPBACK_PORT=$((32000 + ($$ % 1000)))
-export KOVCHEG_API_IMAGE="$image_prefix-api"
-export KOVCHEG_AUTH_IMAGE="$image_prefix-auth"
-export KOVCHEG_WEB_IMAGE="$image_prefix-web"
-export KOVCHEG_WORKER_IMAGE="$image_prefix-worker"
-export KOVCHEG_EDGE_IMAGE="$image_prefix-edge"
-export KOVCHEG_POSTGRES_IMAGE="$image_prefix-postgres"
-docker_test_register_image "$KOVCHEG_API_IMAGE"
-docker_test_register_image "$KOVCHEG_AUTH_IMAGE"
-docker_test_register_image "$KOVCHEG_WEB_IMAGE"
-docker_test_register_image "$KOVCHEG_WORKER_IMAGE"
-docker_test_register_image "$KOVCHEG_EDGE_IMAGE"
-docker_test_register_image "$KOVCHEG_POSTGRES_IMAGE"
+target_api_image="$target_image_prefix-api"
+target_auth_image="$target_image_prefix-auth"
+target_web_image="$target_image_prefix-web"
+target_worker_image="$target_image_prefix-worker"
+target_edge_image="$target_image_prefix-edge"
+target_postgres_image="$target_image_prefix-postgres"
+for image in \
+  "$target_api_image" "$target_auth_image" "$target_web_image" \
+  "$target_worker_image" "$target_edge_image" "$target_postgres_image"; do
+  docker_test_register_image "$image"
+done
 synthetic_digest="sha256:$(printf 'a%.0s' $(seq 1 64))"
 export KOVCHEG_API_IMAGE_DIGEST="$synthetic_digest"
 export KOVCHEG_AUTH_IMAGE_DIGEST="$synthetic_digest"
@@ -56,6 +55,7 @@ export KOVCHEG_AUTH_WEBAUTHN_RP_NAME='Synthetic Deployment'
 compose() {
   sh infra/scripts/compose.sh \
     --file infra/deployment/compose.yaml \
+    --file infra/deployment/compose.smoke.yaml \
     --file infra/deployment/compose.lifecycle.yaml \
     --project-name "$project" \
     "$@"
@@ -83,46 +83,35 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
+build_image() {
+  platform=$1
+  dockerfile=$2
+  image=$3
+  context=$4
+  docker buildx build --load --platform "$platform" --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
   --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
   --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
   --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
   --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
-  --file apps/api/Dockerfile --tag "$KOVCHEG_API_IMAGE" .
-docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
-  --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
-  --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
-  --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
-  --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
-  --file apps/auth/Dockerfile --tag "$KOVCHEG_AUTH_IMAGE" .
-docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
-  --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
-  --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
-  --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
-  --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
-  --file apps/web/Dockerfile --tag "$KOVCHEG_WEB_IMAGE" .
-docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
-  --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
-  --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
-  --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
-  --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
-  --file apps/worker/Dockerfile --tag "$KOVCHEG_WORKER_IMAGE" .
-docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
-  --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
-  --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
-  --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
-  --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
-  --file infra/edge/Dockerfile --tag "$KOVCHEG_EDGE_IMAGE" infra/edge
-docker buildx build --load --platform linux/amd64 --target runtime --build-arg "BUILD_COMMIT_SHA=$revision" \
-  --label "io.kovcheg.test.project=$KOVCHEG_TEST_PROJECT" \
-  --label "io.kovcheg.test.purpose=$KOVCHEG_TEST_PURPOSE" \
-  --label "io.kovcheg.test.run-id=$KOVCHEG_TEST_RUN_ID" \
-  --label "io.kovcheg.test.source-sha=$KOVCHEG_TEST_SOURCE_SHA" \
-  --file infra/postgres/Dockerfile --tag "$KOVCHEG_POSTGRES_IMAGE" infra/postgres
+    --file "$dockerfile" --tag "$image" "$context"
+}
+
+build_image_set() {
+  build_image "$1" apps/api/Dockerfile "$2" .
+  build_image "$1" apps/auth/Dockerfile "$3" .
+  build_image "$1" apps/web/Dockerfile "$4" .
+  build_image "$1" apps/worker/Dockerfile "$5" .
+  build_image "$1" infra/edge/Dockerfile "$6" infra/edge
+  build_image "$1" infra/postgres/Dockerfile "$7" infra/postgres
+}
+
+build_image_set linux/amd64 \
+  "$target_api_image" "$target_auth_image" "$target_web_image" \
+  "$target_worker_image" "$target_edge_image" "$target_postgres_image"
 
 for image in \
-  "$KOVCHEG_API_IMAGE" "$KOVCHEG_AUTH_IMAGE" "$KOVCHEG_WEB_IMAGE" \
-  "$KOVCHEG_WORKER_IMAGE" "$KOVCHEG_EDGE_IMAGE" "$KOVCHEG_POSTGRES_IMAGE"; do
+  "$target_api_image" "$target_auth_image" "$target_web_image" \
+  "$target_worker_image" "$target_edge_image" "$target_postgres_image"; do
   architecture=$(docker image inspect --format '{{.Architecture}}' "$image")
   image_revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
   if [ "$architecture" != 'amd64' ] || [ "$image_revision" != "$revision" ]; then
@@ -130,6 +119,49 @@ for image in \
     exit 1
   fi
 done
+
+mkdir -p .artifacts/deployment
+target_manifest=".artifacts/deployment/amd64-images-$revision.tsv"
+: >"$target_manifest"
+for image in \
+  "$target_api_image" "$target_auth_image" "$target_web_image" \
+  "$target_worker_image" "$target_edge_image" "$target_postgres_image"; do
+  docker image inspect --format '{{.RepoTags}}\t{{.Id}}\t{{.Architecture}}\t{{index .Config.Labels "org.opencontainers.image.revision"}}\t{{index .Config.Labels "io.kovcheg.test.source-sha"}}' "$image" \
+    >>"$target_manifest"
+done
+
+daemon_architecture=$(docker info --format '{{.Architecture}}')
+case "$daemon_architecture" in
+  amd64 | x86_64) runtime_platform=linux/amd64 ;;
+  arm64 | aarch64) runtime_platform=linux/arm64 ;;
+  *) echo "Unsupported Docker daemon architecture for deployment smoke: $daemon_architecture" >&2; exit 1 ;;
+esac
+export KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM="$runtime_platform"
+
+if [ "$runtime_platform" = 'linux/amd64' ]; then
+  export KOVCHEG_API_IMAGE="$target_api_image"
+  export KOVCHEG_AUTH_IMAGE="$target_auth_image"
+  export KOVCHEG_WEB_IMAGE="$target_web_image"
+  export KOVCHEG_WORKER_IMAGE="$target_worker_image"
+  export KOVCHEG_EDGE_IMAGE="$target_edge_image"
+  export KOVCHEG_POSTGRES_IMAGE="$target_postgres_image"
+else
+  runtime_image_prefix="kovcheg-test-deployment-$KOVCHEG_TEST_RUN_ID-runtime"
+  export KOVCHEG_API_IMAGE="$runtime_image_prefix-api"
+  export KOVCHEG_AUTH_IMAGE="$runtime_image_prefix-auth"
+  export KOVCHEG_WEB_IMAGE="$runtime_image_prefix-web"
+  export KOVCHEG_WORKER_IMAGE="$runtime_image_prefix-worker"
+  export KOVCHEG_EDGE_IMAGE="$runtime_image_prefix-edge"
+  export KOVCHEG_POSTGRES_IMAGE="$runtime_image_prefix-postgres"
+  for image in \
+    "$KOVCHEG_API_IMAGE" "$KOVCHEG_AUTH_IMAGE" "$KOVCHEG_WEB_IMAGE" \
+    "$KOVCHEG_WORKER_IMAGE" "$KOVCHEG_EDGE_IMAGE" "$KOVCHEG_POSTGRES_IMAGE"; do
+    docker_test_register_image "$image"
+  done
+  build_image_set "$runtime_platform" \
+    "$KOVCHEG_API_IMAGE" "$KOVCHEG_AUTH_IMAGE" "$KOVCHEG_WEB_IMAGE" \
+    "$KOVCHEG_WORKER_IMAGE" "$KOVCHEG_EDGE_IMAGE" "$KOVCHEG_POSTGRES_IMAGE"
+fi
 
 compose config --quiet
 compose up --detach --wait
@@ -161,4 +193,4 @@ done
 
 cleanup
 trap - EXIT INT TERM
-echo 'Deployment candidate smoke passed with six amd64 images and no residual containers, networks, volumes, or temporary images.'
+echo "Deployment candidate smoke passed: six linux/amd64 target images verified; runtime integration passed on $runtime_platform; no residual owned resources."

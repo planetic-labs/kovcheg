@@ -1,0 +1,29 @@
+services:
+  postgres:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  redis:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  migrate:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  api-1:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  api-2:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  auth:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  worker:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  web:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  edge:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  backup:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  restore-smoke:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  postgres-test:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  migrate-test:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
+  database-test:
+    platform: ${KOVCHEG_DEPLOYMENT_SMOKE_PLATFORM:?deployment smoke platform is required}
