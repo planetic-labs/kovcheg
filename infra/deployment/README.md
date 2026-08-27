@@ -12,6 +12,10 @@ The indivisible Alpha-0 application unit contains eight long-running containers:
 - one service-scoped PostgreSQL container and one ephemeral-only Redis container.
 
 The forward-only `migrate` job must complete successfully before the application containers start.
+After applying checksummed migrations, the same one-shot job registers only missing public OIDC
+client metadata from the file-backed runtime configuration. Existing exact metadata is accepted;
+any conflict fails closed and requires a separate controlled configuration change. Client secrets
+are never persisted by this job.
 The `backup` and `restore-smoke` jobs are explicit operations and are not long-running services. The
 `verification` profile has its own PostgreSQL container, network, and disposable volume; it must
 never point at the working database.
@@ -69,7 +73,7 @@ The loopback port is not an internet publication.
 
 Application liveness is `/health/live`; readiness is `/health/ready`. API and Auth readiness is
 dependency-aware. PostgreSQL uses `pg_isready`, Redis uses `PING`, and edge uses Traefik ping. Compose
-waits for PostgreSQL and Redis health and for the one-shot migration job before starting API, Auth,
+waits for PostgreSQL and Redis health and for the one-shot migration and OIDC-registration job before starting API, Auth,
 and Worker; Web and edge then wait for their upstream application services.
 
 The migration image embeds the checksummed `0001 -> 0015` chain. Migrations are forward-only and run

@@ -106,11 +106,12 @@ services:
   migrate:
     image: ${KOVCHEG_POSTGRES_IMAGE:?immutable postgres image reference is required}
     platform: linux/amd64
-    entrypoint: ['/opt/kovcheg/migrate.sh']
+    entrypoint: ['/opt/kovcheg/deploy-migrate.sh']
     depends_on:
       postgres:
         condition: service_healthy
     environment:
+      AUTH_OIDC_CLIENTS_JSON_FILE: /run/secrets/auth_oidc_clients
       PGDATABASE: kovcheg
       PGHOST: postgres
       PGPASSWORD_FILE: /run/secrets/postgres_migration_password
@@ -119,7 +120,7 @@ services:
     pids_limit: 64
     read_only: true
     restart: 'no'
-    secrets: [postgres_migration_password]
+    secrets: [auth_oidc_clients, postgres_migration_password]
     tmpfs: ['/tmp']
     deploy:
       resources:

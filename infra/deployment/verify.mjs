@@ -131,6 +131,17 @@ for (const serviceName of ['api-1', 'api-2', 'auth', 'web', 'worker']) {
   }
 }
 if (
+  services.migrate?.entrypoint?.[0] !== '/opt/kovcheg/deploy-migrate.sh' ||
+  services.migrate?.environment?.AUTH_OIDC_CLIENTS_JSON_FILE !== '/run/secrets/auth_oidc_clients' ||
+  !services.migrate?.secrets?.includes('auth_oidc_clients')
+) {
+  finding('oidc-client-configuration-order-not-enforced', {
+    entrypoint: services.migrate?.entrypoint,
+    environment: services.migrate?.environment?.AUTH_OIDC_CLIENTS_JSON_FILE,
+    secrets: services.migrate?.secrets,
+  });
+}
+if (
   services['postgres-test']?.volumes?.[0] !== 'postgres-test-data:/var/lib/postgresql/data' ||
   services.postgres?.volumes?.[0] !== 'postgres-data:/var/lib/postgresql/data'
 ) {
