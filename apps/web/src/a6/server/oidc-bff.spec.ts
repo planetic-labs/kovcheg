@@ -136,6 +136,15 @@ function bindingCookie(response: Response): string {
   return pair;
 }
 
+function expectProviderProxyHeaders(init: RequestInit | undefined): void {
+  if (init === undefined) throw new Error('Expected OIDC provider request options');
+  const headers = new Headers(init.headers);
+  expect(headers.has('host')).toBe(false);
+  expect(headers.get('x-forwarded-host')).toBe('issuer.invalid');
+  expect(headers.get('x-forwarded-proto')).toBe('https');
+  expect(headers.has('x-forwarded-for')).toBe(false);
+}
+
 async function begin(): Promise<{
   readonly authorization: URL;
   readonly cookie: string;
@@ -298,6 +307,23 @@ describe('A6 OIDC BFF start route', () => {
     expect(rejected.headers.get('set-cookie')).toBeNull();
   });
 
+  it('derives fixed internal-provider forwarding only from the validated issuer', async () => {
+    configure();
+    const fetcher = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => {
+      void _input;
+      void _init;
+      return json(discovery());
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const request = forwardedRequest(oidcStartPath);
+    request.headers.set('host', 'untrusted-incoming.invalid');
+    request.headers.set('x-forwarded-for', 'synthetic-network-sentinel');
+
+    expect((await oidcStart(request)).status).toBe(303);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expectProviderProxyHeaders(fetcher.mock.calls[0]?.[1]);
+  });
+
   it('returns the same fail-closed response for missing config, discovery drift, and transport failure', async () => {
     const missing = await oidcStart(startRequest());
     expect(missing.status).toBe(503);
@@ -333,6 +359,54 @@ describe('A6 OIDC BFF start route', () => {
       code: 'a6.oidc-not-configured',
       status: 503,
     });
+  });
+
+  it('emits only fixed, value-free start failure stages', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const sentinels = [
+      'provider-url-sentinel',
+      'query-sentinel',
+      'header-sentinel',
+      'cookie-sentinel',
+      'state-sentinel',
+      'nonce-sentinel',
+      'authorization-code-sentinel',
+      'token-sentinel',
+      'secret-sentinel',
+      'pii-sentinel',
+      'local-path-sentinel',
+      'internal-host-sentinel',
+      'arbitrary-upstream-sentinel',
+    ];
+
+    expect((await oidcStart(startRequest())).status).toBe(503);
+
+    configure();
+    const wrongHost = forwardedRequest(oidcStartPath);
+    wrongHost.headers.set('x-forwarded-host', 'untrusted-host.invalid');
+    expect((await oidcStart(wrongHost)).status).toBe(503);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Promise.reject(new Error(sentinels.join('|')))),
+    );
+    expect((await oidcStart(startRequest())).status).toBe(503);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(sentinels.join('|'), { status: 200 })),
+    );
+    expect((await oidcStart(startRequest())).status).toBe(503);
+
+    const emitted = errorLog.mock.calls.map(([message]) => message);
+    expect(emitted).toEqual([
+      'a6.oidc-start-unavailable stage=config-binding',
+      'a6.oidc-start-unavailable stage=secure-host-matching',
+      'a6.oidc-start-unavailable stage=internal-provider-transport',
+      'a6.oidc-start-unavailable stage=discovery-contract',
+    ]);
+    const serialized = JSON.stringify(errorLog.mock.calls);
+    for (const sentinel of sentinels) expect(serialized).not.toContain(sentinel);
   });
 });
 
@@ -370,6 +444,18 @@ describe('A6 OIDC BFF callback route', () => {
     ).toBe(challenge);
     expect(tokenBody.has('client_secret')).toBe(false);
     expect(new Headers(tokenInit.headers).has('authorization')).toBe(false);
+    expectProviderProxyHeaders(tokenInit);
+
+    const discoveryCall = fetcher.mock.calls.find(([input]) =>
+      input.toString().includes('/.well-known/openid-configuration'),
+    );
+    const jwksCall = fetcher.mock.calls.find(
+      ([input]) => input.toString() === `${internalOrigin}/jwks`,
+    );
+    expect(discoveryCall).toBeDefined();
+    expect(jwksCall).toBeDefined();
+    expectProviderProxyHeaders(discoveryCall?.[1]);
+    expectProviderProxyHeaders(jwksCall?.[1]);
 
     const setCookie = response.headers.get('set-cookie') ?? '';
     expect(setCookie).toContain('__Host-kovcheg_oidc=');
@@ -381,6 +467,7 @@ describe('A6 OIDC BFF callback route', () => {
     expect(bridgeCall).toBeDefined();
     expect(bridgeCall?.[1]?.body).toBe(JSON.stringify({ accessToken: 'synthetic-access-token' }));
     expect(new Headers(bridgeCall?.[1]?.headers).has('cookie')).toBe(false);
+    expect(new Headers(bridgeCall?.[1]?.headers).has('x-forwarded-host')).toBe(false);
   });
 
   it.each([

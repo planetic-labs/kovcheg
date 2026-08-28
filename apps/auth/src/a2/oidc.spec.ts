@@ -302,6 +302,61 @@ describe('A2 OIDC provider configuration', () => {
       }),
     ).rejects.toMatchObject({ code: 'auth.unavailable' });
   });
+
+  it('trusts proxy metadata only when it exactly matches the configured HTTPS issuer', async () => {
+    const fixture = await createAuthFixture();
+    const provider = await createOidcProvider({
+      accountRepository: fixture.repository,
+      clientRepository: new StaticOidcClientRepository(
+        [publicClient('https://client.invalid/callback')],
+        { NODE_ENV: 'test' },
+      ),
+      cookieKeys: ['k'.repeat(64), 'l'.repeat(64)],
+      environment: 'test',
+      issuer: 'https://issuer.invalid',
+      jwks: await createTestJwks(),
+      oidcSessionTtlSeconds: 3600,
+      secureCookies: false,
+    });
+    const providerCallback = provider.callback();
+    const server = createServer(providerCallback);
+    openServers.add(server);
+    const port = await listen(server);
+    const discoveryUrl = `http://127.0.0.1:${port}/.well-known/openid-configuration`;
+
+    for (const headers of [
+      {},
+      {
+        host: 'other.invalid',
+        'x-forwarded-host': 'other.invalid',
+        'x-forwarded-proto': 'https',
+      },
+      {
+        host: 'issuer.invalid',
+        'x-forwarded-host': 'issuer.invalid',
+        'x-forwarded-proto': 'http',
+      },
+    ]) {
+      const rejected = await fetch(discoveryUrl, { headers });
+      expect(rejected.status).toBe(400);
+      await expect(rejected.json()).resolves.toEqual({ error: 'invalid_request' });
+    }
+
+    const accepted = await fetch(discoveryUrl, {
+      headers: {
+        host: 'issuer.invalid',
+        'x-forwarded-host': 'issuer.invalid',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    const acceptedBody = await accepted.text();
+    expect(accepted.status, acceptedBody).toBe(200);
+    const metadata = JSON.parse(acceptedBody) as Record<string, unknown>;
+    expect(metadata.issuer).toBe('https://issuer.invalid');
+    expect(metadata.authorization_endpoint).toBe('https://issuer.invalid/auth');
+    expect(metadata.token_endpoint).toBe('https://issuer.invalid/token');
+    expect(metadata.jwks_uri).toBe('https://issuer.invalid/jwks');
+  });
 });
 
 describe('A2 OIDC Authorization Code with PKCE', () => {

@@ -87,6 +87,23 @@ interface OidcBffDependencies {
   readonly random?: ((size: number) => Buffer) | undefined;
 }
 
+type OidcStartFailureStage =
+  | 'config-binding'
+  | 'discovery-contract'
+  | 'internal-provider-transport'
+  | 'protocol-runtime'
+  | 'secure-host-matching';
+
+class OidcStartFailure extends Error {
+  readonly stage: OidcStartFailureStage;
+
+  constructor(stage: OidcStartFailureStage) {
+    super('OIDC start failed');
+    this.name = 'OidcStartFailure';
+    this.stage = stage;
+  }
+}
+
 function configurationError(): Error {
   return new Error('OIDC BFF configuration is invalid');
 }
@@ -228,6 +245,14 @@ function internalProviderUrl(config: OidcBffConfig, publicUrl: string): string {
   return internal.toString();
 }
 
+function internalProviderHeaders(config: OidcBffConfig, initial?: HeadersInit): Headers {
+  const issuer = new URL(config.issuer);
+  const headers = new Headers(initial);
+  headers.set('x-forwarded-host', issuer.host);
+  headers.set('x-forwarded-proto', 'https');
+  return headers;
+}
+
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -260,40 +285,51 @@ function secureProviderEndpoint(value: unknown, issuer: string): string {
 }
 
 async function discover(config: OidcBffConfig, fetcher: typeof fetch): Promise<OidcDiscovery> {
-  const response = await fetcher(internalProviderUrl(config, discoveryUrl(config.issuer)), {
-    cache: 'no-store',
-    headers: { accept: 'application/json' },
-    redirect: 'manual',
-  });
-  const metadata = await readJson(response);
-  if (
-    metadata.issuer !== config.issuer ||
-    !Array.isArray(metadata.response_types_supported) ||
-    !metadata.response_types_supported.includes('code') ||
-    !Array.isArray(metadata.code_challenge_methods_supported) ||
-    !metadata.code_challenge_methods_supported.includes('S256')
-  ) {
-    throw new Error('OIDC discovery is invalid');
+  let response: Response;
+  try {
+    response = await fetcher(internalProviderUrl(config, discoveryUrl(config.issuer)), {
+      cache: 'no-store',
+      headers: internalProviderHeaders(config, { accept: 'application/json' }),
+      redirect: 'manual',
+    });
+  } catch {
+    throw new OidcStartFailure('internal-provider-transport');
   }
-  if (
-    Array.isArray(metadata.token_endpoint_auth_methods_supported) &&
-    !metadata.token_endpoint_auth_methods_supported.includes(config.tokenEndpointAuthMethod)
-  ) {
-    throw new Error('OIDC discovery is invalid');
+  if (!response.ok) throw new OidcStartFailure('internal-provider-transport');
+
+  try {
+    const metadata = await readJson(response);
+    if (
+      metadata.issuer !== config.issuer ||
+      !Array.isArray(metadata.response_types_supported) ||
+      !metadata.response_types_supported.includes('code') ||
+      !Array.isArray(metadata.code_challenge_methods_supported) ||
+      !metadata.code_challenge_methods_supported.includes('S256')
+    ) {
+      throw new Error('OIDC discovery is invalid');
+    }
+    if (
+      Array.isArray(metadata.token_endpoint_auth_methods_supported) &&
+      !metadata.token_endpoint_auth_methods_supported.includes(config.tokenEndpointAuthMethod)
+    ) {
+      throw new Error('OIDC discovery is invalid');
+    }
+    const authorizationEndpoint = secureProviderEndpoint(
+      metadata.authorization_endpoint,
+      config.issuer,
+    );
+    if (authorizationEndpoint !== config.authorizationEndpoint) {
+      throw new Error('OIDC discovery is invalid');
+    }
+    return Object.freeze({
+      authorizationEndpoint,
+      issuer: config.issuer,
+      jwksUri: secureProviderEndpoint(metadata.jwks_uri, config.issuer),
+      tokenEndpoint: secureProviderEndpoint(metadata.token_endpoint, config.issuer),
+    });
+  } catch {
+    throw new OidcStartFailure('discovery-contract');
   }
-  const authorizationEndpoint = secureProviderEndpoint(
-    metadata.authorization_endpoint,
-    config.issuer,
-  );
-  if (authorizationEndpoint !== config.authorizationEndpoint) {
-    throw new Error('OIDC discovery is invalid');
-  }
-  return Object.freeze({
-    authorizationEndpoint,
-    issuer: config.issuer,
-    jwksUri: secureProviderEndpoint(metadata.jwks_uri, config.issuer),
-    tokenEndpoint: secureProviderEndpoint(metadata.token_endpoint, config.issuer),
-  });
 }
 
 function constantTimeEqual(left: string, right: string): boolean {
@@ -380,6 +416,11 @@ function unavailable(clearBinding = false): NextResponse {
   return response;
 }
 
+function unavailableAtStart(stage: OidcStartFailureStage): NextResponse {
+  console.error(`a6.oidc-start-unavailable stage=${stage}`);
+  return unavailable();
+}
+
 function requestMatchesConfig(request: NextRequest, config: OidcBffConfig, path: string): boolean {
   const redirect = new URL(config.redirectUri);
   const forwardedHost = request.headers.get('x-forwarded-host');
@@ -404,14 +445,29 @@ export async function startOidcAuthorization(
   request: NextRequest,
   dependencies: OidcBffDependencies = {},
 ): Promise<NextResponse> {
+  let config: OidcBffConfig | null;
   try {
-    const config = loadOidcBffConfig(dependencies.environment ?? processOidcEnvironment());
-    if (config === null || !requestMatchesConfig(request, config, oidcStartPath)) {
-      return unavailable();
-    }
-    const fetcher = dependencies.fetcher ?? fetch;
+    config = loadOidcBffConfig(dependencies.environment ?? processOidcEnvironment());
+  } catch {
+    return unavailableAtStart('config-binding');
+  }
+  if (config === null) return unavailableAtStart('config-binding');
+  if (!requestMatchesConfig(request, config, oidcStartPath)) {
+    return unavailableAtStart('secure-host-matching');
+  }
+
+  const fetcher = dependencies.fetcher ?? fetch;
+  let metadata: OidcDiscovery;
+  try {
+    metadata = await discover(config, fetcher);
+  } catch (error) {
+    return unavailableAtStart(
+      error instanceof OidcStartFailure ? error.stage : 'discovery-contract',
+    );
+  }
+
+  try {
     const random = dependencies.random ?? randomBytes;
-    const metadata = await discover(config, fetcher);
     const state = randomProtocolValue(random);
     const nonce = randomProtocolValue(random);
     const codeVerifier = randomProtocolValue(random);
@@ -447,7 +503,7 @@ export async function startOidcAuthorization(
     );
     return response;
   } catch {
-    return unavailable();
+    return unavailableAtStart('protocol-runtime');
   }
 }
 
@@ -491,7 +547,7 @@ async function exchangeCode(input: {
     grant_type: 'authorization_code',
     redirect_uri: input.config.redirectUri,
   });
-  const headers = new Headers({
+  const headers = internalProviderHeaders(input.config, {
     accept: 'application/json',
     'content-type': 'application/x-www-form-urlencoded',
   });
@@ -556,7 +612,7 @@ async function verifyIdToken(input: {
   const jwks = await readJson(
     await input.fetcher(internalProviderUrl(input.config, input.jwksUri), {
       cache: 'no-store',
-      headers: { accept: 'application/json' },
+      headers: internalProviderHeaders(input.config, { accept: 'application/json' }),
       redirect: 'manual',
     }),
   );

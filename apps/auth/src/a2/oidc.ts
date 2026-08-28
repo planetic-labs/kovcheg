@@ -291,7 +291,24 @@ export async function createOidcProvider(input: CreateOidcProviderInput): Promis
     ...(input.storageAdapter === undefined ? {} : { adapter: input.storageAdapter }),
   };
 
-  return new Provider(issuer.toString().replace(/\/$/, ''), configuration);
+  const provider = new Provider(issuer.toString().replace(/\/$/, ''), configuration);
+  if (issuer.protocol === 'https:') {
+    const expectedHost = issuer.host;
+    provider.proxy = true;
+    provider.middleware.unshift(async (context, next) => {
+      if (
+        context.get('x-forwarded-host') !== expectedHost ||
+        context.get('x-forwarded-proto') !== 'https'
+      ) {
+        context.status = 400;
+        context.type = 'application/json';
+        context.body = { error: 'invalid_request' };
+        return;
+      }
+      await next();
+    });
+  }
+  return provider;
 }
 
 export async function completeOidcInteraction(input: {
