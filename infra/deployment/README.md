@@ -73,14 +73,20 @@ resource report; resources without the complete ownership label set remain undet
 [`environment.schema.json`](environment.schema.json) is the application env contract. It contains
 names and constraints only. Secret material is always supplied through owner-readable files and
 mounted as Compose secrets. Bootstrap and OIDC client JSON are also file-backed because they may
-contain contact or credential material. No secret or data is copied into an image layer.
+contain contact or credential material. The web BFF state key is a separate required file containing
+one 32-byte base64url value; an inline value is forbidden. The application client is public,
+supports only `openid` and `tokenEndpointAuthMethod=none`, and must not have a client secret. Its
+client ID, issuer, authorization endpoint, and exact same-origin callback URI are non-secret external
+configuration shared with the exact OIDC registration. No secret or data is copied into an image
+layer.
 
-Only `edge` publishes a port, and it binds to host loopback. Internal ports are:
+Only `edge` publishes ports, and both bind to host loopback. Internal ports are:
 
 | Service       | Port | Purpose                                          |
 | ------------- | ---: | ------------------------------------------------ |
 | edge          | 8080 | same-origin Web, REST, Auth, and Socket.IO entry |
 | edge          | 8081 | worker-only realtime relay entry                 |
+| edge          | 8082 | first-party OIDC issuer entry                    |
 | web           | 3000 | Next.js runtime                                  |
 | api-1 / api-2 | 3001 | REST and Socket.IO runtime                       |
 | auth          | 3002 | authentication runtime                           |
@@ -88,10 +94,11 @@ Only `edge` publishes a port, and it binds to host loopback. Internal ports are:
 | postgres      | 5432 | durable primary database                         |
 | redis         | 6379 | ephemeral streams and rate-limit/cache state     |
 
-An external reverse proxy, TLS, trusted forwarding sources, host route, DNS name, and access policy
-belong to a later infrastructure action. They are deliberately absent here. Any later proxy must
-preserve one same-origin boundary and pass the original HTTPS scheme only from a trusted network.
-The loopback port is not an internet publication.
+An external reverse proxy, TLS, trusted forwarding sources, host routes, DNS names, and access policy
+belong to a later infrastructure action. They are deliberately absent here. Any later proxy must map
+the application host only to the application loopback and the separate issuer host only to the OIDC
+loopback, preserve the original host and HTTPS scheme from a trusted network, and never expose
+`/internal/oidc/session`. The loopback ports are not an internet publication.
 
 ## Health, readiness, and startup
 
@@ -100,7 +107,7 @@ dependency-aware. PostgreSQL uses `pg_isready`, Redis uses `PING`, and edge uses
 waits for PostgreSQL and Redis health and for the one-shot migration and OIDC-registration job before starting API, Auth,
 and Worker; Web and edge then wait for their upstream application services.
 
-The migration image embeds the checksummed `0001 -> 0016` chain. Migrations are forward-only and run
+The migration image embeds the checksummed `0001 -> 0017` chain. Migrations are forward-only and run
 through the migration role. The migration action remains a separate infrastructure permission even
 though its ordering is machine-readable here.
 
@@ -169,13 +176,15 @@ A later independent readback must record, without secret or user data:
 
 - the published full source SHA and each running immutable image digest plus provenance;
 - `linux/amd64` architecture, container user, health, readiness, restart count, logs, CPU/memory/PID
-  limits, exact networks, and the single loopback binding;
+  limits, exact networks, and the two role-separated loopback bindings;
 - the recorded migration version and volume classes;
 - unknown, missing-session, deactivated, no-challenge verification, and retired-gate-endpoint negative
   checks for Web BFF, REST, and Socket.IO;
 - neutral valid-email code-state behavior, case-insensitive active-account matching to OTP, registered
   discoverable passkey, REST, Socket.IO, logout, Redis recovery, and outbox/catch-up positive checks
   using only synthetic data;
+- exact cross-host OIDC start/callback routing, PKCE S256, public-client no-secret exchange, host-bound
+  binding/session cookies, active-account-only session creation, neutral negative cases, and replay;
 - backup checksum verification and an isolated restore smoke when separately authorized.
 
 ## Current gate status

@@ -11,6 +11,13 @@ import { repositoryRoot } from './lib.mjs';
 import { analyzeWorkflow } from './workflow-policy-core.mjs';
 
 const fixtureDirectory = path.join(repositoryRoot, 'verification/fixtures/workflow-policy');
+const ciWorkflowPath = path.join(repositoryRoot, '.github/workflows/ci.yml');
+const ciWorkflowContents = await readFile(ciWorkflowPath, 'utf8');
+const ciWorkflow = parse(ciWorkflowContents);
+const deploymentSmokeContents = await readFile(
+  path.join(repositoryRoot, 'infra/deployment/smoke.sh'),
+  'utf8',
+);
 const publicationWorkflowPath = path.join(
   repositoryRoot,
   '.github/workflows/publish-ghcr-images.yml',
@@ -148,6 +155,50 @@ test('all unpinned step and job uses are rejected', async () => {
 test('permissions must match the explicit minimal allowlist', async () => {
   const report = await analyze('excess-permissions.fixture');
   assert.ok(report.findings.some((finding) => finding.rule === 'permissions-allowlist'));
+});
+
+test('CI runs exact-head native deployment smoke with bounded read-only lifecycle ownership', () => {
+  const expectedSha = '${{ github.event.pull_request.head.sha || github.sha }}';
+  assert.deepEqual(ciWorkflow.permissions, { contents: 'read' });
+  assert.deepEqual(ciWorkflow.concurrency, {
+    group: 'ci-${{ github.workflow }}-' + expectedSha,
+    'cancel-in-progress': false,
+  });
+
+  const job = ciWorkflow.jobs['native-deployment-smoke'];
+  assert.equal(job.name, 'Native deployment smoke');
+  assert.equal(job['runs-on'], 'ubuntu-latest');
+  assert.equal(job['timeout-minutes'], 45);
+  assert.deepEqual(job.permissions, { contents: 'read' });
+  assert.equal(job.env.EXPECTED_SHA, expectedSha);
+
+  const checkout = job.steps.find((step) => step.name === 'Check out exact source commit');
+  const provenance = job.steps.find((step) => step.name === 'Assert exact clean source provenance');
+  const smoke = job.steps.find((step) => step.name === 'Run exact native deployment smoke');
+  const finalReadback = job.steps.find(
+    (step) => step.name === 'Confirm exact source remains clean',
+  );
+  assert.equal(checkout.with.ref, '${{ env.EXPECTED_SHA }}');
+  assert.equal(checkout.with['fetch-depth'], 1);
+  assert.equal(checkout.with['persist-credentials'], false);
+  assert.match(provenance.run, /git rev-parse HEAD/);
+  assert.match(provenance.run, /git rev-parse HEAD\^\{tree\}/);
+  assert.match(provenance.run, /actual_sha" != "\$EXPECTED_SHA/);
+  assert.match(provenance.run, /\^\[0-9a-f\]\{40\}\$/);
+  assert.match(provenance.run, /git status --porcelain --untracked-files=normal/);
+  assert.equal(smoke.run, 'corepack pnpm deployment:smoke');
+  assert.equal(finalReadback.if, '${{ always() }}');
+  assert.match(finalReadback.run, /git rev-parse HEAD/);
+  assert.match(finalReadback.run, /git status --porcelain --untracked-files=normal/);
+  assert.doesNotMatch(JSON.stringify(job), /\bsecrets\.|packages:\s*write|id-token:\s*write/i);
+
+  assert.match(deploymentSmokeContents, /docker_test_begin deployment-smoke/);
+  assert.match(deploymentSmokeContents, /docker_storage_preflight/);
+  assert.match(deploymentSmokeContents, /docker_buildx_preflight/);
+  assert.match(deploymentSmokeContents, /build_image_set linux\/amd64/);
+  assert.match(deploymentSmokeContents, /trap cleanup EXIT INT TERM/);
+  assert.match(deploymentSmokeContents, /docker_test_finish/);
+  assert.match(deploymentSmokeContents, /no residual owned resources/);
 });
 
 test('GHCR publication is manual, exact-source, immutable, and digest-addressed', async () => {

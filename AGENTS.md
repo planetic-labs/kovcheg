@@ -24,8 +24,8 @@ Before any public push or GitHub write:
 - Runtime services must remain stateless and able to run as two instances.
 - Updates are delivered only as immutable Docker images.
 - User identifiers are UUIDs.
-- Authentication uses one-time email codes and discoverable passkeys for pre-created active accounts. Every locally valid email receives the same neutral code-state response, but only a matching active account may receive a real challenge and create a session. Passkey authentication performs no email or account prelookup, requires user verification, and permits voluntary registration only from an authenticated session. There is no self-registration, password, or external identity provider.
-- The web application and browser-facing API/realtime endpoints share one origin; a separate host is reserved for the OIDC issuer used by other services.
+- Authentication uses one-time email codes, discoverable passkeys, and the separately hosted first-party OIDC issuer for pre-created active accounts. Every locally valid email receives the same neutral code-state response, but only a matching active account may receive a real challenge and create a session. Passkey authentication performs no email or account prelookup, requires user verification, and permits voluntary registration only from an authenticated session. The web OIDC BFF uses Authorization Code with PKCE S256 and may bridge only a validated public-client token for an existing active account into one application session. There is no self-registration, password, third-party identity provider, or automatic OIDC admission.
+- The web application and browser-facing API/realtime endpoints share one origin. The first-party OIDC issuer uses a separate host; its internal session bridge is never exposed through that host.
 
 Do not change these guardrails without an explicit architecture decision.
 

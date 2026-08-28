@@ -9,6 +9,12 @@ import { collectExecutionMetadata, writeJson } from '../../verification/lib.mjs'
 
 const composeText = await readFile(new URL('./compose.yaml', import.meta.url), 'utf8');
 const compose = parse(composeText, { merge: true });
+const edgeStatic = parse(
+  await readFile(new URL('../edge/traefik.deployment.yaml', import.meta.url), 'utf8'),
+);
+const edgeRoutes = parse(
+  await readFile(new URL('../edge/routes.deployment.yaml', import.meta.url), 'utf8'),
+);
 const environmentSchema = JSON.parse(
   await readFile(new URL('./environment.schema.json', import.meta.url), 'utf8'),
 );
@@ -152,8 +158,8 @@ const portOwners = Object.entries(services).filter(([, service]) => service.port
 if (
   portOwners.length !== 1 ||
   portOwners[0]?.[0] !== 'edge' ||
-  portOwners[0]?.[1].ports?.length !== 1 ||
-  !String(portOwners[0][1].ports[0]).startsWith('127.0.0.1:')
+  portOwners[0]?.[1].ports?.length !== 2 ||
+  portOwners[0][1].ports.some((port) => !String(port).startsWith('127.0.0.1:'))
 ) {
   finding(
     'published-port-boundary',
@@ -176,6 +182,7 @@ for (const [name, secret] of Object.entries(compose.secrets ?? {})) {
   }
 }
 const authEnvironment = services.auth?.environment ?? {};
+const webEnvironment = services.web?.environment ?? {};
 for (const key of Object.keys(authEnvironment)) {
   if (/SECRET|PASSWORD|TOKEN|PEPPER|KEY|JWKS|BOOTSTRAP|CLIENTS/u.test(key)) {
     const value = String(authEnvironment[key]);
@@ -183,6 +190,68 @@ for (const key of Object.keys(authEnvironment)) {
       finding('sensitive-auth-value-not-file-backed', key);
     }
   }
+}
+for (const key of Object.keys(webEnvironment)) {
+  if (/SECRET|PASSWORD|TOKEN|PEPPER|KEY|JWKS|BOOTSTRAP|CLIENTS/u.test(key)) {
+    const value = String(webEnvironment[key]);
+    if (
+      !value.startsWith('/run/secrets/') &&
+      key !== 'KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD'
+    ) {
+      finding('sensitive-web-value-not-file-backed', key);
+    }
+  }
+}
+if (
+  authEnvironment.AUTH_OIDC_APPLICATION_CLIENT_ID !==
+    '${KOVCHEG_WEB_OIDC_CLIENT_ID:?web OIDC client ID is required}' ||
+  authEnvironment.AUTH_OIDC_APPLICATION_REDIRECT_URI !==
+    '${KOVCHEG_WEB_OIDC_REDIRECT_URI:?web OIDC redirect URI is required}' ||
+  authEnvironment.AUTH_OIDC_ISSUER !== '${KOVCHEG_AUTH_OIDC_ISSUER:?OIDC issuer is required}' ||
+  webEnvironment.KOVCHEG_AUTH_INTERNAL_URL !== 'http://auth:3002' ||
+  webEnvironment.KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT !==
+    '${KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT:?web OIDC authorization endpoint is required}' ||
+  webEnvironment.KOVCHEG_WEB_OIDC_CLIENT_ID !==
+    '${KOVCHEG_WEB_OIDC_CLIENT_ID:?web OIDC client ID is required}' ||
+  webEnvironment.KOVCHEG_WEB_OIDC_ISSUER !==
+    '${KOVCHEG_WEB_OIDC_ISSUER:?web OIDC issuer is required}' ||
+  webEnvironment.KOVCHEG_WEB_OIDC_REDIRECT_URI !==
+    '${KOVCHEG_WEB_OIDC_REDIRECT_URI:?web OIDC redirect URI is required}' ||
+  webEnvironment.KOVCHEG_WEB_OIDC_STATE_KEY_FILE !== '/run/secrets/web_oidc_state_key' ||
+  webEnvironment.KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD !==
+    '${KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD:?web OIDC token endpoint auth method is required}' ||
+  !services.web?.secrets?.includes('web_oidc_state_key') ||
+  compose.secrets?.web_oidc_state_key?.file !==
+    '${KOVCHEG_WEB_OIDC_STATE_KEY_FILE:?web OIDC state key file is required}' ||
+  /CLIENT_SECRET/u.test(composeText)
+) {
+  finding('oidc-bff-compose-contract', {
+    authApplicationClientId: authEnvironment.AUTH_OIDC_APPLICATION_CLIENT_ID,
+    authApplicationRedirectUri: authEnvironment.AUTH_OIDC_APPLICATION_REDIRECT_URI,
+    secretMount: services.web?.secrets,
+    stateKeyFile: webEnvironment.KOVCHEG_WEB_OIDC_STATE_KEY_FILE,
+    tokenEndpointAuthMethod: webEnvironment.KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD,
+  });
+}
+const issuerRouter = edgeRoutes.http?.routers?.['oidc-issuer'];
+if (
+  edgeStatic.entryPoints?.issuer?.address !== ':8082' ||
+  JSON.stringify(issuerRouter?.entryPoints) !== JSON.stringify(['issuer']) ||
+  issuerRouter?.service !== 'auth' ||
+  !issuerRouter?.middlewares?.includes('forwarded-https') ||
+  !String(issuerRouter?.rule).includes('Path(`/.well-known/openid-configuration`)') ||
+  !String(issuerRouter?.rule).includes('Path(`/token`)') ||
+  String(issuerRouter?.rule).includes('/internal') ||
+  edgeRoutes.http?.middlewares?.['forwarded-https']?.headers?.customRequestHeaders?.[
+    'X-Forwarded-Proto'
+  ] !== 'https' ||
+  !edgeRoutes.http?.routers?.web?.middlewares?.includes('forwarded-https')
+) {
+  finding('oidc-dual-host-edge-contract', {
+    issuerEntryPoint: edgeStatic.entryPoints?.issuer,
+    issuerRouter,
+    webMiddlewares: edgeRoutes.http?.routers?.web?.middlewares,
+  });
 }
 
 for (const serviceName of ['api-1', 'api-2', 'auth', 'web', 'worker']) {
@@ -242,8 +311,15 @@ for (const requiredName of [
   'KOVCHEG_WEB_IMAGE',
   'KOVCHEG_WORKER_IMAGE',
   'KOVCHEG_AUTH_SESSION_PEPPER_FILE',
+  'KOVCHEG_AUTH_ISSUER_LOOPBACK_PORT',
   'KOVCHEG_POSTGRES_RUNTIME_PASSWORD_FILE',
   'KOVCHEG_REALTIME_RELAY_TOKEN_FILE',
+  'KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT',
+  'KOVCHEG_WEB_OIDC_CLIENT_ID',
+  'KOVCHEG_WEB_OIDC_ISSUER',
+  'KOVCHEG_WEB_OIDC_REDIRECT_URI',
+  'KOVCHEG_WEB_OIDC_STATE_KEY_FILE',
+  'KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD',
 ]) {
   if (!schemaNames.has(requiredName)) finding('env-schema-key-missing', requiredName);
 }
@@ -284,6 +360,7 @@ const composeEnvironment = {
   KOVCHEG_AUTH_EMAIL_FROM_NAME: 'Synthetic Sender',
   KOVCHEG_AUTH_IMAGE: `registry.invalid/kovcheg-auth@sha256:${'b'.repeat(64)}`,
   KOVCHEG_AUTH_IMAGE_DIGEST: `sha256:${'b'.repeat(64)}`,
+  KOVCHEG_AUTH_ISSUER_LOOPBACK_PORT: '3302',
   KOVCHEG_AUTH_OIDC_CLIENTS_FILE: '/dev/null',
   KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE: '/dev/null',
   KOVCHEG_AUTH_OIDC_ISSUER: 'https://auth-deployment.invalid',
@@ -304,6 +381,12 @@ const composeEnvironment = {
   KOVCHEG_RESEND_API_KEY_FILE: '/dev/null',
   KOVCHEG_WEB_IMAGE: `registry.invalid/kovcheg-web@sha256:${'e'.repeat(64)}`,
   KOVCHEG_WEB_IMAGE_DIGEST: `sha256:${'e'.repeat(64)}`,
+  KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT: 'https://auth-deployment.invalid/auth',
+  KOVCHEG_WEB_OIDC_CLIENT_ID: 'synthetic-deployment-web',
+  KOVCHEG_WEB_OIDC_ISSUER: 'https://auth-deployment.invalid',
+  KOVCHEG_WEB_OIDC_REDIRECT_URI: 'https://app-deployment.invalid/bff/auth/oidc/callback',
+  KOVCHEG_WEB_OIDC_STATE_KEY_FILE: '/dev/null',
+  KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD: 'none',
   KOVCHEG_WORKER_IMAGE: `registry.invalid/kovcheg-worker@sha256:${'f'.repeat(64)}`,
   KOVCHEG_WORKER_IMAGE_DIGEST: `sha256:${'f'.repeat(64)}`,
 };

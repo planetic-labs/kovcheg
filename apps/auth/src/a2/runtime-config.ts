@@ -25,6 +25,7 @@ export interface EnabledAuthRuntimeConfig {
   readonly enabled: true;
   readonly environment: AuthRuntimeEnvironment;
   readonly oidc: {
+    readonly applicationClientId?: string | undefined;
     readonly clients: readonly RegisteredOidcClient[];
     readonly cookieKeys: readonly string[];
     readonly issuer: string;
@@ -50,6 +51,8 @@ export interface AuthRuntimeEnvironmentSource {
   readonly AUTH_CHALLENGE_PEPPER_FILE?: string | undefined;
   readonly AUTH_OIDC_CLIENTS_JSON?: string | undefined;
   readonly AUTH_OIDC_CLIENTS_JSON_FILE?: string | undefined;
+  readonly AUTH_OIDC_APPLICATION_CLIENT_ID?: string | undefined;
+  readonly AUTH_OIDC_APPLICATION_REDIRECT_URI?: string | undefined;
   readonly AUTH_OIDC_COOKIE_KEYS_JSON?: string | undefined;
   readonly AUTH_OIDC_COOKIE_KEYS_JSON_FILE?: string | undefined;
   readonly AUTH_OIDC_ISSUER?: string | undefined;
@@ -174,6 +177,28 @@ function parseClients(value: unknown): readonly RegisteredOidcClient[] {
       throw new AuthError('auth.invalid-input', 'OIDC client authentication method is invalid');
     }),
   );
+}
+
+function applicationClient(
+  clients: readonly RegisteredOidcClient[],
+  clientId: string,
+  redirectUri: string,
+): RegisteredOidcClient {
+  const matches = clients.filter((client) => client.clientId === clientId);
+  if (
+    matches.length !== 1 ||
+    matches[0]?.tokenEndpointAuthMethod !== 'none' ||
+    matches[0].scopes.length !== 1 ||
+    matches[0].scopes[0] !== 'openid' ||
+    matches[0].redirectUris.length !== 1 ||
+    matches[0].redirectUris[0] !== redirectUri
+  ) {
+    throw new AuthError(
+      'auth.invalid-input',
+      'The application OIDC client must be one exact public openid client',
+    );
+  }
+  return matches[0];
 }
 
 function parseJwks(value: unknown): JWKS {
@@ -318,6 +343,11 @@ export function loadAuthRuntimeConfig(
       'AUTH_OIDC_CLIENTS_JSON',
     ),
   );
+  const oidcApplicationClient = applicationClient(
+    clients,
+    required(source, 'AUTH_OIDC_APPLICATION_CLIENT_ID'),
+    required(source, 'AUTH_OIDC_APPLICATION_REDIRECT_URI'),
+  );
   const cookieKeys = stringArray(
     parseJson(
       requiredSecret(source, 'AUTH_OIDC_COOKIE_KEYS_JSON', 'AUTH_OIDC_COOKIE_KEYS_JSON_FILE'),
@@ -359,6 +389,7 @@ export function loadAuthRuntimeConfig(
     enabled: true,
     environment,
     oidc: Object.freeze({
+      applicationClientId: oidcApplicationClient.clientId,
       clients,
       cookieKeys,
       issuer: required(source, 'AUTH_OIDC_ISSUER'),

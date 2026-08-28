@@ -409,6 +409,31 @@ export class PostgresAuthRepository implements AuthRepository {
     return Object.freeze({ kind: 'authenticated', principal });
   }
 
+  async createOidcSession(
+    input: Parameters<AuthRepository['createOidcSession']>[0],
+  ): Promise<boolean> {
+    const rows = await query<SessionRow>(
+      this.client,
+      `SELECT outcome
+       FROM kovcheg.create_oidc_application_session(
+         $1, $2, $3, $4, $5, $6, $7, $8
+       )`,
+      [
+        input.accountId,
+        input.sourceTokenVerifier,
+        input.session.sessionId,
+        input.session.tokenVerifier,
+        new Date(input.session.issuedAt),
+        input.session.idleLifetimeMs,
+        new Date(input.session.absoluteExpiresAt),
+        input.correlationId,
+      ],
+    );
+    const outcome = rows[0]?.outcome;
+    if (outcome !== 'authenticated' && outcome !== 'invalid') throw unavailable();
+    return outcome === 'authenticated';
+  }
+
   async createAccountAsAdministrator(
     input: Parameters<AuthRepository['createAccountAsAdministrator']>[0],
   ): Promise<AccountRecord> {

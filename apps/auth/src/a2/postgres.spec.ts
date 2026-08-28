@@ -149,6 +149,33 @@ describe('A2 PostgreSQL auth repository', () => {
     expect(client.calls[0]?.text).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\b/iu);
   });
 
+  it('creates an OIDC-bound session only through the protected one-time function', async () => {
+    const client = new QueryFixture([[{ outcome: 'authenticated' }], [{ outcome: 'invalid' }]]);
+    const repository = new PostgresAuthRepository(client);
+    const input = {
+      accountId: '00000000-0000-4000-8000-000000000050' as const,
+      correlationId: 'postgres-oidc-session' as CorrelationId,
+      now: Date.parse('2030-01-01T00:00:00Z'),
+      session: {
+        absoluteExpiresAt: Date.parse('2030-01-31T00:00:00Z'),
+        idleLifetimeMs: 7 * 24 * 60 * 60_000,
+        issuedAt: Date.parse('2030-01-01T00:00:00Z'),
+        sessionId: '00000000-0000-4000-8000-000000000055' as const,
+        tokenVerifier: 's'.repeat(43),
+      },
+      sourceTokenVerifier: 'o'.repeat(43),
+    };
+    await expect(repository.createOidcSession(input)).resolves.toBe(true);
+    await expect(repository.createOidcSession(input)).resolves.toBe(false);
+    expect(client.calls).toHaveLength(2);
+    expect(
+      client.calls.every((call) => call.text.includes('create_oidc_application_session')),
+    ).toBe(true);
+    expect(client.calls.every((call) => !/\b(?:INSERT|UPDATE|DELETE)\b/iu.test(call.text))).toBe(
+      true,
+    );
+  });
+
   it('keeps the security-reset response on the active auth surface only', async () => {
     const client = new QueryFixture([
       [

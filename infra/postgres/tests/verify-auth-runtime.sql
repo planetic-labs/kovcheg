@@ -76,6 +76,11 @@ SELECT pg_temp.assert_true(
   )
   AND has_function_privilege(
     current_user,
+    'kovcheg.create_oidc_application_session(uuid,text,uuid,text,timestamp with time zone,bigint,timestamp with time zone,character varying)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    current_user,
     'kovcheg.admin_grant_system_persona_operator(text,uuid,uuid,timestamp with time zone,character varying)',
     'EXECUTE'
   )
@@ -1393,4 +1398,61 @@ SELECT pg_temp.assert_true(
     'persona-revoke-missing-retry'
   ),
   'repeating a revoked operator pair must be an ineffective no-op'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'authenticated'
+    FROM kovcheg.create_oidc_application_session(
+      '00000000-0000-4000-8000-000000003002',
+      repeat('q', 43),
+      '00000000-0000-4000-8000-000000003290',
+      repeat('w', 43),
+      '2030-01-01 00:22:00+00',
+      900000,
+      '2030-01-01 01:22:00+00',
+      'oidc-session-active-account'
+    )
+  ),
+  'a validated OIDC identity must create one bounded active-account session'
+);
+
+SELECT pg_temp.assert_true(
+  EXISTS (
+    SELECT 1
+    FROM kovcheg.validate_auth_session(repeat('w', 43), '2030-01-01 00:22:01+00')
+    WHERE account_id = '00000000-0000-4000-8000-000000003002'
+      AND session_id = '00000000-0000-4000-8000-000000003290'
+  ),
+  'the OIDC-created session must authenticate as the existing active account'
+);
+
+SELECT pg_temp.assert_true(
+  (
+    SELECT outcome = 'invalid'
+    FROM kovcheg.create_oidc_application_session(
+      '00000000-0000-4000-8000-000000003002',
+      repeat('q', 43),
+      '00000000-0000-4000-8000-000000003291',
+      repeat('x', 43),
+      '2030-01-01 00:22:02+00',
+      900000,
+      '2030-01-01 01:22:02+00',
+      'oidc-session-replay'
+    )
+  )
+  AND (
+    SELECT outcome = 'invalid'
+    FROM kovcheg.create_oidc_application_session(
+      '00000000-0000-4000-8000-000000003099',
+      repeat('r', 43),
+      '00000000-0000-4000-8000-000000003292',
+      repeat('y', 43),
+      '2030-01-01 00:22:03+00',
+      900000,
+      '2030-01-01 01:22:03+00',
+      'oidc-session-unknown-account'
+    )
+  ),
+  'OIDC token replay and an unknown account must remain neutral and create no session'
 );

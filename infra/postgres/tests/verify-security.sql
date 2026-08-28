@@ -498,6 +498,44 @@ END;
 $$;
 
 DO $$
+BEGIN
+  IF to_regprocedure(
+    'kovcheg.create_oidc_application_session(uuid,text,uuid,text,timestamp with time zone,bigint,timestamp with time zone,character varying)'
+  ) IS NOT NULL THEN
+    PERFORM pg_temp.assert_true(
+      has_function_privilege(
+        'kovcheg_auth_app',
+        'kovcheg.create_oidc_application_session(uuid,text,uuid,text,timestamp with time zone,bigint,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_app',
+        'kovcheg.create_oidc_application_session(uuid,text,uuid,text,timestamp with time zone,bigint,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'kovcheg_audit_writer',
+        'kovcheg.create_oidc_application_session(uuid,text,uuid,text,timestamp with time zone,bigint,timestamp with time zone,character varying)',
+        'EXECUTE'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc AS procedure
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+          COALESCE(procedure.proacl, pg_catalog.acldefault('f', procedure.proowner))
+        ) AS privilege
+        WHERE procedure.oid =
+          'kovcheg.create_oidc_application_session(uuid,text,uuid,text,timestamp with time zone,bigint,timestamp with time zone,character varying)'::regprocedure
+          AND privilege.grantee = 0
+          AND privilege.privilege_type = 'EXECUTE'
+      ),
+      'only the auth login may execute the OIDC application-session bridge'
+    );
+  END IF;
+END;
+$$;
+
+DO $$
 DECLARE
   protected_function regprocedure;
   variant_e_active boolean;

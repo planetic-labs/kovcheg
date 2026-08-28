@@ -82,13 +82,14 @@ export async function requestAuth(
   input: Readonly<{
     body?: string;
     cookies?: CookieForwarding;
+    fetcher?: typeof fetch;
     method: 'DELETE' | 'GET' | 'PATCH' | 'POST' | 'PUT';
   }>,
 ): Promise<Response> {
   if (!path.startsWith('/') || path.startsWith('//')) {
     throw new Error('A6 auth upstream path must be absolute and origin-relative');
   }
-  return fetch(`${authOrigin()}${path}`, {
+  return (input.fetcher ?? fetch)(`${authOrigin()}${path}`, {
     ...(input.body === undefined ? {} : { body: input.body }),
     cache: 'no-store',
     headers: selectedHeaders(request, input.body !== undefined, input.cookies ?? 'all'),

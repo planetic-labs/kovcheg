@@ -154,6 +154,13 @@ export interface AuthRepository {
     readonly now: number;
     readonly session: SessionRecordInput;
   }): Promise<ConsumeChallengeResult>;
+  createOidcSession(input: {
+    readonly accountId: UserId;
+    readonly correlationId: CorrelationId;
+    readonly now: number;
+    readonly session: SessionRecordInput;
+    readonly sourceTokenVerifier: string;
+  }): Promise<boolean>;
   createAccountAsAdministrator(input: {
     readonly actorSessionVerifier: string;
     readonly correlationId: CorrelationId;

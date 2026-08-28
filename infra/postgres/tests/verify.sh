@@ -150,8 +150,8 @@ verify_latest_migration_state() {
       FROM kovcheg_meta.schema_migrations
     "
   )
-  if [ "$latest_state" != '0016:16' ]; then
-    echo 'The complete sixteen-migration chain was not recorded.' >&2
+  if [ "$latest_state" != '0017:17' ]; then
+    echo 'The complete seventeen-migration chain was not recorded.' >&2
     exit 1
   fi
 }
@@ -410,6 +410,8 @@ run_auth_tests() {
     "$test_root/verify-auth-passkey-owner.sql"
   run_sql kovcheg_migrator "$migration_password" \
     "$test_root/verify-auth-variant-e-owner.sql"
+  run_sql kovcheg_migrator "$migration_password" \
+    "$test_root/verify-auth-oidc-session-owner.sql"
 
   parallel_number=1
   parallel_pids=''
@@ -761,6 +763,10 @@ case "$scenario" in
   upgrade-v15)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v15.sql"
+    ;;
+  upgrade-v16)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v16.sql"
     ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"

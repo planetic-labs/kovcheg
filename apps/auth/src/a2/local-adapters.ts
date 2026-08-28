@@ -55,6 +55,7 @@ interface StoredSession extends SessionRecordInput {
   idleExpiresAt: number;
   lastSeenAt: number;
   revokedAt: number | null;
+  sourceOidcTokenVerifier?: string | undefined;
 }
 
 interface StoredPasskey {
@@ -379,6 +380,42 @@ export class LocalAuthRepository implements AuthRepository {
         kind: 'authenticated',
         principal: sessionPrincipal(account, session),
       };
+    });
+  }
+
+  createOidcSession(input: Parameters<AuthRepository['createOidcSession']>[0]): Promise<boolean> {
+    return this.queue.run(() => {
+      const account = this.accountsById.get(input.accountId);
+      if (
+        account === undefined ||
+        account.status !== 'active' ||
+        [...this.sessionsByVerifier.values()].some(
+          (session) => session.sourceOidcTokenVerifier === input.sourceTokenVerifier,
+        )
+      ) {
+        return false;
+      }
+      if (
+        this.sessionsByVerifier.has(input.session.tokenVerifier) ||
+        [...this.sessionsByVerifier.values()].some(
+          (session) => session.sessionId === input.session.sessionId,
+        )
+      ) {
+        throw new AuthRepositoryConflictError();
+      }
+      const session: StoredSession = {
+        ...input.session,
+        accountId: account.userId,
+        idleExpiresAt: Math.min(
+          input.session.absoluteExpiresAt,
+          input.session.issuedAt + input.session.idleLifetimeMs,
+        ),
+        lastSeenAt: input.session.issuedAt,
+        revokedAt: null,
+        sourceOidcTokenVerifier: input.sourceTokenVerifier,
+      };
+      this.sessionsByVerifier.set(session.tokenVerifier, session);
+      return true;
     });
   }
 

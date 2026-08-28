@@ -156,6 +156,8 @@ services:
       AUTH_EMAIL_FROM_ADDRESS: ${KOVCHEG_AUTH_EMAIL_FROM_ADDRESS:?sender address is required}
       AUTH_EMAIL_FROM_NAME: ${KOVCHEG_AUTH_EMAIL_FROM_NAME:?sender name is required}
       AUTH_OIDC_CLIENTS_JSON_FILE: /run/secrets/auth_oidc_clients
+      AUTH_OIDC_APPLICATION_CLIENT_ID: ${KOVCHEG_WEB_OIDC_CLIENT_ID:?web OIDC client ID is required}
+      AUTH_OIDC_APPLICATION_REDIRECT_URI: ${KOVCHEG_WEB_OIDC_REDIRECT_URI:?web OIDC redirect URI is required}
       AUTH_OIDC_COOKIE_KEYS_JSON_FILE: /run/secrets/auth_oidc_cookie_keys
       AUTH_OIDC_ISSUER: ${KOVCHEG_AUTH_OIDC_ISSUER:?OIDC issuer is required}
       AUTH_OIDC_JWKS_JSON_FILE: /run/secrets/auth_oidc_jwks
@@ -281,6 +283,12 @@ services:
       HOST: 0.0.0.0
       KOVCHEG_API_INTERNAL_URL: http://edge:8080/api
       KOVCHEG_AUTH_INTERNAL_URL: http://auth:3002
+      KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT: ${KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT:?web OIDC authorization endpoint is required}
+      KOVCHEG_WEB_OIDC_CLIENT_ID: ${KOVCHEG_WEB_OIDC_CLIENT_ID:?web OIDC client ID is required}
+      KOVCHEG_WEB_OIDC_ISSUER: ${KOVCHEG_WEB_OIDC_ISSUER:?web OIDC issuer is required}
+      KOVCHEG_WEB_OIDC_REDIRECT_URI: ${KOVCHEG_WEB_OIDC_REDIRECT_URI:?web OIDC redirect URI is required}
+      KOVCHEG_WEB_OIDC_STATE_KEY_FILE: /run/secrets/web_oidc_state_key
+      KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD: ${KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD:?web OIDC token endpoint auth method is required}
       LOG_LEVEL: info
       NEXT_TELEMETRY_DISABLED: '1'
       NODE_ENV: production
@@ -303,6 +311,7 @@ services:
     pids_limit: 128
     read_only: true
     restart: unless-stopped
+    secrets: [web_oidc_state_key]
     stop_grace_period: 15s
     tmpfs: ['/tmp']
     deploy:
@@ -331,7 +340,9 @@ services:
     init: true
     networks: [service-internal, host-loopback]
     pids_limit: 64
-    ports: ['127.0.0.1:${KOVCHEG_LOOPBACK_PORT:-3000}:8080']
+    ports:
+      - '127.0.0.1:${KOVCHEG_LOOPBACK_PORT:-3000}:8080'
+      - '127.0.0.1:${KOVCHEG_AUTH_ISSUER_LOOPBACK_PORT:-3002}:8082'
     read_only: true
     restart: unless-stopped
     stop_grace_period: 15s
@@ -507,6 +518,8 @@ secrets:
     file: ${KOVCHEG_REALTIME_RELAY_TOKEN_FILE:?realtime relay token file is required}
   resend_api_key:
     file: ${KOVCHEG_RESEND_API_KEY_FILE:?email provider credential file is required}
+  web_oidc_state_key:
+    file: ${KOVCHEG_WEB_OIDC_STATE_KEY_FILE:?web OIDC state key file is required}
 
 volumes:
   postgres-backup:

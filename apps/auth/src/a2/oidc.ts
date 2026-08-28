@@ -138,6 +138,35 @@ function parseUserId(value: string): UserId | null {
     : null;
 }
 
+export async function resolveOidcApplicationIdentity(input: {
+  readonly accessToken: string;
+  readonly applicationClientId: string;
+  readonly provider: Provider;
+}): Promise<UserId> {
+  if (
+    input.accessToken.length < 16 ||
+    input.accessToken.length > 4096 ||
+    /\s/u.test(input.accessToken)
+  ) {
+    throw new AuthError('auth.invalid-session', 'The OIDC session proof is invalid');
+  }
+  const token = await input.provider.AccessToken.find(input.accessToken);
+  const accountId = token?.accountId === undefined ? null : parseUserId(token.accountId);
+  if (
+    token === undefined ||
+    token.kind !== 'AccessToken' ||
+    token.clientId !== input.applicationClientId ||
+    token.gty !== 'authorization_code' ||
+    token.scope !== 'openid' ||
+    !token.isValid ||
+    token.isExpired ||
+    accountId === null
+  ) {
+    throw new AuthError('auth.invalid-session', 'The OIDC identity is not authorized');
+  }
+  return accountId;
+}
+
 export async function createOidcProvider(input: CreateOidcProviderInput): Promise<Provider> {
   const issuer = parseSecureUrl(input.issuer, input.environment);
   if (issuer.pathname !== '/' && issuer.pathname.endsWith('/')) {
@@ -262,7 +291,24 @@ export async function createOidcProvider(input: CreateOidcProviderInput): Promis
     ...(input.storageAdapter === undefined ? {} : { adapter: input.storageAdapter }),
   };
 
-  return new Provider(issuer.toString().replace(/\/$/, ''), configuration);
+  const provider = new Provider(issuer.toString().replace(/\/$/, ''), configuration);
+  if (issuer.protocol === 'https:') {
+    const expectedHost = issuer.host;
+    provider.proxy = true;
+    provider.middleware.unshift(async (context, next) => {
+      if (
+        context.get('x-forwarded-host') !== expectedHost ||
+        context.get('x-forwarded-proto') !== 'https'
+      ) {
+        context.status = 400;
+        context.type = 'application/json';
+        context.body = { error: 'invalid_request' };
+        return;
+      }
+      await next();
+    });
+  }
+  return provider;
 }
 
 export async function completeOidcInteraction(input: {

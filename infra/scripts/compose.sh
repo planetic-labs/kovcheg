@@ -54,10 +54,12 @@ create_json_secret "$secret_directory/auth-oidc-cookie-keys" \
   "import {randomBytes} from 'node:crypto'; process.stdout.write(JSON.stringify([randomBytes(32).toString('base64url'),randomBytes(32).toString('base64url')]))"
 create_json_secret "$secret_directory/auth-oidc-jwks" \
   "import {generateKeyPairSync} from 'node:crypto'; const {privateKey}=generateKeyPairSync('ec',{namedCurve:'P-256'}); const key=privateKey.export({format:'jwk'}); process.stdout.write(JSON.stringify({keys:[{...key,alg:'ES256',kid:'local-signing-key',use:'sig'}]}))"
+create_json_secret "$secret_directory/web-oidc-state-key" \
+  "import {randomBytes} from 'node:crypto'; process.stdout.write(randomBytes(32).toString('base64url'))"
 create_json_secret "$secret_directory/auth-admin-bootstrap" \
   "process.stdout.write(JSON.stringify({bootstrapId:'local-bootstrap-administrator',displayName:'Synthetic Local Administrator',email:'synthetic-local-administrator@auth.invalid',userId:'00000000-0000-4000-8000-000000009801'}))"
 create_json_secret "$secret_directory/auth-oidc-clients" \
-  "process.stdout.write(JSON.stringify([{clientId:'kovcheg-local',redirectUris:['https://client.invalid/auth/callback'],scopes:['openid'],tokenEndpointAuthMethod:'none'}]))"
+  "const clientId=process.env.KOVCHEG_WEB_OIDC_CLIENT_ID??'kovcheg-local'; const redirectUri=process.env.KOVCHEG_WEB_OIDC_REDIRECT_URI??'https://client.invalid/bff/auth/oidc/callback'; process.stdout.write(JSON.stringify([{clientId,redirectUris:[redirectUri],scopes:['openid'],tokenEndpointAuthMethod:'none'}]))"
 
 export KOVCHEG_POSTGRES_AUDIT_PASSWORD_FILE="$secret_directory/audit"
 export KOVCHEG_POSTGRES_AUTH_PASSWORD_FILE="$secret_directory/auth"
@@ -73,6 +75,7 @@ export KOVCHEG_AUTH_OIDC_COOKIE_KEYS_FILE="$secret_directory/auth-oidc-cookie-ke
 export KOVCHEG_AUTH_OIDC_JWKS_FILE="$secret_directory/auth-oidc-jwks"
 export KOVCHEG_AUTH_OIDC_CLIENTS_FILE="$secret_directory/auth-oidc-clients"
 export KOVCHEG_RESEND_API_KEY_FILE="$secret_directory/resend-api-key"
+export KOVCHEG_WEB_OIDC_STATE_KEY_FILE="$secret_directory/web-oidc-state-key"
 
 if docker compose version >/dev/null 2>&1; then
   exec docker compose "$@"

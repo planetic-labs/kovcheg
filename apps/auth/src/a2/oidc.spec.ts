@@ -4,6 +4,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 
 import type { UserId } from '@kovcheg/contracts';
 import { decodeJwt, exportJWK, generateKeyPair } from 'jose';
+import type Provider from 'oidc-provider';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AuthService } from './auth-service.js';
@@ -16,7 +17,12 @@ import {
   LocalRateLimiter,
   ManualClock,
 } from './local-adapters.js';
-import { completeOidcInteraction, createOidcProvider, StaticOidcClientRepository } from './oidc.js';
+import {
+  completeOidcInteraction,
+  createOidcProvider,
+  resolveOidcApplicationIdentity,
+  StaticOidcClientRepository,
+} from './oidc.js';
 import type { RegisteredOidcClient } from './oidc.js';
 
 const oidcAccountId = '00000000-0000-4000-8000-000000000021' satisfies UserId;
@@ -124,6 +130,82 @@ function publicClient(redirectUri: string): RegisteredOidcClient {
   });
 }
 
+describe('A2 OIDC application-session identity boundary', () => {
+  function providerWith(token: Record<string, unknown> | undefined): Provider {
+    return {
+      AccessToken: {
+        find: async () => token,
+      },
+    } as unknown as Provider;
+  }
+
+  it('accepts only one valid authorization-code access token for the bound public client', async () => {
+    await expect(
+      resolveOidcApplicationIdentity({
+        accessToken: 'synthetic-access-token-0001',
+        applicationClientId: 'synthetic-public-client',
+        provider: providerWith({
+          accountId: oidcAccountId,
+          clientId: 'synthetic-public-client',
+          gty: 'authorization_code',
+          isExpired: false,
+          isValid: true,
+          kind: 'AccessToken',
+          scope: 'openid',
+        }),
+      }),
+    ).resolves.toBe(oidcAccountId);
+
+    for (const token of [
+      undefined,
+      {
+        accountId: oidcAccountId,
+        clientId: 'other-client',
+        gty: 'authorization_code',
+        isExpired: false,
+        isValid: true,
+        kind: 'AccessToken',
+        scope: 'openid',
+      },
+      {
+        accountId: oidcAccountId,
+        clientId: 'synthetic-public-client',
+        gty: 'authorization_code',
+        isExpired: true,
+        isValid: false,
+        kind: 'AccessToken',
+        scope: 'openid',
+      },
+      {
+        accountId: oidcAccountId,
+        clientId: 'synthetic-public-client',
+        gty: 'client_credentials',
+        isExpired: false,
+        isValid: true,
+        kind: 'AccessToken',
+        scope: 'openid',
+      },
+      {
+        accountId: 'not-a-user-id',
+        clientId: 'synthetic-public-client',
+        gty: 'authorization_code',
+        isExpired: false,
+        isValid: true,
+        kind: 'AccessToken',
+        scope: 'openid profile',
+      },
+    ]) {
+      await expect(
+        resolveOidcApplicationIdentity({
+          accessToken: 'synthetic-access-token-0002',
+          applicationClientId: 'synthetic-public-client',
+          provider: providerWith(token),
+        }),
+      ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+    }
+  });
+});
+
 function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -219,6 +301,61 @@ describe('A2 OIDC provider configuration', () => {
         secureCookies: true,
       }),
     ).rejects.toMatchObject({ code: 'auth.unavailable' });
+  });
+
+  it('trusts proxy metadata only when it exactly matches the configured HTTPS issuer', async () => {
+    const fixture = await createAuthFixture();
+    const provider = await createOidcProvider({
+      accountRepository: fixture.repository,
+      clientRepository: new StaticOidcClientRepository(
+        [publicClient('https://client.invalid/callback')],
+        { NODE_ENV: 'test' },
+      ),
+      cookieKeys: ['k'.repeat(64), 'l'.repeat(64)],
+      environment: 'test',
+      issuer: 'https://issuer.invalid',
+      jwks: await createTestJwks(),
+      oidcSessionTtlSeconds: 3600,
+      secureCookies: false,
+    });
+    const providerCallback = provider.callback();
+    const server = createServer(providerCallback);
+    openServers.add(server);
+    const port = await listen(server);
+    const discoveryUrl = `http://127.0.0.1:${port}/.well-known/openid-configuration`;
+
+    for (const headers of [
+      {},
+      {
+        host: 'other.invalid',
+        'x-forwarded-host': 'other.invalid',
+        'x-forwarded-proto': 'https',
+      },
+      {
+        host: 'issuer.invalid',
+        'x-forwarded-host': 'issuer.invalid',
+        'x-forwarded-proto': 'http',
+      },
+    ]) {
+      const rejected = await fetch(discoveryUrl, { headers });
+      expect(rejected.status).toBe(400);
+      await expect(rejected.json()).resolves.toEqual({ error: 'invalid_request' });
+    }
+
+    const accepted = await fetch(discoveryUrl, {
+      headers: {
+        host: 'issuer.invalid',
+        'x-forwarded-host': 'issuer.invalid',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    const acceptedBody = await accepted.text();
+    expect(accepted.status, acceptedBody).toBe(200);
+    const metadata = JSON.parse(acceptedBody) as Record<string, unknown>;
+    expect(metadata.issuer).toBe('https://issuer.invalid');
+    expect(metadata.authorization_endpoint).toBe('https://issuer.invalid/auth');
+    expect(metadata.token_endpoint).toBe('https://issuer.invalid/token');
+    expect(metadata.jwks_uri).toBe('https://issuer.invalid/jwks');
   });
 });
 
