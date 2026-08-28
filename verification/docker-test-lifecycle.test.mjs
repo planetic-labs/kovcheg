@@ -85,7 +85,13 @@ test('root Compose supplies the synthetic public OIDC client selectors to auth',
 
 test('OIDC dual-host failures emit bounded allowlisted diagnostics without response data', async () => {
   const sensitiveMarker = 'must-not-appear-in-diagnostics';
-  const server = createServer((_request, response) => {
+  let observedHost = null;
+  let observedForwardedHost = null;
+  let observedForwardedProtocol = null;
+  const server = createServer((request, response) => {
+    observedHost = request.headers.host ?? null;
+    observedForwardedHost = request.headers['x-forwarded-host'] ?? null;
+    observedForwardedProtocol = request.headers['x-forwarded-proto'] ?? null;
     response.writeHead(503, { 'content-type': 'application/json' });
     response.end(
       JSON.stringify({
@@ -131,6 +137,9 @@ test('OIDC dual-host failures emit bounded allowlisted diagnostics without respo
 
   assert.equal(exitCode, 1);
   assert.equal(stdout, '');
+  assert.equal(observedHost, 'application.invalid');
+  assert.equal(observedForwardedHost, null);
+  assert.equal(observedForwardedProtocol, null);
   assert.match(
     stderr,
     /oidc-start response mismatch: expected=303 actual=503 bodyKind=json bodyBytes=\d+ errorCode=a6\.oidc-not-configured/u,

@@ -1,4 +1,6 @@
-/* global Buffer, fetch, Headers, process, URL */
+/* global Buffer, Headers, process, Response, URL */
+
+import { request as httpRequest } from 'node:http';
 
 const [applicationLoopback, issuerLoopback] = process.argv.slice(2);
 const applicationOrigin = process.env.KOVCHEG_WEB_OIDC_REDIRECT_URI
@@ -7,6 +9,7 @@ const applicationOrigin = process.env.KOVCHEG_WEB_OIDC_REDIRECT_URI
 const issuerOrigin = process.env.KOVCHEG_WEB_OIDC_ISSUER ?? null;
 const existingSession = process.env.KOVCHEG_SMOKE_SESSION_TOKEN ?? null;
 const maximumDiagnosticBodyBytes = 4096;
+const maximumSmokeResponseBytes = 1024 * 1024;
 const safeErrorCodes = new Set(['a6.oidc-not-configured']);
 
 if (
@@ -112,24 +115,68 @@ function loopbackUrl(publicLocation, expectedOrigin, targetOrigin) {
   const location = new URL(publicLocation, expectedOrigin);
   assert(location.origin === expectedOrigin, 'OIDC redirect crossed an unexpected origin');
   const target = new URL(targetOrigin);
+  assert(
+    target.protocol === 'http:' &&
+      target.hostname === '127.0.0.1' &&
+      target.username === '' &&
+      target.password === '',
+    'OIDC smoke target must be an uncredentialed IPv4 loopback HTTP origin',
+  );
   target.pathname = location.pathname;
   target.search = location.search;
   return target;
 }
 
+function hostPreservingLoopbackRequest(target, publicHost, cookies) {
+  return new Promise((resolve, reject) => {
+    const headers = { host: publicHost };
+    if (cookies.length > 0) headers.cookie = cookies;
+    const request = httpRequest(target, { headers, method: 'GET' }, (response) => {
+      const chunks = [];
+      let bodyBytes = 0;
+      response.on('data', (chunk) => {
+        bodyBytes += chunk.length;
+        if (bodyBytes > maximumSmokeResponseBytes) {
+          response.destroy(new Error('OIDC smoke response exceeded its fixed byte limit'));
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      });
+      response.once('error', reject);
+      response.once('end', () => {
+        const status = response.statusCode;
+        if (status === undefined || status < 200 || status > 599) {
+          reject(new Error('OIDC smoke response status is invalid'));
+          return;
+        }
+        const responseHeaders = new Headers();
+        for (let index = 0; index < response.rawHeaders.length; index += 2) {
+          const name = response.rawHeaders[index];
+          const value = response.rawHeaders[index + 1];
+          if (name !== undefined && value !== undefined) responseHeaders.append(name, value);
+        }
+        resolve(
+          new Response(Buffer.concat(chunks), {
+            headers: responseHeaders,
+            status,
+            statusText: response.statusMessage,
+          }),
+        );
+      });
+    });
+    request.once('error', reject);
+    request.end();
+  });
+}
+
 async function browserRequest(publicLocation, expectedOrigin, targetOrigin, jar) {
   const publicUrl = new URL(publicLocation, expectedOrigin);
-  const headers = new Headers({
-    host: publicUrl.host,
-    'x-forwarded-host': publicUrl.host,
-    'x-forwarded-proto': 'https',
-  });
   const cookies = cookieHeader(jar);
-  if (cookies.length > 0) headers.set('cookie', cookies);
-  const response = await fetch(loopbackUrl(publicUrl, expectedOrigin, targetOrigin), {
-    headers,
-    redirect: 'manual',
-  });
+  const response = await hostPreservingLoopbackRequest(
+    loopbackUrl(publicUrl, expectedOrigin, targetOrigin),
+    publicUrl.host,
+    cookies,
+  );
   updateJar(response, jar);
   return response;
 }
