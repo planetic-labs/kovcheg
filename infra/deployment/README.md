@@ -45,11 +45,20 @@ the single navigation tag `sha-<full-source-sha>`, carries OCI source and revisi
 registry provenance attestation, and produces a machine-readable service-to-package-to-digest
 mapping. Deployment references use only `ghcr.io/planetic-labs/kovcheg-<service>@sha256:<digest>`.
 
-The workflow uses the repository `GITHUB_TOKEN`, creates no mutable `latest` tag, refuses an existing
-exact-source tag, and does not change package visibility. New packages therefore retain the registry
-default visibility. Merging the workflow does not run it: publication, package existence, digest
-readback, anonymous pull, visibility changes, server handoff, and deployment all remain separate
-operations and evidence gates.
+Before any push, one inventory gate checks all six exact-source tags. An absent tag may be published
+once; an existing tag is adopted without overwrite only after its digest, `linux/amd64` platform,
+OCI source, and exact revision have been verified. Any conflict or ambiguous registry response stops
+all publish jobs. Independent publish jobs do not cancel one another, so a retry can finish a
+partially completed same-source set while preserving every verified immutable tag.
+
+Each successful publish or adoption path creates provenance evidence and one mapping artifact. A
+final aggregate gate accepts exactly one mapping for each of the six services, rejects missing or
+duplicate services and mismatched source, platform, digest, reference, navigation tag, or attestation
+evidence, and uploads one six-image mapping. The workflow uses the repository `GITHUB_TOKEN`,
+creates no mutable `latest` tag, and does not change package visibility. New packages therefore
+retain the registry default visibility. Merging the workflow does not run it: publication, package
+existence, digest readback, anonymous pull, visibility changes, server handoff, and deployment all
+remain separate operations and evidence gates.
 
 The local deployment smoke uses unique temporary tags and exact ownership labels for its six
 images. It first requires 20 GiB of measured free Docker-daemon storage by default, then records
