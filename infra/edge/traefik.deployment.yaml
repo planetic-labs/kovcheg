@@ -4,6 +4,8 @@ api:
 entryPoints:
   internal:
     address: ':8081'
+  issuer:
+    address: ':8082'
   public:
     address: ':8080'
 

@@ -55,6 +55,12 @@ export interface ChallengeVerificationInput {
   readonly networkAddress: string;
 }
 
+export interface OidcSessionInput {
+  readonly accessToken: string;
+  readonly accountId: UserId;
+  readonly correlationId: CorrelationId;
+}
+
 export interface AuthServiceDependencies {
   readonly clock: Clock;
   readonly crypto: AuthCrypto;
@@ -196,6 +202,43 @@ export class AuthService {
     } catch (error) {
       this.mapAdministrativeError(error);
     }
+  }
+
+  async createOidcSession(input: OidcSessionInput): Promise<AuthenticatedSession> {
+    if (input.accessToken.length < 16 || input.accessToken.length > 4096) {
+      throw new AuthError('auth.invalid-session', 'The OIDC session proof is invalid');
+    }
+    const now = this.dependencies.clock.now();
+    const sessionToken = this.dependencies.random.opaqueToken();
+    const sessionId = this.dependencies.random.sessionId();
+    const created = await this.dependencies.repository.createOidcSession({
+      accountId: input.accountId,
+      correlationId: input.correlationId,
+      now,
+      session: {
+        absoluteExpiresAt: now + this.dependencies.policy.session.absoluteLifetimeMs,
+        idleLifetimeMs: this.dependencies.policy.session.idleLifetimeMs,
+        issuedAt: now,
+        sessionId,
+        tokenVerifier: this.dependencies.crypto.sessionTokenVerifier(sessionToken),
+      },
+      sourceTokenVerifier: this.dependencies.crypto.sessionTokenVerifier(input.accessToken),
+    });
+    if (!created) {
+      throw new AuthError('auth.invalid-session', 'The OIDC identity is not authorized');
+    }
+    return Object.freeze({
+      absoluteExpiresAt: now + this.dependencies.policy.session.absoluteLifetimeMs,
+      idleExpiresAt:
+        now +
+        Math.min(
+          this.dependencies.policy.session.idleLifetimeMs,
+          this.dependencies.policy.session.absoluteLifetimeMs,
+        ),
+      sessionId,
+      sessionToken,
+      userId: input.accountId,
+    });
   }
 
   async logout(sessionToken: string): Promise<void> {

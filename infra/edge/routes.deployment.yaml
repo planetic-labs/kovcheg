@@ -1,5 +1,9 @@
 http:
   middlewares:
+    forwarded-https:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Proto: https
     strip-api-prefix:
       stripPrefix:
         prefixes:
@@ -41,9 +45,15 @@ http:
       priority: 300
       rule: PathPrefix(`/internal/realtime`)
       service: api
+    oidc-issuer:
+      entryPoints: [issuer]
+      middlewares: [forwarded-https]
+      priority: 300
+      rule: Path(`/.well-known/openid-configuration`) || PathPrefix(`/auth`) || Path(`/token`) || Path(`/jwks`) || PathPrefix(`/interaction/`)
+      service: auth
     web:
       entryPoints: [public]
-      middlewares: [web-security-headers]
+      middlewares: [forwarded-https, web-security-headers]
       priority: 1
       rule: PathPrefix(`/`)
       service: web

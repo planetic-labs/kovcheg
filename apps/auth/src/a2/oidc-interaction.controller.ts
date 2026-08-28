@@ -1,10 +1,22 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { Controller, Get, Inject, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  Post,
+  Req,
+  Res,
+} from '@nestjs/common';
+import { ApiExcludeEndpoint } from '@nestjs/swagger';
 import type { CorrelationId } from '@kovcheg/contracts';
 
 import { authHttpException, toAuthHttpException } from './http-errors.js';
-import { completeOidcInteraction } from './oidc.js';
+import { completeOidcInteraction, resolveOidcApplicationIdentity } from './oidc.js';
 import type { AuthRuntime } from './runtime.js';
 import { authRuntimeToken } from './runtime.js';
 
@@ -35,6 +47,39 @@ export class OidcInteractionController {
         response,
         sessionToken,
       });
+    } catch (error) {
+      toAuthHttpException(error, request.correlationId as CorrelationId);
+    }
+  }
+
+  @Post('internal/oidc/session')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Header('Cache-Control', 'no-store')
+  @ApiExcludeEndpoint()
+  async createApplicationSession(
+    @Body() body: Readonly<{ accessToken?: unknown }> | undefined,
+    @Req() request: InteractionRequest,
+    @Res({ passthrough: true }) response: ServerResponse,
+  ): Promise<void> {
+    if (
+      body === undefined ||
+      typeof body.accessToken !== 'string' ||
+      Object.keys(body).length !== 1
+    ) {
+      throw authHttpException('auth.invalid-session', request.correlationId as CorrelationId);
+    }
+    try {
+      const accountId = await resolveOidcApplicationIdentity({
+        accessToken: body.accessToken,
+        applicationClientId: this.runtime.oidcApplicationClientId,
+        provider: this.runtime.oidcProvider,
+      });
+      const session = await this.runtime.authService.createOidcSession({
+        accessToken: body.accessToken,
+        accountId,
+        correlationId: request.correlationId as CorrelationId,
+      });
+      response.setHeader('Set-Cookie', this.runtime.sessionCookie.issue(session.sessionToken));
     } catch (error) {
       toAuthHttpException(error, request.correlationId as CorrelationId);
     }

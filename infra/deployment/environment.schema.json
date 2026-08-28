@@ -119,6 +119,51 @@
       "rotation": "requires client and ingress coordination"
     },
     {
+      "name": "KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT",
+      "type": "https-url",
+      "required": true,
+      "secret": false,
+      "constraint": "HTTPS authorization endpoint on the exact configured issuer origin",
+      "restart": "restart web",
+      "rotation": "requires issuer and client coordination"
+    },
+    {
+      "name": "KOVCHEG_WEB_OIDC_CLIENT_ID",
+      "type": "oidc-client-id",
+      "required": true,
+      "secret": false,
+      "constraint": "3 to 128 safe identifier characters; must select one exact public openid client",
+      "restart": "restart auth and web after migrating the matching registration",
+      "rotation": "requires registration and BFF coordination"
+    },
+    {
+      "name": "KOVCHEG_WEB_OIDC_ISSUER",
+      "type": "https-url",
+      "required": true,
+      "secret": false,
+      "constraint": "bare HTTPS origin equal to the application auth issuer",
+      "restart": "restart web",
+      "rotation": "requires provider, ingress and client coordination"
+    },
+    {
+      "name": "KOVCHEG_WEB_OIDC_REDIRECT_URI",
+      "type": "https-url",
+      "required": true,
+      "secret": false,
+      "constraint": "exact same-origin /bff/auth/oidc/callback URI registered for the public client",
+      "restart": "restart auth and web after migrating the matching registration",
+      "rotation": "requires registration, BFF and ingress coordination"
+    },
+    {
+      "name": "KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD",
+      "type": "enum",
+      "required": true,
+      "secret": false,
+      "constraint": "exactly none; client secret is forbidden",
+      "restart": "restart web",
+      "rotation": "a client-type change requires a new application security decision"
+    },
+    {
       "name": "KOVCHEG_AUTH_WEBAUTHN_ORIGINS_JSON",
       "type": "json-array-of-https-origins",
       "required": true,
@@ -151,6 +196,15 @@
       "required": false,
       "secret": false,
       "constraint": "host loopback only; default 3000",
+      "restart": "recreate edge",
+      "rotation": "not applicable"
+    },
+    {
+      "name": "KOVCHEG_AUTH_ISSUER_LOOPBACK_PORT",
+      "type": "tcp-port",
+      "required": false,
+      "secret": false,
+      "constraint": "separate host loopback only; default 3002",
       "restart": "recreate edge",
       "rotation": "not applicable"
     },
@@ -198,6 +252,15 @@
       "constraint": "owner-readable private JWKS",
       "restart": "restart auth",
       "rotation": "overlapping signing-key rotation"
+    },
+    {
+      "name": "KOVCHEG_WEB_OIDC_STATE_KEY_FILE",
+      "type": "host-file-path",
+      "required": true,
+      "secret": true,
+      "constraint": "owner-readable file containing exactly one 32-byte base64url key; inline value is forbidden",
+      "restart": "restart web; all outstanding OIDC bindings become invalid",
+      "rotation": "planned restart or emergency invalidation of outstanding bindings"
     },
     {
       "name": "KOVCHEG_AUTH_CHALLENGE_PEPPER_FILE",

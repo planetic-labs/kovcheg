@@ -4,6 +4,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 
 import type { UserId } from '@kovcheg/contracts';
 import { decodeJwt, exportJWK, generateKeyPair } from 'jose';
+import type Provider from 'oidc-provider';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AuthService } from './auth-service.js';
@@ -16,7 +17,12 @@ import {
   LocalRateLimiter,
   ManualClock,
 } from './local-adapters.js';
-import { completeOidcInteraction, createOidcProvider, StaticOidcClientRepository } from './oidc.js';
+import {
+  completeOidcInteraction,
+  createOidcProvider,
+  resolveOidcApplicationIdentity,
+  StaticOidcClientRepository,
+} from './oidc.js';
 import type { RegisteredOidcClient } from './oidc.js';
 
 const oidcAccountId = '00000000-0000-4000-8000-000000000021' satisfies UserId;
@@ -123,6 +129,82 @@ function publicClient(redirectUri: string): RegisteredOidcClient {
     tokenEndpointAuthMethod: 'none',
   });
 }
+
+describe('A2 OIDC application-session identity boundary', () => {
+  function providerWith(token: Record<string, unknown> | undefined): Provider {
+    return {
+      AccessToken: {
+        find: async () => token,
+      },
+    } as unknown as Provider;
+  }
+
+  it('accepts only one valid authorization-code access token for the bound public client', async () => {
+    await expect(
+      resolveOidcApplicationIdentity({
+        accessToken: 'synthetic-access-token-0001',
+        applicationClientId: 'synthetic-public-client',
+        provider: providerWith({
+          accountId: oidcAccountId,
+          clientId: 'synthetic-public-client',
+          gty: 'authorization_code',
+          isExpired: false,
+          isValid: true,
+          kind: 'AccessToken',
+          scope: 'openid',
+        }),
+      }),
+    ).resolves.toBe(oidcAccountId);
+
+    for (const token of [
+      undefined,
+      {
+        accountId: oidcAccountId,
+        clientId: 'other-client',
+        gty: 'authorization_code',
+        isExpired: false,
+        isValid: true,
+        kind: 'AccessToken',
+        scope: 'openid',
+      },
+      {
+        accountId: oidcAccountId,
+        clientId: 'synthetic-public-client',
+        gty: 'authorization_code',
+        isExpired: true,
+        isValid: false,
+        kind: 'AccessToken',
+        scope: 'openid',
+      },
+      {
+        accountId: oidcAccountId,
+        clientId: 'synthetic-public-client',
+        gty: 'client_credentials',
+        isExpired: false,
+        isValid: true,
+        kind: 'AccessToken',
+        scope: 'openid',
+      },
+      {
+        accountId: 'not-a-user-id',
+        clientId: 'synthetic-public-client',
+        gty: 'authorization_code',
+        isExpired: false,
+        isValid: true,
+        kind: 'AccessToken',
+        scope: 'openid profile',
+      },
+    ]) {
+      await expect(
+        resolveOidcApplicationIdentity({
+          accessToken: 'synthetic-access-token-0002',
+          applicationClientId: 'synthetic-public-client',
+          provider: providerWith(token),
+        }),
+      ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+    }
+  });
+});
 
 function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {

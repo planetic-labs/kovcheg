@@ -8,9 +8,12 @@ import {
   verify as verifySignature,
 } from 'node:crypto';
 import type { JsonWebKey as CryptoJsonWebKey } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
+
+import { copySessionSetCookie, requestAuth, requestIsSecure } from './internal-http';
 
 const oidcStartPath = '/bff/auth/oidc/start';
 const oidcCallbackPath = '/bff/auth/oidc/callback';
@@ -24,35 +27,35 @@ const authorizationCodePattern = /^[A-Za-z0-9._~-]{8,4096}$/u;
 const bindingAad = Buffer.from('kovcheg-web-oidc-binding-v1', 'utf8');
 
 interface OidcBffEnvironmentSource {
+  readonly KOVCHEG_AUTH_INTERNAL_URL?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_CLIENT_ID?: string | undefined;
-  readonly KOVCHEG_WEB_OIDC_CLIENT_SECRET?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_ISSUER?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_REDIRECT_URI?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_STATE_KEY?: string | undefined;
+  readonly KOVCHEG_WEB_OIDC_STATE_KEY_FILE?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD?: string | undefined;
 }
-
-type TokenEndpointAuthMethod = 'client_secret_basic' | 'none';
 
 interface OidcBffConfig {
   readonly authorizationEndpoint: string;
   readonly clientId: string;
-  readonly clientSecret?: string | undefined;
+  readonly internalOrigin: string;
   readonly issuer: string;
   readonly redirectUri: string;
   readonly stateKey: Buffer;
-  readonly tokenEndpointAuthMethod: TokenEndpointAuthMethod;
+  readonly tokenEndpointAuthMethod: 'none';
 }
 
 function processOidcEnvironment(): OidcBffEnvironmentSource {
   return {
+    KOVCHEG_AUTH_INTERNAL_URL: process.env.KOVCHEG_AUTH_INTERNAL_URL,
     KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT: process.env.KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT,
     KOVCHEG_WEB_OIDC_CLIENT_ID: process.env.KOVCHEG_WEB_OIDC_CLIENT_ID,
-    KOVCHEG_WEB_OIDC_CLIENT_SECRET: process.env.KOVCHEG_WEB_OIDC_CLIENT_SECRET,
     KOVCHEG_WEB_OIDC_ISSUER: process.env.KOVCHEG_WEB_OIDC_ISSUER,
     KOVCHEG_WEB_OIDC_REDIRECT_URI: process.env.KOVCHEG_WEB_OIDC_REDIRECT_URI,
     KOVCHEG_WEB_OIDC_STATE_KEY: process.env.KOVCHEG_WEB_OIDC_STATE_KEY,
+    KOVCHEG_WEB_OIDC_STATE_KEY_FILE: process.env.KOVCHEG_WEB_OIDC_STATE_KEY_FILE,
     KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD:
       process.env.KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD,
   };
@@ -126,16 +129,47 @@ function stateKey(value: string): Buffer {
   return decoded;
 }
 
+function bareInternalOrigin(value: string | undefined): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value ?? 'http://auth:3002');
+  } catch {
+    throw configurationError();
+  }
+  if (
+    !['http:', 'https:'].includes(parsed.protocol) ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.pathname !== '/' ||
+    parsed.search !== '' ||
+    parsed.hash !== ''
+  ) {
+    throw configurationError();
+  }
+  return parsed.origin;
+}
+
+function stateKeyFile(path: string | undefined, inlineValue: string | undefined): Buffer {
+  if (inlineValue !== undefined || path === undefined || path.trim().length === 0) {
+    throw configurationError();
+  }
+  try {
+    return stateKey(readFileSync(path, 'utf8').trim());
+  } catch {
+    throw configurationError();
+  }
+}
+
 function loadOidcBffConfig(
   source: OidcBffEnvironmentSource = processOidcEnvironment(),
 ): OidcBffConfig | null {
   const relevant = [
     source.KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT,
     source.KOVCHEG_WEB_OIDC_CLIENT_ID,
-    source.KOVCHEG_WEB_OIDC_CLIENT_SECRET,
     source.KOVCHEG_WEB_OIDC_ISSUER,
     source.KOVCHEG_WEB_OIDC_REDIRECT_URI,
     source.KOVCHEG_WEB_OIDC_STATE_KEY,
+    source.KOVCHEG_WEB_OIDC_STATE_KEY_FILE,
     source.KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD,
   ];
   if (relevant.every((value) => value === undefined || value.trim().length === 0)) return null;
@@ -144,27 +178,15 @@ function loadOidcBffConfig(
   const clientId = source.KOVCHEG_WEB_OIDC_CLIENT_ID?.trim();
   const issuer = source.KOVCHEG_WEB_OIDC_ISSUER?.trim();
   const redirectUri = source.KOVCHEG_WEB_OIDC_REDIRECT_URI?.trim();
-  const stateKeyValue = source.KOVCHEG_WEB_OIDC_STATE_KEY?.trim();
   const tokenEndpointAuthMethod = source.KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD?.trim();
-  const clientSecret = source.KOVCHEG_WEB_OIDC_CLIENT_SECRET;
 
   if (
     authorizationEndpoint === undefined ||
     clientId === undefined ||
     issuer === undefined ||
     redirectUri === undefined ||
-    stateKeyValue === undefined ||
     !clientIdPattern.test(clientId) ||
-    (tokenEndpointAuthMethod !== 'none' && tokenEndpointAuthMethod !== 'client_secret_basic')
-  ) {
-    throw configurationError();
-  }
-  if (tokenEndpointAuthMethod === 'none' && clientSecret !== undefined) {
-    throw configurationError();
-  }
-  if (
-    tokenEndpointAuthMethod === 'client_secret_basic' &&
-    (clientSecret === undefined || Buffer.byteLength(clientSecret, 'utf8') < 32)
+    tokenEndpointAuthMethod !== 'none'
   ) {
     throw configurationError();
   }
@@ -179,10 +201,13 @@ function loadOidcBffConfig(
   return Object.freeze({
     authorizationEndpoint: normalizedAuthorizationEndpoint,
     clientId,
-    ...(clientSecret === undefined ? {} : { clientSecret }),
+    internalOrigin: bareInternalOrigin(source.KOVCHEG_AUTH_INTERNAL_URL),
     issuer: normalizedIssuer,
     redirectUri: normalizedRedirectUri,
-    stateKey: stateKey(stateKeyValue),
+    stateKey: stateKeyFile(
+      source.KOVCHEG_WEB_OIDC_STATE_KEY_FILE,
+      source.KOVCHEG_WEB_OIDC_STATE_KEY,
+    ),
     tokenEndpointAuthMethod,
   });
 }
@@ -192,6 +217,15 @@ function discoveryUrl(issuer: string): string {
   const issuerPath = parsed.pathname === '/' ? '' : parsed.pathname;
   parsed.pathname = `/.well-known/openid-configuration${issuerPath}`;
   return parsed.toString();
+}
+
+function internalProviderUrl(config: OidcBffConfig, publicUrl: string): string {
+  const external = new URL(publicUrl);
+  if (external.origin !== config.issuer) throw new Error('OIDC provider URL is invalid');
+  const internal = new URL(config.internalOrigin);
+  internal.pathname = external.pathname;
+  internal.search = external.search;
+  return internal.toString();
 }
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -226,7 +260,7 @@ function secureProviderEndpoint(value: unknown, issuer: string): string {
 }
 
 async function discover(config: OidcBffConfig, fetcher: typeof fetch): Promise<OidcDiscovery> {
-  const response = await fetcher(discoveryUrl(config.issuer), {
+  const response = await fetcher(internalProviderUrl(config, discoveryUrl(config.issuer)), {
     cache: 'no-store',
     headers: { accept: 'application/json' },
     redirect: 'manual',
@@ -348,11 +382,16 @@ function unavailable(clearBinding = false): NextResponse {
 
 function requestMatchesConfig(request: NextRequest, config: OidcBffConfig, path: string): boolean {
   const redirect = new URL(config.redirectUri);
-  return (
-    request.nextUrl.protocol === 'https:' &&
-    request.nextUrl.origin === redirect.origin &&
-    request.nextUrl.pathname === path
-  );
+  const forwardedHost = request.headers.get('x-forwarded-host');
+  const host = forwardedHost ?? request.headers.get('host') ?? request.nextUrl.host;
+  if (!requestIsSecure(request) || host.includes(',') || /[\s/@\\]/u.test(host)) return false;
+  let origin: string;
+  try {
+    origin = new URL(`https://${host}`).origin;
+  } catch {
+    return false;
+  }
+  return origin === redirect.origin && request.nextUrl.pathname === path;
 }
 
 function randomProtocolValue(random: (size: number) => Buffer): string {
@@ -439,10 +478,6 @@ function exactQuery(
   return Object.freeze({ code, ...(issuer === null ? {} : { issuer }), state });
 }
 
-function encodedBasicCredential(value: string): string {
-  return new URLSearchParams({ value }).toString().slice('value='.length);
-}
-
 async function exchangeCode(input: {
   readonly code: string;
   readonly codeVerifier: string;
@@ -460,16 +495,9 @@ async function exchangeCode(input: {
     accept: 'application/json',
     'content-type': 'application/x-www-form-urlencoded',
   });
-  if (input.config.tokenEndpointAuthMethod === 'none') {
-    body.set('client_id', input.config.clientId);
-  } else {
-    const credential = `${encodedBasicCredential(input.config.clientId)}:${encodedBasicCredential(
-      input.config.clientSecret ?? '',
-    )}`;
-    headers.set('authorization', `Basic ${Buffer.from(credential, 'utf8').toString('base64')}`);
-  }
+  body.set('client_id', input.config.clientId);
   return readJson(
-    await input.fetcher(input.tokenEndpoint, {
+    await input.fetcher(internalProviderUrl(input.config, input.tokenEndpoint), {
       body,
       cache: 'no-store',
       headers,
@@ -500,6 +528,7 @@ function validAudience(payload: Record<string, unknown>, clientId: string): bool
 
 async function verifyIdToken(input: {
   readonly clientId: string;
+  readonly config: OidcBffConfig;
   readonly fetcher: typeof fetch;
   readonly idToken: string;
   readonly issuer: string;
@@ -525,7 +554,7 @@ async function verifyIdToken(input: {
   const headerAlgorithm = header.alg;
   const headerKeyId = header.kid;
   const jwks = await readJson(
-    await input.fetcher(input.jwksUri, {
+    await input.fetcher(internalProviderUrl(input.config, input.jwksUri), {
       cache: 'no-store',
       headers: { accept: 'application/json' },
       redirect: 'manual',
@@ -623,16 +652,24 @@ export async function completeOidcAuthorization(
     });
     if (
       typeof token.access_token !== 'string' ||
-      token.access_token.length < 1 ||
+      token.access_token.length < 16 ||
+      token.access_token.length > 4096 ||
+      /\s/u.test(token.access_token) ||
       typeof token.id_token !== 'string' ||
-      token.id_token.length < 1 ||
+      token.id_token.length < 16 ||
+      token.id_token.length > 32 * 1024 ||
       token.token_type !== 'Bearer' ||
+      !Number.isSafeInteger(token.expires_in) ||
+      (token.expires_in as number) < 1 ||
+      (token.expires_in as number) > 10 * 60 ||
+      (token.scope !== undefined && token.scope !== 'openid') ||
       token.refresh_token !== undefined
     ) {
       return unavailable(true);
     }
     await verifyIdToken({
       clientId: config.clientId,
+      config,
       fetcher,
       idToken: token.id_token,
       issuer: config.issuer,
@@ -640,9 +677,19 @@ export async function completeOidcAuthorization(
       nonce: binding.nonce,
       now,
     });
+    const bridge = await requestAuth(request, '/internal/oidc/session', {
+      body: JSON.stringify({ accessToken: token.access_token }),
+      cookies: 'none',
+      fetcher,
+      method: 'POST',
+    });
+    if (bridge.status !== 204) return unavailable(true);
 
-    // No application-session bridge exists yet. A validated external identity must remain fail-closed.
-    return unavailable(true);
+    const response = NextResponse.redirect(new URL('/', config.redirectUri), 303);
+    response.headers.set('cache-control', 'no-store');
+    setBindingCookie(response, '', 0);
+    if (!copySessionSetCookie(bridge, response)) return unavailable(true);
+    return response;
   } catch {
     return unavailable(true);
   }

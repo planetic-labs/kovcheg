@@ -26,6 +26,7 @@ export interface AuthRuntime {
   close(): Promise<void>;
   isReady(): Promise<boolean>;
   readonly oidcProvider: Provider;
+  readonly oidcApplicationClientId: string;
   readonly passkeyService: PasskeyService;
   readonly sessionCookie: SessionCookie;
 }
@@ -50,6 +51,16 @@ export interface CreateAuthRuntimeInput {
 export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<AuthRuntime> {
   const clientRepository: OidcClientRepository =
     input.clientRepository ?? new ConfiguredOidcClientRepository(input.config.oidc.clients);
+  const oidcApplicationClientId =
+    input.config.oidc.applicationClientId ??
+    (input.config.environment === 'test'
+      ? input.config.oidc.clients.find(
+          (client) => client.tokenEndpointAuthMethod === 'none' && client.scopes[0] === 'openid',
+        )?.clientId
+      : undefined);
+  if (oidcApplicationClientId === undefined) {
+    throw new AuthError('auth.unavailable', 'The application OIDC client is unavailable');
+  }
   if (
     input.config.environment === 'production' &&
     (input.clientRepository === undefined ||
@@ -137,6 +148,7 @@ export async function createAuthRuntime(input: CreateAuthRuntimeInput): Promise<
     isReady: async () =>
       redisClient.isReady() && (await input.repository.isReady().catch(() => false)),
     oidcProvider,
+    oidcApplicationClientId,
     passkeyService,
     sessionCookie,
   });

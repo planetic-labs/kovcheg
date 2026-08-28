@@ -3,7 +3,7 @@ import type { CorrelationId, UserId } from '@kovcheg/contracts';
 import { loadServiceConfig } from '@kovcheg/config';
 import { exportJWK, generateKeyPair } from 'jose';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAuthApplication } from '../application.js';
 import { emailChallengePolicy, passkeyPolicy, passkeyRateLimitPolicy } from './contracts.js';
@@ -46,6 +46,7 @@ async function testConfig(
     enabled: true,
     environment: 'test',
     oidc: Object.freeze({
+      applicationClientId: 'synthetic-http-client',
       clients: Object.freeze([
         Object.freeze({
           clientId: 'synthetic-http-client',
@@ -357,6 +358,72 @@ describe('A2 auth HTTP runtime', () => {
       state: 'ready',
       status: 'ok',
     });
+  });
+
+  it('bridges only the bound OIDC client to one active-account session', async () => {
+    const fixture = await createFixture();
+    const findToken = vi.spyOn(fixture.runtime.oidcProvider.AccessToken, 'find').mockImplementation(
+      async (accessToken) =>
+        ({
+          accountId:
+            accessToken === 'synthetic-unknown-access-token'
+              ? '00000000-0000-4000-8000-000000000099'
+              : fixture.activeAccount.userId,
+          clientId:
+            accessToken === 'synthetic-other-client-token'
+              ? 'synthetic-other-client'
+              : 'synthetic-http-client',
+          gty: 'authorization_code',
+          isExpired: accessToken === 'synthetic-expired-access-token',
+          isValid: accessToken !== 'synthetic-expired-access-token',
+          kind: 'AccessToken',
+          scope: 'openid',
+        }) as never,
+    );
+
+    const bridge = async (accessToken: string, extra: Record<string, unknown> = {}) =>
+      fetch(`${fixture.baseUrl}/internal/oidc/session`, {
+        body: JSON.stringify({ accessToken, ...extra }),
+        headers: {
+          [correlationIdHeaderName]: 'http-oidc-session',
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+
+    const successful = await bridge('synthetic-valid-access-token');
+    expect(successful.status).toBe(204);
+    const cookie = responseCookie(successful);
+    await expect(
+      fetch(`${fixture.baseUrl}/session`, { headers: { cookie } }),
+    ).resolves.toMatchObject({ status: 200 });
+
+    const replay = await bridge('synthetic-valid-access-token');
+    expect(replay.status).toBe(401);
+    expect(replay.headers.getSetCookie()).toHaveLength(0);
+
+    const otherClient = await bridge('synthetic-other-client-token');
+    const expired = await bridge('synthetic-expired-access-token');
+    const unknown = await bridge('synthetic-unknown-access-token');
+    const malformed = await bridge('synthetic-extra-field-token', { unexpected: true });
+    expect([otherClient.status, expired.status, unknown.status, malformed.status]).toEqual([
+      401, 401, 401, 401,
+    ]);
+    for (const response of [otherClient, expired, unknown, malformed]) {
+      await expect(response.json()).resolves.toMatchObject({ error: 'auth.invalid-session' });
+      expect(response.headers.getSetCookie()).toHaveLength(0);
+    }
+
+    await fixture.runtime.authService.setAccountStatus(
+      fixture.administratorSession.sessionToken,
+      fixture.activeAccount.userId,
+      'deactivated',
+      setupCorrelationId,
+    );
+    const deactivated = await bridge('synthetic-deactivated-access-token');
+    expect(deactivated.status).toBe(401);
+    expect(deactivated.headers.getSetCookie()).toHaveLength(0);
+    expect(findToken).toHaveBeenCalled();
   });
 
   it('moves every valid email to the same neutral code state and delivers only to active accounts', async () => {

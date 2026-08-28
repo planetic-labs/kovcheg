@@ -221,6 +221,46 @@ describe('A2 administrator and account use cases', () => {
     ).rejects.toMatchObject({ code: 'auth.invalid-session' });
   });
 
+  it('creates one OIDC-bound session only for an existing active account', async () => {
+    const fixture = createFixture();
+    await bootstrap(fixture);
+    const administratorSession = await login(
+      fixture,
+      'administrator@example.invalid',
+      'oidc-administrator',
+    );
+    const accessToken = 'synthetic-oidc-access-token-0001';
+    const session = await fixture.service.createOidcSession({
+      accessToken,
+      accountId: administratorId,
+      correlationId: 'oidc-session-create' as CorrelationId,
+    });
+    await expect(fixture.service.authenticateSession(session.sessionToken)).resolves.toMatchObject({
+      userId: administratorId,
+    });
+    await expect(
+      fixture.service.createOidcSession({
+        accessToken,
+        accountId: administratorId,
+        correlationId: 'oidc-session-replay' as CorrelationId,
+      }),
+    ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+
+    await fixture.service.setAccountStatus(
+      administratorSession.sessionToken,
+      administratorId,
+      'deactivated',
+      administrationCorrelationId,
+    );
+    await expect(
+      fixture.service.createOidcSession({
+        accessToken: 'synthetic-oidc-access-token-0002',
+        accountId: administratorId,
+        correlationId: 'oidc-session-deactivated' as CorrelationId,
+      }),
+    ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+  });
+
   it('keeps owner-only platform administration separate from delegated functional grants', async () => {
     const fixture = createFixture();
     await bootstrap(fixture);

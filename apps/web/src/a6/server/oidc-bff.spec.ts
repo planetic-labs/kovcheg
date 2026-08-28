@@ -1,7 +1,10 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { NextRequest } from 'next/server';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { GET as oidcCallback } from '../../app/bff/auth/oidc/callback/route';
 import { GET as oidcStart } from '../../app/bff/auth/oidc/start/route';
@@ -17,6 +20,9 @@ const redirectUri = `${clientOrigin}${oidcCallbackPath}`;
 const clientId = 'synthetic-web-client';
 const now = Date.UTC(2026, 7, 28, 12, 0, 0);
 const stateKey = Buffer.alloc(32, 7).toString('base64url');
+const internalOrigin = 'http://auth:3002';
+const stateDirectory = mkdtempSync(join(tmpdir(), 'kovcheg-oidc-bff-'));
+const stateKeyPath = join(stateDirectory, 'state-key');
 const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
 const publicJwk = {
   ...(publicKey.export({ format: 'jwk' }) as JsonWebKey),
@@ -26,22 +32,24 @@ const publicJwk = {
 };
 
 interface SyntheticOidcEnvironment {
+  readonly KOVCHEG_AUTH_INTERNAL_URL?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_CLIENT_ID?: string | undefined;
-  readonly KOVCHEG_WEB_OIDC_CLIENT_SECRET?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_ISSUER?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_REDIRECT_URI?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_STATE_KEY?: string | undefined;
+  readonly KOVCHEG_WEB_OIDC_STATE_KEY_FILE?: string | undefined;
   readonly KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD?: string | undefined;
 }
 
 function environment(overrides: Partial<SyntheticOidcEnvironment> = {}): SyntheticOidcEnvironment {
   return {
+    KOVCHEG_AUTH_INTERNAL_URL: internalOrigin,
     KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT: authorizationEndpoint,
     KOVCHEG_WEB_OIDC_CLIENT_ID: clientId,
     KOVCHEG_WEB_OIDC_ISSUER: issuer,
     KOVCHEG_WEB_OIDC_REDIRECT_URI: redirectUri,
-    KOVCHEG_WEB_OIDC_STATE_KEY: stateKey,
+    KOVCHEG_WEB_OIDC_STATE_KEY_FILE: stateKeyPath,
     KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD: 'none',
     ...overrides,
   };
@@ -51,9 +59,7 @@ function configure(source: SyntheticOidcEnvironment = environment()): void {
   for (const [name, value] of Object.entries(source)) {
     vi.stubEnv(name, value);
   }
-  if (source.KOVCHEG_WEB_OIDC_CLIENT_SECRET === undefined) {
-    vi.stubEnv('KOVCHEG_WEB_OIDC_CLIENT_SECRET', undefined);
-  }
+  vi.stubEnv('KOVCHEG_WEB_OIDC_STATE_KEY', source.KOVCHEG_WEB_OIDC_STATE_KEY);
 }
 
 function json(value: unknown, status = 200): Response {
@@ -109,6 +115,19 @@ function callbackRequest(location: URL, cookie?: string): NextRequest {
   });
 }
 
+function forwardedRequest(publicLocation: string | URL, cookie?: string): NextRequest {
+  const publicUrl = new URL(publicLocation, clientOrigin);
+  const loopback = new URL(publicUrl.pathname + publicUrl.search, 'http://127.0.0.1:32000');
+  return new NextRequest(loopback, {
+    headers: {
+      ...(cookie === undefined ? {} : { cookie }),
+      host: publicUrl.host,
+      'x-forwarded-host': publicUrl.host,
+      'x-forwarded-proto': 'https',
+    },
+  });
+}
+
 function bindingCookie(response: Response): string {
   const setCookie = response.headers.get('set-cookie');
   if (setCookie === null) throw new Error('Expected an OIDC binding cookie');
@@ -134,8 +153,8 @@ function successfulCallbackFetcher(nonce: string, claims: Partial<Record<string,
   return vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
     void _init;
     const url = input instanceof Request ? input.url : input.toString();
-    if (url === `${issuer}/.well-known/openid-configuration`) return json(discovery());
-    if (url === tokenEndpoint) {
+    if (url === `${internalOrigin}/.well-known/openid-configuration`) return json(discovery());
+    if (url === `${internalOrigin}/token`) {
       return json({
         access_token: 'synthetic-access-token',
         expires_in: 300,
@@ -143,7 +162,16 @@ function successfulCallbackFetcher(nonce: string, claims: Partial<Record<string,
         token_type: 'Bearer',
       });
     }
-    if (url === jwksUri) return json({ keys: [publicJwk] });
+    if (url === `${internalOrigin}/jwks`) return json({ keys: [publicJwk] });
+    if (url === `${internalOrigin}/internal/oidc/session`) {
+      return new Response(null, {
+        headers: {
+          'set-cookie':
+            '__Host-kovcheg_session=synthetic-session; Path=/; HttpOnly; Secure; SameSite=Lax',
+        },
+        status: 204,
+      });
+    }
     throw new Error('Unexpected synthetic OIDC request');
   });
 }
@@ -165,8 +193,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+beforeAll(() => {
+  writeFileSync(stateKeyPath, stateKey);
+});
+
+afterAll(() => {
+  rmSync(stateDirectory, { force: true, recursive: true });
+});
+
 describe('A6 OIDC BFF configuration', () => {
-  it('keeps an absent configuration fail-closed and distinguishes public from confidential clients', async () => {
+  it('keeps an absent configuration fail-closed and permits only a file-backed public client', async () => {
     expect((await oidcStart(startRequest())).status).toBe(503);
     vi.stubGlobal(
       'fetch',
@@ -176,21 +212,10 @@ describe('A6 OIDC BFF configuration', () => {
     configure();
     expect((await oidcStart(startRequest())).status).toBe(303);
 
-    configure(
-      environment({
-        KOVCHEG_WEB_OIDC_CLIENT_SECRET: 's'.repeat(32),
-        KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD: 'client_secret_basic',
-      }),
-    );
-    expect((await oidcStart(startRequest())).status).toBe(303);
-
     for (const source of [
-      environment({ KOVCHEG_WEB_OIDC_CLIENT_SECRET: 'prohibited' }),
       environment({ KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD: 'client_secret_basic' }),
-      environment({
-        KOVCHEG_WEB_OIDC_CLIENT_SECRET: 'short',
-        KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD: 'client_secret_basic',
-      }),
+      environment({ KOVCHEG_WEB_OIDC_STATE_KEY: stateKey }),
+      environment({ KOVCHEG_WEB_OIDC_STATE_KEY_FILE: '/synthetic/missing' }),
     ]) {
       configure(source);
       expect((await oidcStart(startRequest())).status).toBe(503);
@@ -256,6 +281,23 @@ describe('A6 OIDC BFF start route', () => {
     expect(setCookie).not.toContain(issuer);
   });
 
+  it('accepts only the exact trusted-forwarded application host at the dual-host seam', async () => {
+    configure();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => json(discovery())),
+    );
+
+    const accepted = await oidcStart(forwardedRequest(oidcStartPath));
+    expect(accepted.status).toBe(303);
+    const wrongHost = forwardedRequest(oidcStartPath);
+    wrongHost.headers.set('x-forwarded-host', 'other-client.invalid');
+    const rejected = await oidcStart(wrongHost);
+    expect(rejected.status).toBe(503);
+    expect(rejected.headers.get('set-cookie')).toBeNull();
+  });
+
   it('returns the same fail-closed response for missing config, discovery drift, and transport failure', async () => {
     const missing = await oidcStart(startRequest());
     expect(missing.status).toBe(503);
@@ -295,7 +337,7 @@ describe('A6 OIDC BFF start route', () => {
 });
 
 describe('A6 OIDC BFF callback route', () => {
-  it('performs a server-only public-client exchange and remains fail-closed without admission', async () => {
+  it('bridges a validated public-client exchange into one same-origin application session', async () => {
     configure();
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const started = await begin();
@@ -308,9 +350,11 @@ describe('A6 OIDC BFF callback route', () => {
       callbackRequest(callbackLocation(started.authorization), started.cookie),
     );
 
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({ code: 'a6.oidc-not-configured', status: 503 });
-    const tokenCall = fetcher.mock.calls.find(([input]) => input.toString() === tokenEndpoint);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`${clientOrigin}/`);
+    const tokenCall = fetcher.mock.calls.find(
+      ([input]) => input.toString() === `${internalOrigin}/token`,
+    );
     expect(tokenCall).toBeDefined();
     const tokenInit = tokenCall?.[1];
     if (tokenInit === undefined) throw new Error('Expected token request options');
@@ -330,35 +374,13 @@ describe('A6 OIDC BFF callback route', () => {
     const setCookie = response.headers.get('set-cookie') ?? '';
     expect(setCookie).toContain('__Host-kovcheg_oidc=');
     expect(setCookie).toContain('Max-Age=0');
-    expect(setCookie).not.toContain('__Host-kovcheg_session=');
-    expect(setCookie).not.toContain('kovcheg_session=');
-  });
-
-  it('keeps confidential credentials server-only when that method is explicitly configured', async () => {
-    const clientSecret = 's'.repeat(32);
-    configure(
-      environment({
-        KOVCHEG_WEB_OIDC_CLIENT_SECRET: clientSecret,
-        KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD: 'client_secret_basic',
-      }),
+    expect(setCookie).toContain('__Host-kovcheg_session=synthetic-session');
+    const bridgeCall = fetcher.mock.calls.find(
+      ([input]) => input.toString() === `${internalOrigin}/internal/oidc/session`,
     );
-    vi.spyOn(Date, 'now').mockReturnValue(now);
-    const started = await begin();
-    expect(started.authorization.toString()).not.toContain(clientSecret);
-    const fetcher = successfulCallbackFetcher(
-      started.authorization.searchParams.get('nonce') ?? '',
-    );
-    vi.stubGlobal('fetch', fetcher);
-
-    await oidcCallback(callbackRequest(callbackLocation(started.authorization), started.cookie));
-
-    const tokenCall = fetcher.mock.calls.find(([input]) => input.toString() === tokenEndpoint);
-    const tokenInit = tokenCall?.[1];
-    if (tokenInit === undefined) throw new Error('Expected token request options');
-    const tokenBody = tokenInit.body as URLSearchParams;
-    expect(new Headers(tokenInit.headers).get('authorization')).toMatch(/^Basic [A-Za-z0-9+/=]+$/u);
-    expect(tokenBody.has('client_id')).toBe(false);
-    expect(tokenBody.toString()).not.toContain(clientSecret);
+    expect(bridgeCall).toBeDefined();
+    expect(bridgeCall?.[1]?.body).toBe(JSON.stringify({ accessToken: 'synthetic-access-token' }));
+    expect(new Headers(bridgeCall?.[1]?.headers).has('cookie')).toBe(false);
   });
 
   it.each([
@@ -492,5 +514,34 @@ describe('A6 OIDC BFF callback route', () => {
     expect(replayFetcher).not.toHaveBeenCalled();
 
     for (const log of logs) expect(log).not.toHaveBeenCalled();
+  });
+
+  it('keeps a rejected active-account bridge neutral and emits no application session', async () => {
+    configure();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const started = await begin();
+    const fetcher = successfulCallbackFetcher(
+      started.authorization.searchParams.get('nonce') ?? '',
+    ).mockImplementationOnce(async () => json(discovery()));
+    const upstream = successfulCallbackFetcher(
+      started.authorization.searchParams.get('nonce') ?? '',
+    );
+    fetcher.mockImplementation(async (input, init) => {
+      if (input.toString() === `${internalOrigin}/internal/oidc/session`) {
+        return json({ error: 'auth.invalid-session' }, 401);
+      }
+      return upstream(input, init);
+    });
+    vi.stubGlobal('fetch', fetcher);
+
+    const response = await oidcCallback(
+      forwardedRequest(callbackLocation(started.authorization), started.cookie),
+    );
+
+    expect(response.status).toBe(503);
+    const setCookie = response.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('__Host-kovcheg_oidc=');
+    expect(setCookie).toContain('Max-Age=0');
+    expect(setCookie).not.toContain('kovcheg_session=');
   });
 });

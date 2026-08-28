@@ -26,6 +26,7 @@ docker_buildx_preflight
 target_image_prefix="kovcheg-test-deployment-$KOVCHEG_TEST_RUN_ID-amd64"
 export KOVCHEG_LOCAL_SECRET_DIR="$PWD/.local/$project-secrets"
 export KOVCHEG_LOOPBACK_PORT=$((32000 + ($$ % 1000)))
+export KOVCHEG_AUTH_ISSUER_LOOPBACK_PORT=$((34000 + ($$ % 1000)))
 target_api_image="$target_image_prefix-api"
 target_auth_image="$target_image_prefix-auth"
 target_web_image="$target_image_prefix-web"
@@ -48,6 +49,11 @@ export KOVCHEG_AUTH_OIDC_ISSUER='https://auth-deployment.invalid'
 export KOVCHEG_AUTH_WEBAUTHN_ORIGINS_JSON='["https://auth-deployment.invalid"]'
 export KOVCHEG_AUTH_WEBAUTHN_RP_ID='auth-deployment.invalid'
 export KOVCHEG_AUTH_WEBAUTHN_RP_NAME='Synthetic Deployment'
+export KOVCHEG_WEB_OIDC_AUTHORIZATION_ENDPOINT='https://auth-deployment.invalid/auth'
+export KOVCHEG_WEB_OIDC_CLIENT_ID='synthetic-deployment-web'
+export KOVCHEG_WEB_OIDC_ISSUER='https://auth-deployment.invalid'
+export KOVCHEG_WEB_OIDC_REDIRECT_URI='https://app-deployment.invalid/bff/auth/oidc/callback'
+export KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD='none'
 
 compose() {
   sh infra/scripts/compose.sh \
@@ -168,6 +174,9 @@ BUILD_COMMIT_SHA="$revision" BUILD_IMAGE_DIGEST="$synthetic_digest" \
   node infra/scripts/docker-smoke.mjs "$base_url"
 
 smoke_session_token=$(compose exec -T auth node --input-type=module <infra/scripts/create-smoke-session.mjs)
+issuer_base_url="http://127.0.0.1:$KOVCHEG_AUTH_ISSUER_LOOPBACK_PORT"
+KOVCHEG_SMOKE_SESSION_TOKEN="$smoke_session_token" \
+  node infra/scripts/oidc-dual-host-smoke.mjs "$base_url" "$issuer_base_url"
 deactivated_session_token=$(
   compose exec -T -e KOVCHEG_SMOKE_ADMIN_SESSION_TOKEN="$smoke_session_token" \
     auth node --input-type=module <infra/scripts/create-deactivated-smoke-session.mjs

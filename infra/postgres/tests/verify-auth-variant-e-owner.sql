@@ -10,9 +10,9 @@ END;
 $$;
 
 SELECT pg_temp.assert_true(
-  kovcheg.current_migration_version() = '0016'
-  AND (SELECT count(*) = 16 FROM kovcheg_meta.schema_migrations),
-  'the complete sixteen-migration Variant E chain must be recorded'
+  kovcheg.current_migration_version() = '0017'
+  AND (SELECT count(*) = 17 FROM kovcheg_meta.schema_migrations),
+  'the complete seventeen-migration Variant E chain must be recorded'
 );
 
 SELECT pg_temp.assert_true(
@@ -203,7 +203,7 @@ SELECT pg_temp.assert_true(
   (
     SELECT count(*) = 1
       AND bool_and(event.outcome = 'success')
-      AND bool_and(event.migration_version = '0016')
+      AND bool_and(event.migration_version = '0017')
       AND bool_and(event.details = '{}'::jsonb)
     FROM kovcheg.audit_events AS event
     WHERE event.correlation_id = 'variant-email-normalized'
@@ -230,12 +230,12 @@ SELECT pg_temp.assert_true(
     FROM kovcheg.audit_events
     WHERE correlation_id = 'passkey-security-reset'
       AND action = 'auth.access.security-reset'
-      AND migration_version = '0016'
+      AND migration_version = '0017'
   )
   AND NOT EXISTS (
     SELECT 1
     FROM kovcheg.audit_events
-    WHERE migration_version = '0016'
+    WHERE migration_version = '0017'
       AND action = 'auth.personal-gate.security-reset'
   ),
   'current security resets must use the generic Variant E audit action'

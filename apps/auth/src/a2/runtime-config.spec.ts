@@ -19,6 +19,8 @@ function enabledSource() {
         tokenEndpointAuthMethod: 'none',
       },
     ]),
+    AUTH_OIDC_APPLICATION_CLIENT_ID: 'synthetic-client',
+    AUTH_OIDC_APPLICATION_REDIRECT_URI: 'http://127.0.0.1/callback',
     AUTH_OIDC_COOKIE_KEYS_JSON: JSON.stringify(['k'.repeat(64), 'l'.repeat(64)]),
     AUTH_OIDC_ISSUER: 'http://127.0.0.1:4300',
     AUTH_OIDC_JWKS_JSON: JSON.stringify({
@@ -49,6 +51,7 @@ describe('A2 runtime configuration', () => {
         userId: '00000000-0000-4000-8000-000000000071',
       },
       oidc: {
+        applicationClientId: 'synthetic-client',
         clients: [{ clientId: 'synthetic-client', tokenEndpointAuthMethod: 'none' }],
         issuer: 'http://127.0.0.1:4300',
         sessionTtlSeconds: 12 * 60 * 60,
@@ -79,6 +82,35 @@ describe('A2 runtime configuration', () => {
         AUTH_REDIS_URL: 'https://example.invalid',
       }),
     ).toThrow('AUTH_REDIS_URL must use redis or rediss');
+  });
+
+  it('binds the application bridge to one exact public openid client and redirect', () => {
+    expect(() =>
+      loadAuthRuntimeConfig('test', {
+        ...enabledSource(),
+        AUTH_OIDC_APPLICATION_CLIENT_ID: 'other-client',
+      }),
+    ).toThrow('The application OIDC client must be one exact public openid client');
+    expect(() =>
+      loadAuthRuntimeConfig('test', {
+        ...enabledSource(),
+        AUTH_OIDC_APPLICATION_REDIRECT_URI: 'http://127.0.0.1/other',
+      }),
+    ).toThrow('The application OIDC client must be one exact public openid client');
+    expect(() =>
+      loadAuthRuntimeConfig('test', {
+        ...enabledSource(),
+        AUTH_OIDC_CLIENTS_JSON: JSON.stringify([
+          {
+            clientId: 'synthetic-client',
+            clientSecret: 's'.repeat(32),
+            redirectUris: ['http://127.0.0.1/callback'],
+            scopes: ['openid'],
+            tokenEndpointAuthMethod: 'client_secret_basic',
+          },
+        ]),
+      }),
+    ).toThrow('The application OIDC client must be one exact public openid client');
   });
 
   it('allows only the exact production RP and bounded synthetic test origins', () => {

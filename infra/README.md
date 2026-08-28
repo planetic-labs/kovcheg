@@ -24,7 +24,7 @@ sh infra/scripts/compose.sh up --detach --wait postgres
 sh infra/scripts/compose.sh --profile data run --rm migrate
 ```
 
-Run both a latest-from-zero scenario through the current `0001 → … → 0016` chain and every compatible upgrade boundary through `0015 → 0016` with:
+Run both a latest-from-zero scenario through the current `0001 → … → 0017` chain and every compatible upgrade boundary through `0016 → 0017` with:
 
 ```sh
 pnpm database:test
@@ -47,7 +47,7 @@ All disposable Docker verification entrypoints share an ownership lifecycle. Eac
 
 The data core keeps authorization facts in PostgreSQL: platform-role assignments, chat audience and posting policies, chat administrators, role-based posting allowlists, service labels, and immutable membership periods. Runtime reads these facts through least-privilege tables and SECURITY DEFINER predicates; it does not infer rights from chat names or application memory.
 
-Auth persistence uses a separate `kovcheg_auth_app` login inheriting only `kovcheg_auth_runtime`. It has no direct table DML and calls protected functions for account bootstrap/creation, challenge issue/consume/invalidation, session authentication/revocation, activation changes, exact OIDC client lookups, and durable OIDC adapter operations. The migration contains no contact fixtures, client registrations, plaintext codes or tokens, client secrets, signing keys, cookie keys, or auth peppers.
+Auth persistence uses a separate `kovcheg_auth_app` login inheriting only `kovcheg_auth_runtime`. It has no direct table DML and calls protected functions for account bootstrap/creation, challenge issue/consume/invalidation, session authentication/revocation, activation changes, exact OIDC client lookups, durable OIDC adapter operations, and one-time OIDC application-session creation for an existing active account. The database stores only a keyed verifier of the source access token; the migration contains no contact fixtures, client registrations, plaintext codes or tokens, client secrets, signing keys, cookie keys, or auth peppers.
 
 Persona authorization remains internal to the API runtime. It rechecks the exact personal session, operator, active system persona, and active individual grant inside the same migration-owned entrypoint that writes an act-as message. The API runtime receives `EXECUTE` only and no direct DML on grant or auth-state tables. The message row and outbox retain the public sender account, while the append-only protected audit retains the distinct personal operator.
 
