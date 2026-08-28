@@ -206,6 +206,8 @@ services:
       AUTH_EMAIL_FROM_ADDRESS: sender@auth.invalid
       AUTH_EMAIL_FROM_NAME: Synthetic Local Sender
       AUTH_OIDC_CLIENTS_JSON_FILE: /run/secrets/auth_oidc_clients
+      AUTH_OIDC_APPLICATION_CLIENT_ID: ${KOVCHEG_WEB_OIDC_CLIENT_ID:-kovcheg-local}
+      AUTH_OIDC_APPLICATION_REDIRECT_URI: ${KOVCHEG_WEB_OIDC_REDIRECT_URI:-https://client.invalid/bff/auth/oidc/callback}
       AUTH_OIDC_COOKIE_KEYS_JSON_FILE: /run/secrets/auth_oidc_cookie_keys
       AUTH_OIDC_ISSUER: https://auth.invalid
       AUTH_OIDC_JWKS_JSON_FILE: /run/secrets/auth_oidc_jwks

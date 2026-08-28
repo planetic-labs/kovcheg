@@ -1,4 +1,4 @@
-/* global fetch, Headers, process, URL */
+/* global Buffer, fetch, Headers, process, URL */
 
 const [applicationLoopback, issuerLoopback] = process.argv.slice(2);
 const applicationOrigin = process.env.KOVCHEG_WEB_OIDC_REDIRECT_URI
@@ -6,6 +6,8 @@ const applicationOrigin = process.env.KOVCHEG_WEB_OIDC_REDIRECT_URI
   : null;
 const issuerOrigin = process.env.KOVCHEG_WEB_OIDC_ISSUER ?? null;
 const existingSession = process.env.KOVCHEG_SMOKE_SESSION_TOKEN ?? null;
+const maximumDiagnosticBodyBytes = 4096;
+const safeErrorCodes = new Set(['a6.oidc-not-configured']);
 
 if (
   applicationLoopback === undefined ||
@@ -19,6 +21,68 @@ if (
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function boundedResponseMetadata(response) {
+  if (response.body === null) {
+    return { bodyBytes: 0, bodyKind: 'empty', errorCode: 'absent' };
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bodyBytes = 0;
+  let oversized = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bodyBytes += value.byteLength;
+    if (bodyBytes > maximumDiagnosticBodyBytes) {
+      oversized = true;
+      await reader.cancel();
+      break;
+    }
+    chunks.push(Buffer.from(value));
+  }
+
+  if (oversized) {
+    return {
+      bodyBytes: `>${maximumDiagnosticBodyBytes}`,
+      bodyKind: 'oversized',
+      errorCode: 'unverified',
+    };
+  }
+  if (bodyBytes === 0) {
+    return { bodyBytes, bodyKind: 'empty', errorCode: 'absent' };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return { bodyBytes, bodyKind: 'non-json', errorCode: 'unverified' };
+  }
+  const candidate =
+    parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed.code : null;
+  return {
+    bodyBytes,
+    bodyKind: 'json',
+    errorCode:
+      typeof candidate === 'string' && safeErrorCodes.has(candidate)
+        ? candidate
+        : candidate === null
+          ? 'absent'
+          : 'unrecognized',
+  };
+}
+
+async function requireStatus(response, expectedStatus, stage) {
+  if (response.status === expectedStatus) return;
+  const metadata = await boundedResponseMetadata(response);
+  throw new Error(
+    `${stage} response mismatch: expected=${expectedStatus} actual=${response.status} ` +
+      `bodyKind=${metadata.bodyKind} bodyBytes=${metadata.bodyBytes} ` +
+      `errorCode=${metadata.errorCode}`,
+  );
 }
 
 function setCookieValues(response) {
@@ -79,7 +143,7 @@ const start = await browserRequest(
   applicationLoopback,
   applicationCookies,
 );
-assert(start.status === 303, 'OIDC start did not redirect');
+await requireStatus(start, 303, 'oidc-start');
 const authorizationLocation = start.headers.get('location');
 assert(authorizationLocation !== null, 'OIDC start omitted its authorization location');
 assert(new URL(authorizationLocation).origin === issuerOrigin, 'OIDC start used the wrong issuer');
@@ -91,7 +155,7 @@ const authorization = await browserRequest(
   issuerLoopback,
   issuerCookies,
 );
-assert(authorization.status === 303, 'OIDC authorization did not create an interaction');
+await requireStatus(authorization, 303, 'oidc-authorization');
 const interactionLocation = authorization.headers.get('location');
 assert(interactionLocation !== null, 'OIDC authorization omitted the interaction location');
 
@@ -102,12 +166,12 @@ const interaction = await browserRequest(
   issuerLoopback,
   issuerCookies,
 );
-assert(interaction.status === 303, 'OIDC interaction rejected an existing active account');
+await requireStatus(interaction, 303, 'oidc-interaction');
 const resumeLocation = interaction.headers.get('location');
 assert(resumeLocation !== null, 'OIDC interaction omitted its resume location');
 
 const resume = await browserRequest(resumeLocation, issuerOrigin, issuerLoopback, issuerCookies);
-assert(resume.status === 303, 'OIDC provider did not issue an authorization code');
+await requireStatus(resume, 303, 'oidc-resume');
 const callbackLocation = resume.headers.get('location');
 assert(callbackLocation !== null, 'OIDC provider omitted the application callback');
 assert(
@@ -121,7 +185,7 @@ const callback = await browserRequest(
   applicationLoopback,
   applicationCookies,
 );
-assert(callback.status === 303, 'OIDC callback did not create an application session');
+await requireStatus(callback, 303, 'oidc-callback');
 assert(
   callback.headers.get('location') === `${applicationOrigin}/`,
   'OIDC callback redirect drifted',
@@ -135,7 +199,7 @@ const session = await browserRequest(
   applicationLoopback,
   applicationCookies,
 );
-assert(session.status === 200, 'OIDC-created application session is not active');
+await requireStatus(session, 200, 'application-session');
 const principal = await session.json();
 assert(
   principal !== null &&
@@ -151,6 +215,6 @@ const replay = await browserRequest(
   applicationLoopback,
   new Map(applicationCookies),
 );
-assert(replay.status === 503, 'OIDC callback replay did not fail closed');
+await requireStatus(replay, 503, 'oidc-replay');
 
 process.stdout.write('Dual-host OIDC session bridge passed.\n');

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -67,6 +69,75 @@ test('Compose builds use BuildKit for cross-platform Dockerfiles', async () => {
   assert.match(source, /export DOCKER_BUILDKIT=\$\{DOCKER_BUILDKIT:-1\}/u);
   assert.match(source, /export COMPOSE_DOCKER_CLI_BUILD=\$\{COMPOSE_DOCKER_CLI_BUILD:-1\}/u);
   assert.match(source, /export COMPOSE_BAKE=\$\{COMPOSE_BAKE:-true\}/u);
+});
+
+test('root Compose supplies the synthetic public OIDC client selectors to auth', async () => {
+  const compose = await readFile('compose.yaml', 'utf8');
+  assert.match(
+    compose,
+    /AUTH_OIDC_APPLICATION_CLIENT_ID: \$\{KOVCHEG_WEB_OIDC_CLIENT_ID:-kovcheg-local\}/u,
+  );
+  assert.match(
+    compose,
+    /AUTH_OIDC_APPLICATION_REDIRECT_URI: \$\{KOVCHEG_WEB_OIDC_REDIRECT_URI:-https:\/\/client\.invalid\/bff\/auth\/oidc\/callback\}/u,
+  );
+});
+
+test('OIDC dual-host failures emit bounded allowlisted diagnostics without response data', async () => {
+  const sensitiveMarker = 'must-not-appear-in-diagnostics';
+  const server = createServer((_request, response) => {
+    response.writeHead(503, { 'content-type': 'application/json' });
+    response.end(
+      JSON.stringify({
+        code: 'a6.oidc-not-configured',
+        nonce: sensitiveMarker,
+        state: sensitiveMarker,
+        token: sensitiveMarker,
+        url: `https://upstream.invalid/callback?code=${sensitiveMarker}`,
+      }),
+    );
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert.notEqual(address, null);
+  assert.equal(typeof address, 'object');
+  const loopback = `http://127.0.0.1:${address.port}`;
+  const child = spawn(
+    process.execPath,
+    ['infra/scripts/oidc-dual-host-smoke.mjs', loopback, loopback],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        KOVCHEG_SMOKE_SESSION_TOKEN: 'synthetic-session',
+        KOVCHEG_WEB_OIDC_ISSUER: 'https://issuer.invalid',
+        KOVCHEG_WEB_OIDC_REDIRECT_URI: 'https://application.invalid/bff/auth/oidc/callback',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding('utf8').on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const [exitCode] = await once(child, 'close');
+  server.close();
+  await once(server, 'close');
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout, '');
+  assert.match(
+    stderr,
+    /oidc-start response mismatch: expected=303 actual=503 bodyKind=json bodyBytes=\d+ errorCode=a6\.oidc-not-configured/u,
+  );
+  assert.doesNotMatch(stderr, new RegExp(sensitiveMarker, 'u'));
+  assert.doesNotMatch(stderr, /upstream\.invalid/u);
+  assert.doesNotMatch(stderr, /set-cookie|authorization|location/iu);
 });
 
 test('web container cross-build compiles natively with x64 runtime dependencies', async () => {
