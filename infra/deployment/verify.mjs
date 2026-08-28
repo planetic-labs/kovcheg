@@ -13,6 +13,19 @@ const environmentSchema = JSON.parse(
   await readFile(new URL('./environment.schema.json', import.meta.url), 'utf8'),
 );
 const findings = [];
+const testHostApplicationCpuBudget = 2.15;
+const minimumFreeCpu = 0.25;
+const expectedLongRunningCpuLimits = {
+  postgres: '0.40',
+  redis: '0.15',
+  'api-1': '0.20',
+  'api-2': '0.20',
+  auth: '0.25',
+  worker: '0.15',
+  web: '0.20',
+  edge: '0.15',
+};
+const expectedMigrationCpuLimit = '0.15';
 
 function finding(code, evidence) {
   findings.push({ code, evidence });
@@ -27,6 +40,10 @@ function memoryMiB(value) {
   if (match === null) return Number.NaN;
   const amount = Number(match[1]);
   return match[2] === 'G' ? amount * 1024 : match[2] === 'K' ? amount / 1024 : amount;
+}
+
+function cpuTotal(...values) {
+  return Number(values.reduce((total, value) => total + Number(value), 0).toFixed(2));
 }
 
 const services = compose.services ?? {};
@@ -74,7 +91,7 @@ const defaultServices = Object.entries(services).filter(
 );
 const longRunning = defaultServices.filter(([name]) => name !== 'migrate');
 function resourceTotal(entries) {
-  return entries.reduce(
+  const total = entries.reduce(
     (total, [, service]) => ({
       cpus: total.cpus + Number(service.deploy.resources.limits.cpus),
       memoryMiB: total.memoryMiB + memoryMiB(service.deploy.resources.limits.memory),
@@ -82,13 +99,52 @@ function resourceTotal(entries) {
     }),
     { cpus: 0, memoryMiB: 0, pids: 0 },
   );
+  return { ...total, cpus: Number(total.cpus.toFixed(2)) };
 }
 const longRunningCeiling = resourceTotal(longRunning);
 const transitionCeiling = resourceTotal(defaultServices);
-if (longRunningCeiling.cpus > 3.051 || longRunningCeiling.memoryMiB > 3840) {
+const longRunningCpuLimits = Object.fromEntries(
+  longRunning.map(([name, service]) => [name, String(service.deploy.resources.limits.cpus)]),
+);
+if (
+  JSON.stringify(Object.entries(longRunningCpuLimits).sort()) !==
+  JSON.stringify(Object.entries(expectedLongRunningCpuLimits).sort())
+) {
+  finding('test-host-service-cpu-ceiling', {
+    actual: longRunningCpuLimits,
+    expected: expectedLongRunningCpuLimits,
+  });
+}
+if (String(services.migrate?.deploy?.resources?.limits?.cpus) !== expectedMigrationCpuLimit) {
+  finding('test-host-migration-cpu-ceiling', {
+    actual: services.migrate?.deploy?.resources?.limits?.cpus,
+    expected: expectedMigrationCpuLimit,
+  });
+}
+for (const [name, service] of defaultServices) {
+  const limit = Number(service.deploy.resources.limits.cpus);
+  const reservation = Number(service.deploy.resources.reservations.cpus);
+  if (!(limit > reservation)) {
+    finding('test-host-cpu-burst-margin-missing', { limit, name, reservation });
+  }
+}
+const longRunningWithReserveCpu = cpuTotal(longRunningCeiling.cpus, minimumFreeCpu);
+const transitionWithReserveCpu = cpuTotal(transitionCeiling.cpus, minimumFreeCpu);
+const unallocatedTransitionCpu = cpuTotal(testHostApplicationCpuBudget, -transitionWithReserveCpu);
+if (
+  longRunningCeiling.cpus !== 1.7 ||
+  minimumFreeCpu <= 0 ||
+  longRunningWithReserveCpu > testHostApplicationCpuBudget ||
+  longRunningCeiling.memoryMiB > 3840
+) {
   finding('long-running-capacity-ceiling', longRunningCeiling);
 }
-if (transitionCeiling.cpus > 3.301 || transitionCeiling.memoryMiB > 4096) {
+if (
+  transitionCeiling.cpus !== 1.85 ||
+  transitionWithReserveCpu >= testHostApplicationCpuBudget ||
+  unallocatedTransitionCpu <= 0 ||
+  transitionCeiling.memoryMiB > 4096
+) {
   finding('transition-capacity-ceiling', transitionCeiling);
 }
 
@@ -283,6 +339,18 @@ if (composeConfig === 'FAIL') finding('compose-config', composeCommand?.stderr.t
 const report = {
   ...(await collectExecutionMetadata()),
   composeConfig,
+  cpuProfile: {
+    applicationCapacityCpu: testHostApplicationCpuBudget,
+    longRunningCeilingCpu: longRunningCeiling.cpus,
+    longRunningServiceLimits: longRunningCpuLimits,
+    longRunningWithReserveCpu,
+    migrationCeilingCpu: Number(services.migrate.deploy.resources.limits.cpus),
+    minimumFreeCpu,
+    scope: 'staging-test-only',
+    transitionCeilingCpu: transitionCeiling.cpus,
+    transitionWithReserveCpu,
+    unallocatedTransitionCpu,
+  },
   findings,
   longRunningCeiling,
   status: findings.length === 0 ? 'PASS' : 'FAIL',

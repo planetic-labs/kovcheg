@@ -48,7 +48,7 @@ x-api-common: &api-common
   tmpfs: ['/tmp']
   deploy:
     resources:
-      limits: { cpus: '0.35', memory: 384M, pids: 128 }
+      limits: { cpus: '0.20', memory: 384M, pids: 128 }
       reservations: { cpus: '0.10', memory: 128M }
 
 services:
@@ -80,7 +80,7 @@ services:
     volumes: [postgres-data:/var/lib/postgresql/data]
     deploy:
       resources:
-        limits: { cpus: '0.75', memory: 1024M, pids: 256 }
+        limits: { cpus: '0.40', memory: 1024M, pids: 256 }
         reservations: { cpus: '0.25', memory: 512M }
 
   redis:
@@ -100,7 +100,7 @@ services:
     tmpfs: ['/data']
     deploy:
       resources:
-        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+        limits: { cpus: '0.15', memory: 256M, pids: 64 }
         reservations: { cpus: '0.05', memory: 64M }
 
   migrate:
@@ -124,7 +124,7 @@ services:
     tmpfs: ['/tmp']
     deploy:
       resources:
-        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+        limits: { cpus: '0.15', memory: 256M, pids: 64 }
         reservations: { cpus: '0.05', memory: 64M }
 
   api-1:
@@ -209,7 +209,7 @@ services:
     tmpfs: ['/tmp']
     deploy:
       resources:
-        limits: { cpus: '0.45', memory: 640M, pids: 128 }
+        limits: { cpus: '0.25', memory: 640M, pids: 128 }
         reservations: { cpus: '0.15', memory: 192M }
 
   worker:
@@ -259,7 +259,7 @@ services:
     tmpfs: ['/tmp']
     deploy:
       resources:
-        limits: { cpus: '0.30', memory: 384M, pids: 128 }
+        limits: { cpus: '0.15', memory: 384M, pids: 128 }
         reservations: { cpus: '0.10', memory: 128M }
 
   web:
@@ -307,7 +307,7 @@ services:
     tmpfs: ['/tmp']
     deploy:
       resources:
-        limits: { cpus: '0.35', memory: 512M, pids: 128 }
+        limits: { cpus: '0.20', memory: 512M, pids: 128 }
         reservations: { cpus: '0.10', memory: 128M }
 
   edge:
@@ -338,7 +338,7 @@ services:
     tmpfs: ['/tmp']
     deploy:
       resources:
-        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+        limits: { cpus: '0.15', memory: 256M, pids: 64 }
         reservations: { cpus: '0.05', memory: 64M }
 
   backup:

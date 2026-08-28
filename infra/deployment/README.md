@@ -106,11 +106,37 @@ though its ordering is machine-readable here.
 
 ## Resource ceiling
 
-Every service and operation has CPU, memory, and PID constraints. The eight long-running services
-have a total hard ceiling of **3.05 CPU, 3840 MiB, and 1024 PIDs**. Including the transient migration
-job gives **3.30 CPU and 4096 MiB**. These are conservative candidate limits, not measured production
-capacity or an SLA. Backup, restore, and disposable verification jobs run only by explicit profile
-and must be capacity-checked before execution; they are not scheduled concurrently by this file.
+Every service and operation has CPU, memory, and PID constraints. The staging/test-only CPU profile
+for the neutral shared test-host role is:
+
+| Long-running service | Hard CPU ceiling |
+| -------------------- | ---------------: |
+| `postgres`           |             0.40 |
+| `redis`              |             0.15 |
+| `api-1`              |             0.20 |
+| `api-2`              |             0.20 |
+| `auth`               |             0.25 |
+| `worker`             |             0.15 |
+| `web`                |             0.20 |
+| `edge`               |             0.15 |
+
+The eight long-running ceilings total **1.70 CPU**. The application handoff must also declare
+`minimum_free_cpu=0.25`, so the normal-state envelope is `1.70 + 0.25 = 1.95 CPU`, within the
+application capacity budget of **2.15 CPU**. The one-shot `migrate` job has a **0.15 CPU** ceiling;
+the conservative transition envelope is `1.70 + 0.15 + 0.25 = 2.10 CPU`, leaving **0.05 CPU** of the
+same budget unallocated even if migration and every long-running ceiling are counted together.
+
+These CPU values apply only to the staging/test unit under idle and synthetic verification traffic.
+They preserve the existing CPU reservations and a positive burst margin for every default service,
+but they are not measured throughput, load, production capacity, or an SLA. Infrastructure must stop
+before starting or transitioning the unit if the verified application budget is below 2.15 CPU, if
+its required free reserve is above 0.25 CPU, or if service throttling prevents startup, readiness, or
+functional verification; Docker overcommit is not an accepted fallback.
+
+The existing memory and PID ceilings remain **3840 MiB and 1024 PIDs** for the eight long-running
+services and **4096 MiB** for the conservative migration transition. Backup, restore, and disposable
+verification jobs run only by explicit profile and must be capacity-checked before execution; they
+are not scheduled concurrently by this file.
 
 ## Data, backup, and restore
 
