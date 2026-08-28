@@ -11,6 +11,8 @@ const existingSession = process.env.KOVCHEG_SMOKE_SESSION_TOKEN ?? null;
 const maximumDiagnosticBodyBytes = 4096;
 const maximumSmokeResponseBytes = 1024 * 1024;
 const safeErrorCodes = new Set(['a6.oidc-not-configured']);
+const uuidExpression =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 if (
   applicationLoopback === undefined ||
@@ -251,8 +253,14 @@ const principal = await session.json();
 assert(
   principal !== null &&
     typeof principal === 'object' &&
-    principal.sessionActive === true &&
-    typeof principal.accountId === 'string',
+    principal.contractVersion === 2 &&
+    principal.accountAccess === 'member' &&
+    principal.accountStatus === 'active' &&
+    principal.sessionStatus === 'active' &&
+    typeof principal.userId === 'string' &&
+    uuidExpression.test(principal.userId) &&
+    typeof principal.sessionId === 'string' &&
+    uuidExpression.test(principal.sessionId),
   'OIDC-created application session returned an invalid principal',
 );
 

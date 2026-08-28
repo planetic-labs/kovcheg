@@ -149,6 +149,18 @@ test('OIDC dual-host failures emit bounded allowlisted diagnostics without respo
   assert.doesNotMatch(stderr, /set-cookie|authorization|location/iu);
 });
 
+test('OIDC dual-host smoke validates the current application-session principal', async () => {
+  const source = await readFile('infra/scripts/oidc-dual-host-smoke.mjs', 'utf8');
+  assert.match(source, /principal\.contractVersion === 2/u);
+  assert.match(source, /principal\.accountAccess === 'member'/u);
+  assert.match(source, /principal\.accountStatus === 'active'/u);
+  assert.match(source, /principal\.sessionStatus === 'active'/u);
+  assert.match(source, /uuidExpression\.test\(principal\.userId\)/u);
+  assert.match(source, /uuidExpression\.test\(principal\.sessionId\)/u);
+  assert.doesNotMatch(source, /principal\.sessionActive/u);
+  assert.doesNotMatch(source, /principal\.accountId/u);
+});
+
 test('web container cross-build compiles natively with x64 runtime dependencies', async () => {
   const dockerfile = await readFile('apps/web/Dockerfile', 'utf8');
   const workspace = await readFile('pnpm-workspace.yaml', 'utf8');
