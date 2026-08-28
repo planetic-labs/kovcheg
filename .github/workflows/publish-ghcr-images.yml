@@ -55,12 +55,196 @@ jobs:
           fi
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
-  publish:
-    name: Publish ${{ matrix.service }}
+  inventory:
+    name: Inventory all immutable tags
     needs: validate-source
     runs-on: ubuntu-latest
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Classify all six exact-source tags before publication
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.validate-source.outputs.source_sha }}
+        run: |
+          set -eu
+          mkdir publication-inventory
+          for item in \
+            'api=ghcr.io/planetic-labs/kovcheg-api' \
+            'auth=ghcr.io/planetic-labs/kovcheg-auth' \
+            'web=ghcr.io/planetic-labs/kovcheg-web' \
+            'worker=ghcr.io/planetic-labs/kovcheg-worker' \
+            'edge=ghcr.io/planetic-labs/kovcheg-edge' \
+            'postgres=ghcr.io/planetic-labs/kovcheg-postgres'
+          do
+            service="${item%%=*}"
+            package="${item#*=}"
+            tag="sha-${SOURCE_SHA}"
+            reference="${package}:${tag}"
+            manifest_file="$(mktemp)"
+            image_file="$(mktemp)"
+            inspect_error="$(mktemp)"
+            trap 'rm -f "$manifest_file" "$image_file" "$inspect_error"' EXIT
+
+            if docker buildx imagetools inspect "$reference" --format '{{json .Manifest}}' >"$manifest_file" 2>"$inspect_error"; then
+              docker buildx imagetools inspect "$reference" --format '{{json .Image}}' >"$image_file"
+              SERVICE="$service" PACKAGE="$package" TAG="$tag" \
+                MANIFEST_FILE="$manifest_file" IMAGE_FILE="$image_file" node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const digestPattern = /^sha256:[0-9a-f]{64}$/;
+          const manifest = JSON.parse(readFileSync(process.env.MANIFEST_FILE, 'utf8'));
+          const image = JSON.parse(readFileSync(process.env.IMAGE_FILE, 'utf8'));
+          const labels = image.config?.Labels ?? image.config?.labels ?? {};
+          const expectedSource = `https://github.com/${process.env.REPOSITORY}`;
+          if (!digestPattern.test(manifest.digest ?? '')) {
+            throw new Error(`${process.env.SERVICE}: existing tag has no valid immutable digest`);
+          }
+          if (image.os !== 'linux' || image.architecture !== 'amd64') {
+            throw new Error(`${process.env.SERVICE}: existing tag is not exactly linux/amd64`);
+          }
+          if (
+            labels['org.opencontainers.image.source'] !== expectedSource ||
+            labels['org.opencontainers.image.revision'] !== process.env.SOURCE_SHA
+          ) {
+            throw new Error(`${process.env.SERVICE}: existing tag provenance labels conflict`);
+          }
+          writeFileSync(
+            `publication-inventory/${process.env.SERVICE}.json`,
+            `${JSON.stringify({
+              service: process.env.SERVICE,
+              package: process.env.PACKAGE,
+              state: 'existing',
+              digest: manifest.digest,
+              sourceSha: process.env.SOURCE_SHA,
+              navigationTag: process.env.TAG,
+              platform: 'linux/amd64',
+              deploymentRef: `${process.env.PACKAGE}@${manifest.digest}`,
+            })}\n`,
+          );
+          NODE
+            else
+              if ! grep -Eqi 'manifest unknown|not found' "$inspect_error"; then
+                echo "${service}: registry inventory failed without proving tag absence" >&2
+                exit 1
+              fi
+              SERVICE="$service" PACKAGE="$package" TAG="$tag" node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          writeFileSync(
+            `publication-inventory/${process.env.SERVICE}.json`,
+            `${JSON.stringify({
+              service: process.env.SERVICE,
+              package: process.env.PACKAGE,
+              state: 'absent',
+              digest: null,
+              sourceSha: process.env.SOURCE_SHA,
+              navigationTag: process.env.TAG,
+              platform: 'linux/amd64',
+              deploymentRef: null,
+            })}\n`,
+          );
+          NODE
+            fi
+            rm -f "$manifest_file" "$image_file" "$inspect_error"
+            trap - EXIT
+          done
+
+          node --input-type=module <<'NODE'
+          // BEGIN INVENTORY_VALIDATOR
+          import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+
+          const expected = new Map([
+            ['api', 'ghcr.io/planetic-labs/kovcheg-api'],
+            ['auth', 'ghcr.io/planetic-labs/kovcheg-auth'],
+            ['web', 'ghcr.io/planetic-labs/kovcheg-web'],
+            ['worker', 'ghcr.io/planetic-labs/kovcheg-worker'],
+            ['edge', 'ghcr.io/planetic-labs/kovcheg-edge'],
+            ['postgres', 'ghcr.io/planetic-labs/kovcheg-postgres'],
+          ]);
+          const digestPattern = /^sha256:[0-9a-f]{64}$/;
+          const files = readdirSync('publication-inventory').filter((file) => file.endsWith('.json'));
+          if (files.length !== expected.size) {
+            throw new Error(`inventory must contain exactly ${expected.size} records`);
+          }
+          const records = files.map((file) =>
+            JSON.parse(readFileSync(`publication-inventory/${file}`, 'utf8')),
+          );
+          const services = new Set();
+          const packages = new Set();
+          for (const record of records) {
+            if (services.has(record.service) || packages.has(record.package)) {
+              throw new Error('inventory contains a duplicate service or package');
+            }
+            services.add(record.service);
+            packages.add(record.package);
+            if (expected.get(record.service) !== record.package) {
+              throw new Error(`${record.service}: unexpected package mapping`);
+            }
+            if (
+              record.sourceSha !== process.env.SOURCE_SHA ||
+              record.navigationTag !== `sha-${process.env.SOURCE_SHA}` ||
+              record.platform !== 'linux/amd64'
+            ) {
+              throw new Error(`${record.service}: source, tag, or platform mismatch`);
+            }
+            if (record.state === 'absent') {
+              if (record.digest !== null || record.deploymentRef !== null) {
+                throw new Error(`${record.service}: absent tag must not carry a digest`);
+              }
+            } else if (record.state === 'existing') {
+              if (
+                !digestPattern.test(record.digest ?? '') ||
+                record.deploymentRef !== `${record.package}@${record.digest}`
+              ) {
+                throw new Error(`${record.service}: existing tag has invalid digest evidence`);
+              }
+            } else {
+              throw new Error(`${record.service}: ambiguous inventory state`);
+            }
+          }
+          for (const [service, packageName] of expected) {
+            if (!services.has(service) || !packages.has(packageName)) {
+              throw new Error(`${service}: inventory entry is missing`);
+            }
+          }
+          records.sort((left, right) => left.service.localeCompare(right.service));
+          writeFileSync(
+            'publication-inventory/inventory.json',
+            `${JSON.stringify({
+              schemaVersion: 1,
+              sourceSha: process.env.SOURCE_SHA,
+              platform: 'linux/amd64',
+              images: records,
+            }, null, 2)}\n`,
+          );
+          // END INVENTORY_VALIDATOR
+          NODE
+
+      - name: Upload complete pre-publication inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ghcr-inventory-${{ needs.validate-source.outputs.source_sha }}
+          path: publication-inventory/inventory.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish ${{ matrix.service }}
+    needs:
+      - validate-source
+      - inventory
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - service: api
@@ -88,7 +272,41 @@ jobs:
             context: infra/postgres
             dockerfile: infra/postgres/Dockerfile
     steps:
-      - name: Check out exact source
+      - name: Download complete pre-publication inventory
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ghcr-inventory-${{ needs.validate-source.outputs.source_sha }}
+          path: publication-inventory
+
+      - name: Resolve verified inventory entry
+        id: inventory
+        env:
+          PACKAGE: ${{ matrix.package }}
+          SERVICE: ${{ matrix.service }}
+          SOURCE_SHA: ${{ needs.validate-source.outputs.source_sha }}
+        run: |
+          set -eu
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+
+          const inventory = JSON.parse(
+            readFileSync('publication-inventory/inventory.json', 'utf8'),
+          );
+          const record = inventory.images?.find((item) => item.service === process.env.SERVICE);
+          if (
+            inventory.sourceSha !== process.env.SOURCE_SHA ||
+            inventory.platform !== 'linux/amd64' ||
+            record?.package !== process.env.PACKAGE ||
+            !['absent', 'existing'].includes(record?.state)
+          ) {
+            throw new Error('pre-publication inventory does not match the matrix entry');
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `state=${record.state}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `digest=${record.digest ?? ''}\n`);
+          NODE
+
+      - name: Check out exact source for an absent tag
+        if: steps.inventory.outputs.state == 'absent'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate-source.outputs.source_sha }}
@@ -104,7 +322,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build exact linux/amd64 image locally
+      - name: Build exact linux/amd64 image locally when absent
+        if: steps.inventory.outputs.state == 'absent'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ matrix.context }}
@@ -120,9 +339,11 @@ jobs:
             org.opencontainers.image.revision=${{ needs.validate-source.outputs.source_sha }}
           tags: ${{ matrix.package }}:sha-${{ needs.validate-source.outputs.source_sha }}
 
-      - name: Revalidate source and publish an unused immutable tag
-        id: publish
+      - name: Adopt verified digest or publish only an absent tag
+        id: image
         env:
+          INVENTORY_DIGEST: ${{ steps.inventory.outputs.digest }}
+          INVENTORY_STATE: ${{ steps.inventory.outputs.state }}
           PACKAGE: ${{ matrix.package }}
           REPOSITORY: ${{ github.repository }}
           SERVICE: ${{ matrix.service }}
@@ -138,44 +359,91 @@ jobs:
             exit 1
           fi
 
-          inspect_error="$(mktemp)"
-          trap 'rm -f "$inspect_error"' EXIT
-          if docker buildx imagetools inspect "$reference" >/dev/null 2>"$inspect_error"; then
-            echo 'the exact source tag already exists; refusing overwrite' >&2
-            exit 1
-          fi
-          if ! grep -Eqi 'manifest unknown|not found' "$inspect_error"; then
-            echo 'registry preflight failed without proving tag absence' >&2
-            exit 1
-          fi
+          inspect_remote() {
+            remote_manifest="$(mktemp)"
+            remote_image="$(mktemp)"
+            trap 'rm -f "$remote_manifest" "$remote_image"' EXIT
+            docker buildx imagetools inspect "$reference" --format '{{json .Manifest}}' >"$remote_manifest"
+            docker buildx imagetools inspect "$reference" --format '{{json .Image}}' >"$remote_image"
+            MANIFEST_FILE="$remote_manifest" IMAGE_FILE="$remote_image" node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
 
-          architecture="$(docker image inspect "$reference" --format '{{.Architecture}}')"
-          source_label="$(docker image inspect "$reference" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')"
-          revision_label="$(docker image inspect "$reference" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
-          if [ "$architecture" != 'amd64' ] || [ "$source_label" != "https://github.com/${REPOSITORY}" ] || [ "$revision_label" != "$SOURCE_SHA" ]; then
-            echo 'local image provenance validation failed' >&2
-            exit 1
-          fi
+          const digestPattern = /^sha256:[0-9a-f]{64}$/;
+          const manifest = JSON.parse(readFileSync(process.env.MANIFEST_FILE, 'utf8'));
+          const image = JSON.parse(readFileSync(process.env.IMAGE_FILE, 'utf8'));
+          const labels = image.config?.Labels ?? image.config?.labels ?? {};
+          if (!digestPattern.test(manifest.digest ?? '')) {
+            throw new Error('remote tag has no valid immutable digest');
+          }
+          if (image.os !== 'linux' || image.architecture !== 'amd64') {
+            throw new Error('remote tag is not exactly linux/amd64');
+          }
+          if (
+            labels['org.opencontainers.image.source'] !==
+              `https://github.com/${process.env.REPOSITORY}` ||
+            labels['org.opencontainers.image.revision'] !== process.env.SOURCE_SHA
+          ) {
+            throw new Error('remote tag provenance labels conflict');
+          }
+          process.stdout.write(manifest.digest);
+          NODE
+            rm -f "$remote_manifest" "$remote_image"
+            trap - EXIT
+          }
 
-          push_output="$(docker push "$reference" 2>&1)"
-          digest="$(printf '%s\n' "$push_output" | sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' | tail -n 1)"
-          digest_value="${digest#sha256:}"
-          case "$digest_value" in
-            *[!0-9a-f]*|'') echo 'registry did not return an immutable digest' >&2; exit 1 ;;
-          esac
-          if [ "${#digest_value}" -ne 64 ]; then
-            echo 'registry returned an invalid digest' >&2
-            exit 1
-          fi
+          if [ "$INVENTORY_STATE" = 'existing' ]; then
+            digest="$(inspect_remote)"
+            if [ "$digest" != "$INVENTORY_DIGEST" ]; then
+              echo 'existing tag changed after the complete inventory; refusing adoption' >&2
+              exit 1
+            fi
+            publication_state='adopted'
+          elif [ "$INVENTORY_STATE" = 'absent' ]; then
+            inspect_error="$(mktemp)"
+            trap 'rm -f "$inspect_error"' EXIT
+            if docker buildx imagetools inspect "$reference" >/dev/null 2>"$inspect_error"; then
+              echo 'tag appeared after the complete inventory; refusing overwrite' >&2
+              exit 1
+            fi
+            if ! grep -Eqi 'manifest unknown|not found' "$inspect_error"; then
+              echo 'registry pre-push check failed without proving tag absence' >&2
+              exit 1
+            fi
 
-          readback="$(docker buildx imagetools inspect "$reference" | sed -n 's/^Digest:[[:space:]]*//p' | head -n 1)"
-          if [ "$readback" != "$digest" ]; then
-            echo 'registry digest readback does not match the pushed manifest' >&2
+            architecture="$(docker image inspect "$reference" --format '{{.Architecture}}')"
+            source_label="$(docker image inspect "$reference" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')"
+            revision_label="$(docker image inspect "$reference" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+            if [ "$architecture" != 'amd64' ] || [ "$source_label" != "https://github.com/${REPOSITORY}" ] || [ "$revision_label" != "$SOURCE_SHA" ]; then
+              echo 'local image provenance validation failed' >&2
+              exit 1
+            fi
+
+            push_output="$(docker push "$reference" 2>&1)"
+            digest="$(printf '%s\n' "$push_output" | sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' | tail -n 1)"
+            digest_value="${digest#sha256:}"
+            case "$digest_value" in
+              *[!0-9a-f]*|'') echo 'registry did not return an immutable digest' >&2; exit 1 ;;
+            esac
+            if [ "${#digest_value}" -ne 64 ]; then
+              echo 'registry returned an invalid digest' >&2
+              exit 1
+            fi
+            readback_digest="$(inspect_remote)"
+            if [ "$readback_digest" != "$digest" ]; then
+              echo 'registry digest readback does not match the pushed manifest' >&2
+              exit 1
+            fi
+            publication_state='published'
+            rm -f "$inspect_error"
+            trap - EXIT
+          else
+            echo 'inventory state is ambiguous' >&2
             exit 1
           fi
 
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "publication_state=$publication_state" >> "$GITHUB_OUTPUT"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
@@ -183,43 +451,139 @@ jobs:
         id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ${{ steps.publish.outputs.package }}
-          subject-digest: ${{ steps.publish.outputs.digest }}
+          subject-name: ${{ steps.image.outputs.package }}
+          subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
 
       - name: Write machine-readable digest mapping
         env:
           ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
           ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
-          DIGEST: ${{ steps.publish.outputs.digest }}
-          PACKAGE: ${{ steps.publish.outputs.package }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          PACKAGE: ${{ steps.image.outputs.package }}
+          PUBLICATION_STATE: ${{ steps.image.outputs.publication_state }}
           SERVICE: ${{ matrix.service }}
-          SOURCE_SHA: ${{ steps.publish.outputs.source_sha }}
-          TAG: ${{ steps.publish.outputs.tag }}
+          SOURCE_SHA: ${{ steps.image.outputs.source_sha }}
+          TAG: ${{ steps.image.outputs.tag }}
         run: |
           set -eu
-          node -e '
-            const fs = require("node:fs");
-            const mapping = {
-              service: process.env.SERVICE,
-              package: process.env.PACKAGE,
-              digest: process.env.DIGEST,
-              sourceSha: process.env.SOURCE_SHA,
-              navigationTag: process.env.TAG,
-              platform: "linux/amd64",
-              deploymentRef: `${process.env.PACKAGE}@${process.env.DIGEST}`,
-              attestation: {
-                id: process.env.ATTESTATION_ID,
-                url: process.env.ATTESTATION_URL,
-              },
-            };
-            fs.writeFileSync(`${process.env.SERVICE}.json`, `${JSON.stringify(mapping, null, 2)}\n`);
-          '
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          if (!process.env.ATTESTATION_ID || !process.env.ATTESTATION_URL) {
+            throw new Error('attestation action returned incomplete evidence');
+          }
+          const mapping = {
+            service: process.env.SERVICE,
+            package: process.env.PACKAGE,
+            digest: process.env.DIGEST,
+            sourceSha: process.env.SOURCE_SHA,
+            navigationTag: process.env.TAG,
+            platform: 'linux/amd64',
+            deploymentRef: `${process.env.PACKAGE}@${process.env.DIGEST}`,
+            publicationState: process.env.PUBLICATION_STATE,
+            attestation: {
+              id: process.env.ATTESTATION_ID,
+              url: process.env.ATTESTATION_URL,
+            },
+          };
+          writeFileSync(`${process.env.SERVICE}.json`, `${JSON.stringify(mapping, null, 2)}\n`);
+          NODE
 
       - name: Upload digest mapping
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ghcr-digest-${{ matrix.service }}-${{ needs.validate-source.outputs.source_sha }}
           path: ${{ matrix.service }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    name: Validate complete six-image publication
+    needs:
+      - validate-source
+      - publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download exactly six digest mappings
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ghcr-digest-*-${{ needs.validate-source.outputs.source_sha }}
+          path: publication-mappings
+          merge-multiple: true
+
+      - name: Validate and write aggregate six-image mapping
+        env:
+          SOURCE_SHA: ${{ needs.validate-source.outputs.source_sha }}
+        run: |
+          set -eu
+          node --input-type=module <<'NODE'
+          // BEGIN AGGREGATE_VALIDATOR
+          import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+
+          const expected = new Map([
+            ['api', 'ghcr.io/planetic-labs/kovcheg-api'],
+            ['auth', 'ghcr.io/planetic-labs/kovcheg-auth'],
+            ['web', 'ghcr.io/planetic-labs/kovcheg-web'],
+            ['worker', 'ghcr.io/planetic-labs/kovcheg-worker'],
+            ['edge', 'ghcr.io/planetic-labs/kovcheg-edge'],
+            ['postgres', 'ghcr.io/planetic-labs/kovcheg-postgres'],
+          ]);
+          const digestPattern = /^sha256:[0-9a-f]{64}$/;
+          const files = readdirSync('publication-mappings').filter((file) => file.endsWith('.json'));
+          if (files.length !== expected.size) {
+            throw new Error(`aggregate requires exactly ${expected.size} mapping artifacts`);
+          }
+          const mappings = files.map((file) =>
+            JSON.parse(readFileSync(`publication-mappings/${file}`, 'utf8')),
+          );
+          const services = new Set();
+          const packages = new Set();
+          for (const mapping of mappings) {
+            if (services.has(mapping.service) || packages.has(mapping.package)) {
+              throw new Error('aggregate contains a duplicate service or package');
+            }
+            services.add(mapping.service);
+            packages.add(mapping.package);
+            if (expected.get(mapping.service) !== mapping.package) {
+              throw new Error(`${mapping.service}: unexpected package mapping`);
+            }
+            if (
+              mapping.sourceSha !== process.env.SOURCE_SHA ||
+              mapping.platform !== 'linux/amd64' ||
+              mapping.navigationTag !== `sha-${process.env.SOURCE_SHA}` ||
+              !digestPattern.test(mapping.digest ?? '') ||
+              mapping.deploymentRef !== `${mapping.package}@${mapping.digest}` ||
+              !['published', 'adopted'].includes(mapping.publicationState) ||
+              !mapping.attestation?.id ||
+              !mapping.attestation?.url
+            ) {
+              throw new Error(`${mapping.service}: incomplete or conflicting publication evidence`);
+            }
+          }
+          for (const [service, packageName] of expected) {
+            if (!services.has(service) || !packages.has(packageName)) {
+              throw new Error(`${service}: aggregate mapping is missing`);
+            }
+          }
+          mappings.sort((left, right) => left.service.localeCompare(right.service));
+          writeFileSync(
+            'ghcr-six-image-mapping.json',
+            `${JSON.stringify({
+              schemaVersion: 1,
+              sourceSha: process.env.SOURCE_SHA,
+              platform: 'linux/amd64',
+              imageCount: mappings.length,
+              images: mappings,
+            }, null, 2)}\n`,
+          );
+          // END AGGREGATE_VALIDATOR
+          NODE
+
+      - name: Upload aggregate six-image mapping
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ghcr-six-image-mapping-${{ needs.validate-source.outputs.source_sha }}
+          path: ghcr-six-image-mapping.json
           if-no-files-found: error
           retention-days: 30
