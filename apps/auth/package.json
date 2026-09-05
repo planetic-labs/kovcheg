@@ -20,7 +20,7 @@
     "@nestjs/core": "11.2.1",
     "@nestjs/platform-express": "11.2.1",
     "@nestjs/swagger": "11.4.7",
-    "@simplewebauthn/server": "13.3.2",
+    "@simplewebauthn/server": "14.0.0",
     "oidc-provider": "9.11.3",
     "pg": "8.23.0",
     "redis": "6.2.1",
