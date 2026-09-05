@@ -94,8 +94,8 @@ importers:
         version: 4.8.3(supports-color@7.2.0)
     devDependencies:
       '@nestjs/testing':
-        specifier: 11.2.1
-        version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
+        specifier: 12.0.1
+        version: 12.0.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
@@ -146,8 +146,8 @@ importers:
         version: 7.8.2
     devDependencies:
       '@nestjs/testing':
-        specifier: 11.2.1
-        version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
+        specifier: 12.0.1
+        version: 12.0.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
       '@types/oidc-provider':
         specifier: 9.11.1
         version: 9.11.1
@@ -223,8 +223,8 @@ importers:
         version: 7.8.2
     devDependencies:
       '@nestjs/testing':
-        specifier: 11.2.1
-        version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
+        specifier: 12.0.1
+        version: 12.0.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
@@ -604,13 +604,13 @@ packages:
       class-validator:
         optional: true
 
-  '@nestjs/testing@11.2.1':
-    resolution: {integrity: sha512-3mdABjqFafW+ix6fGJMPHvnj/9Or6kAPiszN8zt9bHGPuHYdkkp+9zsBDDUVuP59BcbzBqNBa5fXHBaeMzVvog==}
+  '@nestjs/testing@12.0.1':
+    resolution: {integrity: sha512-prf3fsUaoKS6t04XcQt5aSTp68Po1GxUcbEBPv+3iqAef07hKQEO15r0jmmwA+rWZfONYT1UcV3YIylR++/tCg==}
     peerDependencies:
-      '@nestjs/common': ^11.0.0
-      '@nestjs/core': ^11.0.0
-      '@nestjs/microservices': ^11.0.0
-      '@nestjs/platform-express': ^11.0.0
+      '@nestjs/common': ^12.0.0
+      '@nestjs/core': ^12.0.0
+      '@nestjs/microservices': ^12.0.0
+      '@nestjs/platform-express': ^12.0.0
     peerDependenciesMeta:
       '@nestjs/microservices':
         optional: true
@@ -2917,7 +2917,7 @@ snapshots:
       reflect-metadata: 0.2.2
       swagger-ui-dist: 5.32.13
 
-  '@nestjs/testing@11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)':
+  '@nestjs/testing@12.0.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)':
     dependencies:
       '@nestjs/common': 11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
       '@nestjs/core': 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/platform-express@11.2.1)(@nestjs/websockets@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
