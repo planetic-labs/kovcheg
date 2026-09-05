@@ -16,6 +16,7 @@ x-api-common: &api-common
     AUTH_SESSION_VALIDATION_URL: http://auth:3002/internal/session
     BUILD_IMAGE_DIGEST: ${KOVCHEG_API_IMAGE_DIGEST:?api image digest is required}
     HOST: 0.0.0.0
+    KOVCHEG_APP_ENV: ${KOVCHEG_APP_ENV:?logical application environment is required}
     LOG_LEVEL: info
     NODE_ENV: production
     PGDATABASE: kovcheg
@@ -112,6 +113,7 @@ services:
         condition: service_healthy
     environment:
       AUTH_OIDC_CLIENTS_JSON_FILE: /run/secrets/auth_oidc_clients
+      KOVCHEG_APP_ENV: ${KOVCHEG_APP_ENV:?logical application environment is required}
       PGDATABASE: kovcheg
       PGHOST: postgres
       PGPASSWORD_FILE: /run/secrets/postgres_migration_password
@@ -171,6 +173,7 @@ services:
       AUTH_WEBAUTHN_RP_NAME: ${KOVCHEG_AUTH_WEBAUTHN_RP_NAME:?WebAuthn RP name is required}
       BUILD_IMAGE_DIGEST: ${KOVCHEG_AUTH_IMAGE_DIGEST:?auth image digest is required}
       HOST: 0.0.0.0
+      KOVCHEG_APP_ENV: ${KOVCHEG_APP_ENV:?logical application environment is required}
       LOG_LEVEL: info
       NODE_ENV: production
       PGDATABASE: kovcheg
@@ -228,6 +231,7 @@ services:
       BUILD_IMAGE_DIGEST: ${KOVCHEG_WORKER_IMAGE_DIGEST:?worker image digest is required}
       HOST: 0.0.0.0
       INSTANCE_ID: worker-1
+      KOVCHEG_APP_ENV: ${KOVCHEG_APP_ENV:?logical application environment is required}
       LOG_LEVEL: info
       NODE_ENV: production
       PGDATABASE: kovcheg
@@ -289,6 +293,7 @@ services:
       KOVCHEG_WEB_OIDC_REDIRECT_URI: ${KOVCHEG_WEB_OIDC_REDIRECT_URI:?web OIDC redirect URI is required}
       KOVCHEG_WEB_OIDC_STATE_KEY_FILE: /run/secrets/web_oidc_state_key
       KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD: ${KOVCHEG_WEB_OIDC_TOKEN_ENDPOINT_AUTH_METHOD:?web OIDC token endpoint auth method is required}
+      KOVCHEG_APP_ENV: ${KOVCHEG_APP_ENV:?logical application environment is required}
       LOG_LEVEL: info
       NEXT_TELEMETRY_DISABLED: '1'
       NODE_ENV: production
@@ -437,6 +442,7 @@ services:
       postgres-test:
         condition: service_healthy
     environment:
+      KOVCHEG_APP_ENV: ${KOVCHEG_APP_ENV:?logical application environment is required}
       PGDATABASE: kovcheg
       PGHOST: postgres-test
       PGPASSWORD_FILE: /run/secrets/postgres_migration_password

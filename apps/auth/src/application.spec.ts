@@ -38,7 +38,11 @@ describe('auth HTTP foundation', () => {
 
   it('replaces an invalid correlation ID and disables Swagger UI in production', async () => {
     const app = await createAuthApplication(
-      loadServiceConfig('auth', { LOG_LEVEL: 'error', NODE_ENV: 'production' }),
+      loadServiceConfig('auth', {
+        KOVCHEG_APP_ENV: 'production',
+        LOG_LEVEL: 'error',
+        NODE_ENV: 'production',
+      }),
     );
     openApplications.push(app);
     await app.listen(0, '127.0.0.1');

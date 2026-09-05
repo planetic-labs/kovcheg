@@ -180,7 +180,11 @@ describe('API HTTP foundation', () => {
 
   it('keeps OpenAPI JSON but disables Swagger UI in production', async () => {
     const app = await createApiApplication(
-      loadServiceConfig('api', { LOG_LEVEL: 'error', NODE_ENV: 'production' }),
+      loadServiceConfig('api', {
+        KOVCHEG_APP_ENV: 'production',
+        LOG_LEVEL: 'error',
+        NODE_ENV: 'production',
+      }),
     );
     openApplications.push(app);
     await app.listen(0, '127.0.0.1');

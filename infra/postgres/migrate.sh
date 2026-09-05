@@ -2,6 +2,18 @@
 
 set -eu
 
+case ${KOVCHEG_APP_ENV-} in
+  development | staging | production) ;;
+  '')
+    echo 'KOVCHEG_APP_ENV is required.' >&2
+    exit 1
+    ;;
+  *)
+    echo 'KOVCHEG_APP_ENV must be development, staging, or production.' >&2
+    exit 1
+    ;;
+esac
+
 migration_root=${KOVCHEG_MIGRATION_ROOT:-/workspace/infra/postgres/migrations}
 migration_target=${MIGRATION_TARGET:-latest}
 

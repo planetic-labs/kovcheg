@@ -2,6 +2,15 @@
   "schemaVersion": 1,
   "variables": [
     {
+      "name": "KOVCHEG_APP_ENV",
+      "type": "enum",
+      "required": true,
+      "secret": false,
+      "constraint": "exactly development, staging, or production; staging and production application services require NODE_ENV=production",
+      "restart": "recreate api-1, api-2, auth, worker, web, and rerun the migration entrypoint",
+      "rotation": "requires a separately configured environment with distinct data, secrets, URLs, and provider settings"
+    },
+    {
       "name": "KOVCHEG_API_IMAGE",
       "type": "immutable-image-reference",
       "required": true,
