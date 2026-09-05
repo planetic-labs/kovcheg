@@ -32,6 +32,8 @@ const expectedLongRunningCpuLimits = {
   edge: '0.15',
 };
 const expectedMigrationCpuLimit = '0.15';
+const applicationEnvironmentSelector =
+  '${KOVCHEG_APP_ENV:?logical application environment is required}';
 
 function finding(code, evidence) {
   findings.push({ code, evidence });
@@ -183,6 +185,27 @@ for (const [name, secret] of Object.entries(compose.secrets ?? {})) {
 }
 const authEnvironment = services.auth?.environment ?? {};
 const webEnvironment = services.web?.environment ?? {};
+for (const serviceName of ['api-1', 'api-2', 'auth', 'web', 'worker']) {
+  const environment = services[serviceName]?.environment ?? {};
+  if (
+    environment.KOVCHEG_APP_ENV !== applicationEnvironmentSelector ||
+    environment.NODE_ENV !== 'production'
+  ) {
+    finding('application-environment-not-bound', {
+      logicalEnvironment: environment.KOVCHEG_APP_ENV,
+      nodeEnvironment: environment.NODE_ENV,
+      service: serviceName,
+    });
+  }
+}
+for (const serviceName of ['migrate', 'migrate-test']) {
+  if (services[serviceName]?.environment?.KOVCHEG_APP_ENV !== applicationEnvironmentSelector) {
+    finding('migration-environment-not-bound', {
+      logicalEnvironment: services[serviceName]?.environment?.KOVCHEG_APP_ENV,
+      service: serviceName,
+    });
+  }
+}
 for (const key of Object.keys(authEnvironment)) {
   if (/SECRET|PASSWORD|TOKEN|PEPPER|KEY|JWKS|BOOTSTRAP|CLIENTS/u.test(key)) {
     const value = String(authEnvironment[key]);
@@ -304,6 +327,7 @@ for (const variable of environmentSchema.variables ?? []) {
   }
 }
 for (const requiredName of [
+  'KOVCHEG_APP_ENV',
   'KOVCHEG_API_IMAGE',
   'KOVCHEG_AUTH_IMAGE',
   'KOVCHEG_EDGE_IMAGE',
@@ -352,6 +376,7 @@ for (const { label, pattern } of forbiddenPatterns) {
 
 const composeEnvironment = {
   ...process.env,
+  KOVCHEG_APP_ENV: 'staging',
   KOVCHEG_API_IMAGE: `registry.invalid/kovcheg-api@sha256:${'a'.repeat(64)}`,
   KOVCHEG_API_IMAGE_DIGEST: `sha256:${'a'.repeat(64)}`,
   KOVCHEG_AUTH_ADMIN_BOOTSTRAP_FILE: '/dev/null',
@@ -421,6 +446,11 @@ if (composeConfig === 'FAIL') finding('compose-config', composeCommand?.stderr.t
 
 const report = {
   ...(await collectExecutionMetadata()),
+  applicationEnvironment: {
+    allowed: ['development', 'staging', 'production'],
+    selector: 'KOVCHEG_APP_ENV',
+    stagingAndProductionNodeEnvironment: 'production',
+  },
   composeConfig,
   cpuProfile: {
     applicationCapacityCpu: testHostApplicationCpuBudget,

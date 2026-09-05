@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+
+import { parse } from 'yaml';
 
 const dockerEntrypoints = [
   'infra/deployment/smoke.sh',
@@ -81,6 +83,104 @@ test('root Compose supplies the synthetic public OIDC client selectors to auth',
     compose,
     /AUTH_OIDC_APPLICATION_REDIRECT_URI: \$\{KOVCHEG_WEB_OIDC_REDIRECT_URI:-https:\/\/client\.invalid\/bff\/auth\/oidc\/callback\}/u,
   );
+});
+
+test('application environment selector is explicit across local and deployment entrypoints', async () => {
+  const rootCompose = parse(await readFile('compose.yaml', 'utf8'), { merge: true });
+  const deploymentCompose = parse(await readFile('infra/deployment/compose.yaml', 'utf8'), {
+    merge: true,
+  });
+  const deploymentSelector = '${KOVCHEG_APP_ENV:?logical application environment is required}';
+
+  for (const serviceName of ['api-1', 'api-2', 'auth', 'web', 'worker']) {
+    assert.equal(rootCompose.services[serviceName].environment.KOVCHEG_APP_ENV, 'development');
+    assert.equal(rootCompose.services[serviceName].environment.NODE_ENV, 'production');
+    assert.equal(
+      deploymentCompose.services[serviceName].environment.KOVCHEG_APP_ENV,
+      deploymentSelector,
+    );
+    assert.equal(deploymentCompose.services[serviceName].environment.NODE_ENV, 'production');
+  }
+  for (const serviceName of ['migrate', 'migrate-test']) {
+    assert.equal(
+      deploymentCompose.services[serviceName].environment.KOVCHEG_APP_ENV,
+      deploymentSelector,
+    );
+  }
+  assert.equal(rootCompose.services.migrate.environment.KOVCHEG_APP_ENV, 'development');
+  assert.equal(
+    rootCompose.services['message-flow-test'].environment.KOVCHEG_APP_ENV,
+    'development',
+  );
+  assert.equal(
+    rootCompose.services['auth-integration-test'].environment.KOVCHEG_APP_ENV,
+    'development',
+  );
+
+  const deploymentSmoke = await readFile('infra/deployment/smoke.sh', 'utf8');
+  assert.match(deploymentSmoke, /export KOVCHEG_APP_ENV='staging'/u);
+});
+
+test('migration environment selector fails before external effects and accepts exact values', async () => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'kovcheg-application-environment-'));
+  const bin = path.join(fixture, 'bin');
+  const migrations = path.join(fixture, 'migrations');
+  const passwordFile = path.join(fixture, 'password');
+  const calls = path.join(fixture, 'psql-calls');
+  await mkdir(bin, { recursive: true });
+  await mkdir(migrations, { recursive: true });
+  await writeFile(passwordFile, 'synthetic-password\n', { mode: 0o600 });
+  await writeFile(path.join(migrations, '0001_synthetic.sql'), 'SELECT 1;\n');
+  await writeFile(
+    path.join(bin, 'psql'),
+    '#!/bin/sh\nprintf "called\\n" >>"$PSQL_CALLS_FILE"\nexit 0\n',
+  );
+  await writeFile(
+    path.join(bin, 'sha256sum'),
+    `#!/bin/sh\nprintf '${'a'.repeat(64)}  %s\\n' "$1"\n`,
+  );
+  await chmod(path.join(bin, 'psql'), 0o755);
+  await chmod(path.join(bin, 'sha256sum'), 0o755);
+
+  const baseEnvironment = {
+    ...process.env,
+    KOVCHEG_MIGRATION_ROOT: migrations,
+    PATH: `${bin}:/usr/bin:/bin`,
+    PGPASSWORD_FILE: passwordFile,
+    PSQL_CALLS_FILE: calls,
+  };
+
+  for (const applicationEnvironment of [undefined, '', 'private-environment-marker', ' staging ']) {
+    await rm(calls, { force: true });
+    const environment = { ...baseEnvironment };
+    if (applicationEnvironment === undefined) {
+      delete environment.KOVCHEG_APP_ENV;
+    } else {
+      environment.KOVCHEG_APP_ENV = applicationEnvironment;
+    }
+    const result = spawnSync('sh', ['infra/postgres/migrate.sh'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: environment,
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /KOVCHEG_APP_ENV (?:is required|must be development)/u);
+    assert.doesNotMatch(result.stderr, /private-environment-marker/u);
+    await assert.rejects(readFile(calls, 'utf8'));
+  }
+
+  for (const applicationEnvironment of ['development', 'staging', 'production']) {
+    await rm(calls, { force: true });
+    const result = spawnSync('sh', ['infra/postgres/migrate.sh'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: { ...baseEnvironment, KOVCHEG_APP_ENV: applicationEnvironment },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal((await readFile(calls, 'utf8')).trim().split('\n').length, 3);
+  }
+
+  await rm(fixture, { force: true, recursive: true });
 });
 
 test('OIDC dual-host failures emit bounded allowlisted diagnostics without response data', async () => {

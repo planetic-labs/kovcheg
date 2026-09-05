@@ -160,7 +160,11 @@ async function createFixture(
   delivery.messages.splice(0);
 
   const app = await createAuthApplication(
-    loadServiceConfig('auth', { LOG_LEVEL: 'error', NODE_ENV: 'test' }),
+    loadServiceConfig('auth', {
+      KOVCHEG_APP_ENV: 'development',
+      LOG_LEVEL: 'error',
+      NODE_ENV: 'test',
+    }),
     runtime,
   );
   openApplications.push(app);

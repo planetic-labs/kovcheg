@@ -2,6 +2,7 @@ import { buildMetadataContractVersion } from '@kovcheg/contracts';
 import type { BuildMetadata, ServiceName } from '@kovcheg/contracts';
 
 export type RuntimeEnvironment = 'development' | 'production' | 'test';
+export type ApplicationEnvironment = 'development' | 'production' | 'staging';
 export type LogLevel = 'debug' | 'error' | 'info' | 'warn';
 export type NestLogLevel = 'debug' | 'error' | 'fatal' | 'log' | 'warn';
 
@@ -9,12 +10,14 @@ export interface EnvironmentSource {
   readonly BUILD_COMMIT_SHA?: string | undefined;
   readonly BUILD_IMAGE_DIGEST?: string | undefined;
   readonly HOST?: string | undefined;
+  readonly KOVCHEG_APP_ENV?: string | undefined;
   readonly LOG_LEVEL?: string | undefined;
   readonly NODE_ENV?: string | undefined;
   readonly PORT?: string | undefined;
 }
 
 export interface ServiceRuntimeConfig {
+  readonly applicationEnvironment: ApplicationEnvironment;
   readonly build: BuildMetadata;
   readonly host: string;
   readonly logLevel: LogLevel;
@@ -44,6 +47,24 @@ function parseNodeEnvironment(value: string | undefined): RuntimeEnvironment {
   }
 
   throw new ConfigurationError('NODE_ENV', 'development, test, or production');
+}
+
+function parseApplicationEnvironment(
+  value: string | undefined,
+  nodeEnvironment: RuntimeEnvironment,
+): ApplicationEnvironment {
+  if (value !== 'development' && value !== 'staging' && value !== 'production') {
+    throw new ConfigurationError('KOVCHEG_APP_ENV', 'development, staging, or production');
+  }
+
+  if (value !== 'development' && nodeEnvironment !== 'production') {
+    throw new ConfigurationError(
+      'NODE_ENV',
+      'production when KOVCHEG_APP_ENV is staging or production',
+    );
+  }
+
+  return value;
 }
 
 function parseLogLevel(value: string | undefined): LogLevel {
@@ -122,8 +143,13 @@ export function loadServiceConfig(
   environment: EnvironmentSource = process.env,
 ): ServiceRuntimeConfig {
   const defaults = serviceDefaults[service];
+  const nodeEnvironment = parseNodeEnvironment(environment.NODE_ENV);
 
   return Object.freeze({
+    applicationEnvironment: parseApplicationEnvironment(
+      environment.KOVCHEG_APP_ENV,
+      nodeEnvironment,
+    ),
     build: Object.freeze({
       commitSha: parseOptionalMetadata(
         'BUILD_COMMIT_SHA',
@@ -142,7 +168,7 @@ export function loadServiceConfig(
     }),
     host: parseHost(environment.HOST, defaults.host),
     logLevel: parseLogLevel(environment.LOG_LEVEL),
-    nodeEnv: parseNodeEnvironment(environment.NODE_ENV),
+    nodeEnv: nodeEnvironment,
     port: parsePort(environment.PORT, defaults.port),
     service,
   });

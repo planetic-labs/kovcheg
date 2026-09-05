@@ -80,6 +80,17 @@ client ID, issuer, authorization endpoint, and exact same-origin callback URI ar
 configuration shared with the exact OIDC registration. No secret or data is copied into an image
 layer.
 
+`KOVCHEG_APP_ENV` is the required logical environment selector shared by API, Auth, Web, Worker,
+and the deployment migration entrypoint. Its only values are `development`, `staging`, and
+`production`; missing, empty, or unknown values fail before application startup or migration work.
+`NODE_ENV` remains the technical framework mode and never selects the logical environment.
+`staging` and `production` require `NODE_ENV=production` in application services, while a
+production-mode runtime may still run with `KOVCHEG_APP_ENV=development` for local container
+verification. Changing the selector never supplies environment-specific data: each environment
+must keep separate databases, secrets, URLs, provider settings, and webhook configuration. The
+deployment smoke selects `staging` explicitly; a production selector must be provided explicitly
+and cannot be inferred from `NODE_ENV`.
+
 Only `edge` publishes ports, and both bind to host loopback. Internal ports are:
 
 | Service       | Port | Purpose                                          |
