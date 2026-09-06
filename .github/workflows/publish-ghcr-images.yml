@@ -4,9 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Full commit SHA that must equal the current main head
+        description: Full source commit SHA; WORKING requires current main
         required: true
         type: string
+      mode:
+        description: WORKING or authorized TRIAL preparation
+        required: true
+        default: WORKING
+        type: choice
+        options: [WORKING, TRIAL]
+      trial_scope:
+        description: Public scope JSON supplied by the authorized dispatcher; not independent authority
+        required: false
+        type: string
+
+env:
+  MODE: ${{ inputs.mode }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  TRIAL_SCOPE: ${{ inputs.trial_scope }}
+  REPOSITORY: ${{ github.repository }}
+  WORKFLOW_REF: ${{ github.ref }}
+  WORKFLOW_SHA: ${{ github.sha }}
+  RUN_ATTEMPT: ${{ github.run_attempt }}
 
 concurrency:
   group: publish-ghcr-images-${{ inputs.source_sha }}
@@ -22,44 +41,122 @@ jobs:
   validate-source:
     name: Validate published source
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
+      source_tree: ${{ steps.source.outputs.source_tree }}
+      matrix: ${{ steps.source.outputs.matrix }}
     steps:
-      - name: Require exact current main commit
+      - &source-gate
+        name: Validate source and publication scope
         id: source
-        env:
-          REPOSITORY: ${{ github.repository }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          WORKFLOW_REF: ${{ github.ref }}
-          WORKFLOW_SHA: ${{ github.sha }}
-        run: |
+        run: &source-run |
           set -eu
-          case "$SOURCE_SHA" in
-            *[!0-9a-f]*|'')
-              echo 'source_sha must be a lowercase hexadecimal full commit SHA' >&2
-              exit 1
-              ;;
-          esac
-          if [ "${#SOURCE_SHA}" -ne 40 ]; then
-            echo 'source_sha must contain exactly 40 hexadecimal characters' >&2
-            exit 1
-          fi
-          if [ "$WORKFLOW_REF" != 'refs/heads/main' ] || [ "$WORKFLOW_SHA" != "$SOURCE_SHA" ]; then
-            echo 'the workflow must run from the exact current main commit' >&2
-            exit 1
-          fi
-          live_main="$(git ls-remote "https://github.com/${REPOSITORY}.git" refs/heads/main | awk '{print $1}')"
-          if [ -z "$live_main" ] || [ "$SOURCE_SHA" != "$live_main" ]; then
-            echo 'source_sha is not the current main head' >&2
-            exit 1
-          fi
-          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          node --input-type=module <<'NODE'
+          // BEGIN SOURCE_VALIDATOR
+          export function validateSource(env, provider, clock = Date.now) {
+            const sha = /^[0-9a-f]{40}$/;
+            const fail = () => { throw new Error('source or publication scope rejected'); };
+            let expiresAt = '';
+            if (env.REPOSITORY !== 'planetic-labs/kovcheg' ||
+                !sha.test(env.SOURCE_SHA ?? '') || !sha.test(env.WORKFLOW_SHA ?? '') ||
+                env.WORKFLOW_REF !== 'refs/heads/main' ||
+                provider.head('refs/heads/main') !== env.WORKFLOW_SHA) fail();
+            if (env.MODE === 'WORKING') {
+              if (env.SOURCE_SHA !== env.WORKFLOW_SHA || env.TRIAL_SCOPE) fail();
+            } else if (env.MODE === 'TRIAL') {
+              if (env.RUN_ATTEMPT !== '1') fail();
+              let scope;
+              try { scope = JSON.parse(env.TRIAL_SCOPE); } catch { fail(); }
+              const keys = ['branch', 'baseSha', 'baseTree', 'candidateTree', 'allowedPaths', 'expiresAt', 'trustedWorkflowSha'];
+              if (!scope || Array.isArray(scope) || Object.keys(scope).sort().join() !== keys.sort().join()) fail();
+              if (!/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(scope.branch ?? '') ||
+                  scope.branch === 'refs/heads/main' || scope.branch.includes('..') ||
+                  scope.branch.includes('//') || scope.branch.endsWith('/') || scope.branch.endsWith('.lock') ||
+                  ![scope.baseSha, scope.baseTree, scope.candidateTree].every(v => sha.test(v ?? '')) ||
+                  scope.trustedWorkflowSha !== env.WORKFLOW_SHA ||
+                  !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(scope.expiresAt ?? '') ||
+                  !Number.isFinite(Date.parse(scope.expiresAt)) || Date.parse(scope.expiresAt) <= clock() ||
+                  !Array.isArray(scope.allowedPaths) || scope.allowedPaths.length === 0 ||
+                  scope.allowedPaths.length > 100 || new Set(scope.allowedPaths).size !== scope.allowedPaths.length) fail();
+              for (const p of scope.allowedPaths) {
+                if (typeof p !== 'string' || !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\/?$/.test(p) ||
+                    p.split('/').some(s => s === '.' || s === '..') || p === '.git' || p.startsWith('.git/') ||
+                    p === '.github' || p.startsWith('.github/')) fail();
+              }
+              if (provider.head(scope.branch) !== env.SOURCE_SHA ||
+                  provider.tree(scope.baseSha) !== scope.baseTree ||
+                  provider.tree(env.SOURCE_SHA) !== scope.candidateTree ||
+                  !provider.ancestor(scope.baseSha, env.WORKFLOW_SHA) ||
+                  !provider.ancestor(scope.baseSha, env.SOURCE_SHA)) fail();
+              expiresAt = scope.expiresAt;
+              const seen = new Set();
+              let cursor = env.SOURCE_SHA;
+              while (true) {
+                if (seen.size >= 64 || seen.has(cursor)) fail();
+                seen.add(cursor);
+                if (cursor === scope.baseSha) break;
+                const parents = provider.parents(cursor);
+                if (parents.length !== 1 || !sha.test(parents[0])) fail();
+                const changed = provider.paths(parents[0], cursor);
+                if (changed.some(p => p === 'infra/postgres' || p.startsWith('infra/postgres/') ||
+                    p === '.gitattributes' || p === 'infra/.gitattributes' ||
+                    p === '.github' || p.startsWith('.github/') || !scope.allowedPaths.some(a =>
+                    a.endsWith('/') ? p.startsWith(a) : p === a))) fail();
+                cursor = parents[0];
+              }
+            } else fail();
+            const sourceTree = provider.tree(env.SOURCE_SHA);
+            // Provider reads may consume the remaining validity window.
+            if (expiresAt && Date.parse(expiresAt) <= clock()) fail();
+            const services = ['api', 'auth', 'web', 'worker', 'edge', ...(env.MODE === 'WORKING' ? ['postgres'] : [])];
+            return { source_sha: env.SOURCE_SHA, source_tree: sourceTree, expires_at: expiresAt,
+              matrix: { include: services.map(service => ({ service,
+                package: `ghcr.io/planetic-labs/kovcheg-${service}`,
+                context: ['edge', 'postgres'].includes(service) ? `infra/${service}` : '.',
+                dockerfile: `${['edge', 'postgres'].includes(service) ? 'infra' : 'apps'}/${service}/Dockerfile`,
+              })) } };
+          }
+          export function sourceGitProvider(git) {
+            const remote = 'https://github.com/planetic-labs/kovcheg.git';
+            const fetched = new Set();
+            const fetch = sha => { if (!fetched.has(sha)) { git(['fetch', '--no-tags', remote, sha]); fetched.add(sha); } };
+            return {
+              head: ref => {
+                const rows = git(['ls-remote', '--refs', remote, ref]).split('\n').filter(Boolean);
+                return rows.length === 1 && rows[0].split(/\s+/)[1] === ref ? rows[0].split(/\s+/)[0] : null;
+              },
+              tree: sha => { fetch(sha); return git(['rev-parse', `${sha}^{tree}`]).trim(); },
+              ancestor: (base, candidate) => { fetch(base); fetch(candidate); try { git(['merge-base', '--is-ancestor', base, candidate]); return true; } catch { return false; } },
+              parents: sha => git(['rev-list', '--parents', '-n', '1', sha]).trim().split(' ').slice(1),
+              paths: (base, candidate) => git(['diff', '--no-renames', '--name-only', '-z', base, candidate]).split('\0').filter(Boolean),
+            };
+          }
+          // END SOURCE_VALIDATOR
+          import { execFileSync } from 'node:child_process';
+          import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import path from 'node:path';
+          const directory = mkdtempSync(path.join(tmpdir(), 'publication-source-'));
+          const git = args => execFileSync('git', ['-C', directory, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+          try {
+            git(['init', '--bare']);
+            const result = validateSource(process.env, sourceGitProvider(git));
+            for (const [key, value] of Object.entries(result)) appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}\n`);
+          } catch {
+            console.error('source or publication scope rejected'); process.exitCode = 1;
+          } finally { rmSync(directory, { recursive: true, force: true }); }
+          NODE
 
   inventory:
     name: Inventory all immutable tags
     needs: validate-source
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
+      - *source-gate
       - name: Set up Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -86,6 +183,7 @@ jobs:
             'postgres=ghcr.io/planetic-labs/kovcheg-postgres'
           do
             service="${item%%=*}"
+            if [ "$MODE" = TRIAL ] && [ "$service" = postgres ]; then continue; fi
             package="${item#*=}"
             tag="sha-${SOURCE_SHA}"
             reference="${package}:${tag}"
@@ -170,6 +268,8 @@ jobs:
             ['edge', 'ghcr.io/planetic-labs/kovcheg-edge'],
             ['postgres', 'ghcr.io/planetic-labs/kovcheg-postgres'],
           ]);
+          if (!['WORKING', 'TRIAL'].includes(process.env.MODE)) throw new Error('invalid publication mode');
+          if (process.env.MODE === 'TRIAL') expected.delete('postgres');
           const digestPattern = /^sha256:[0-9a-f]{64}$/;
           const files = readdirSync('publication-inventory').filter((file) => file.endsWith('.json'));
           if (files.length !== expected.size) {
@@ -237,48 +337,28 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  publish:
-    name: Publish ${{ matrix.service }}
-    needs:
-      - validate-source
-      - inventory
+  build:
+    name: Build ${{ matrix.service }} without publication credentials
+    needs: [validate-source, inventory]
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: 'false'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - service: api
-            package: ghcr.io/planetic-labs/kovcheg-api
-            context: .
-            dockerfile: apps/api/Dockerfile
-          - service: auth
-            package: ghcr.io/planetic-labs/kovcheg-auth
-            context: .
-            dockerfile: apps/auth/Dockerfile
-          - service: web
-            package: ghcr.io/planetic-labs/kovcheg-web
-            context: .
-            dockerfile: apps/web/Dockerfile
-          - service: worker
-            package: ghcr.io/planetic-labs/kovcheg-worker
-            context: .
-            dockerfile: apps/worker/Dockerfile
-          - service: edge
-            package: ghcr.io/planetic-labs/kovcheg-edge
-            context: infra/edge
-            dockerfile: infra/edge/Dockerfile
-          - service: postgres
-            package: ghcr.io/planetic-labs/kovcheg-postgres
-            context: infra/postgres
-            dockerfile: infra/postgres/Dockerfile
+      matrix: ${{ fromJSON(needs.validate-source.outputs.matrix) }}
     steps:
-      - name: Download complete pre-publication inventory
+      - &inventory-download
+        name: Download complete pre-publication inventory
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ghcr-inventory-${{ needs.validate-source.outputs.source_sha }}
           path: publication-inventory
 
-      - name: Resolve verified inventory entry
+      - &inventory-entry
+        name: Resolve verified inventory entry
         id: inventory
         env:
           PACKAGE: ${{ matrix.package }}
@@ -312,15 +392,20 @@ jobs:
           ref: ${{ needs.validate-source.outputs.source_sha }}
           persist-credentials: false
 
+      - *source-gate
+
+      - name: Assert the build checkout matches the validated source
+        if: steps.inventory.outputs.state == 'absent'
+        env:
+          SOURCE_TREE: ${{ steps.source.outputs.source_tree }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          test -z "$(git status --porcelain)"
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
-      - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
 
       - name: Build exact linux/amd64 image locally when absent
         if: steps.inventory.outputs.state == 'absent'
@@ -339,9 +424,61 @@ jobs:
             org.opencontainers.image.revision=${{ needs.validate-source.outputs.source_sha }}
           tags: ${{ matrix.package }}:sha-${{ needs.validate-source.outputs.source_sha }}
 
+      - name: Export the exact image without running it
+        if: steps.inventory.outputs.state == 'absent'
+        run: docker save -o image.tar "${{ matrix.package }}:sha-${{ needs.validate-source.outputs.source_sha }}"
+
+      - name: Upload image for this run only
+        if: steps.inventory.outputs.state == 'absent'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-image-${{ matrix.service }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish ${{ matrix.service }}
+    needs: [validate-source, inventory, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate-source.outputs.matrix) }}
+    steps:
+      - *inventory-download
+      - *inventory-entry
+      - *source-gate
+
+      - name: Download this run's image artifact
+        if: steps.inventory.outputs.state == 'absent'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: publication-image-${{ matrix.service }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: image-input
+
+      - name: Load image data without executing candidate code
+        if: steps.inventory.outputs.state == 'absent'
+        run: docker load -i image-input/image.tar
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Revalidate source before image publication
+        id: pre_push
+        run: *source-run
+
       - name: Adopt verified digest or publish only an absent tag
         id: image
         env:
+          TRIAL_EXPIRES_AT: ${{ steps.pre_push.outputs.expires_at }}
           INVENTORY_DIGEST: ${{ steps.inventory.outputs.digest }}
           INVENTORY_STATE: ${{ steps.inventory.outputs.state }}
           PACKAGE: ${{ matrix.package }}
@@ -354,7 +491,7 @@ jobs:
           reference="${PACKAGE}:${tag}"
 
           live_main="$(git ls-remote "https://github.com/${REPOSITORY}.git" refs/heads/main | awk '{print $1}')"
-          if [ -z "$live_main" ] || [ "$SOURCE_SHA" != "$live_main" ]; then
+          if [ -z "$live_main" ] || [ "$WORKFLOW_SHA" != "$live_main" ]; then
             echo 'main changed after source validation; refusing publication' >&2
             exit 1
           fi
@@ -418,6 +555,19 @@ jobs:
               exit 1
             fi
 
+            node --input-type=module <<'NODE'
+          // BEGIN PUSH_TTL_VALIDATOR
+          if (process.env.MODE === 'TRIAL') {
+            const expiry = process.env.TRIAL_EXPIRES_AT ?? '';
+            if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(expiry) ||
+                !Number.isFinite(Date.parse(expiry)) || Date.parse(expiry) <= Date.now()) {
+              throw new Error('publication validity window expired');
+            }
+          } else if (process.env.MODE !== 'WORKING') {
+            throw new Error('invalid publication mode');
+          }
+          // END PUSH_TTL_VALIDATOR
+          NODE
             push_output="$(docker push "$reference" 2>&1)"
             digest="$(printf '%s\n' "$push_output" | sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' | tail -n 1)"
             digest_value="${digest#sha256:}"
@@ -447,6 +597,39 @@ jobs:
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Revalidate source before attestation publication
+        id: pre_attest
+        run: *source-run
+
+      - name: Write candidate and trusted workflow provenance
+        if: inputs.mode == 'TRIAL'
+        env:
+          SOURCE_TREE: ${{ steps.source.outputs.source_tree }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          node --input-type=module <<'NODE'
+          // BEGIN PROVENANCE_VALIDATOR
+          export function sourcePredicate(env) {
+            if (!/^[0-9a-f]{40}$/.test(env.SOURCE_TREE ?? '') ||
+                !/^[0-9a-f]{40}$/.test(env.SOURCE_SHA ?? '') ||
+                !/^[0-9a-f]{40}$/.test(env.WORKFLOW_SHA ?? '') ||
+                !/^sha256:[0-9a-f]{64}$/.test(env.DIGEST ?? '') ||
+                env.MODE !== 'TRIAL' || env.RUN_ATTEMPT !== '1' ||
+                !/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID ?? '') ||
+                env.REPOSITORY !== 'planetic-labs/kovcheg' ||
+                !/^ghcr\.io\/planetic-labs\/kovcheg-(api|auth|web|worker|edge)$/.test(env.PACKAGE ?? '')) {
+              throw new Error('invalid source provenance binding');
+            }
+            return { source: { repository: 'https://github.com/planetic-labs/kovcheg', commit: env.SOURCE_SHA, tree: env.SOURCE_TREE },
+              workflow: { commit: env.WORKFLOW_SHA, path: '.github/workflows/publish-ghcr-images.yml', runId: env.GITHUB_RUN_ID, attempt: env.RUN_ATTEMPT },
+              image: { package: env.PACKAGE, digest: env.DIGEST, platform: 'linux/amd64' }, mode: env.MODE };
+          }
+          // END PROVENANCE_VALIDATOR
+          import { writeFileSync } from 'node:fs';
+          writeFileSync('source-predicate.json', JSON.stringify(sourcePredicate(process.env)));
+          NODE
+
       - name: Attest exact image provenance
         id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -454,9 +637,12 @@ jobs:
           subject-name: ${{ steps.image.outputs.package }}
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
+          predicate-type: ${{ inputs.mode == 'TRIAL' && 'https://github.com/planetic-labs/kovcheg/attestations/source-binding/v1' || '' }}
+          predicate-path: ${{ inputs.mode == 'TRIAL' && 'source-predicate.json' || '' }}
 
       - name: Write machine-readable digest mapping
         env:
+          SOURCE_TREE: ${{ steps.source.outputs.source_tree }}
           ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
           ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
           DIGEST: ${{ steps.image.outputs.digest }}
@@ -478,11 +664,16 @@ jobs:
             package: process.env.PACKAGE,
             digest: process.env.DIGEST,
             sourceSha: process.env.SOURCE_SHA,
+            sourceTree: process.env.SOURCE_TREE,
+            trustedWorkflowSha: process.env.WORKFLOW_SHA,
             navigationTag: process.env.TAG,
             platform: 'linux/amd64',
             deploymentRef: `${process.env.PACKAGE}@${process.env.DIGEST}`,
             publicationState: process.env.PUBLICATION_STATE,
             attestation: {
+              predicateType: process.env.MODE === 'TRIAL'
+                ? 'https://github.com/planetic-labs/kovcheg/attestations/source-binding/v1'
+                : 'https://slsa.dev/provenance/v1',
               id: process.env.ATTESTATION_ID,
               url: process.env.ATTESTATION_URL,
             },
@@ -499,13 +690,13 @@ jobs:
           retention-days: 30
 
   aggregate:
-    name: Validate complete six-image publication
+    name: Validate complete publication
     needs:
       - validate-source
       - publish
     runs-on: ubuntu-latest
     steps:
-      - name: Download exactly six digest mappings
+      - name: Download exactly the fixed digest mappings
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: ghcr-digest-*-${{ needs.validate-source.outputs.source_sha }}
@@ -515,6 +706,7 @@ jobs:
       - name: Validate and write aggregate six-image mapping
         env:
           SOURCE_SHA: ${{ needs.validate-source.outputs.source_sha }}
+          SOURCE_TREE: ${{ needs.validate-source.outputs.source_tree }}
         run: |
           set -eu
           node --input-type=module <<'NODE'
@@ -529,6 +721,8 @@ jobs:
             ['edge', 'ghcr.io/planetic-labs/kovcheg-edge'],
             ['postgres', 'ghcr.io/planetic-labs/kovcheg-postgres'],
           ]);
+          if (!['WORKING', 'TRIAL'].includes(process.env.MODE)) throw new Error('invalid publication mode');
+          if (process.env.MODE === 'TRIAL') expected.delete('postgres');
           const digestPattern = /^sha256:[0-9a-f]{64}$/;
           const files = readdirSync('publication-mappings').filter((file) => file.endsWith('.json'));
           if (files.length !== expected.size) {
@@ -550,11 +744,16 @@ jobs:
             }
             if (
               mapping.sourceSha !== process.env.SOURCE_SHA ||
+              mapping.sourceTree !== process.env.SOURCE_TREE ||
+              mapping.trustedWorkflowSha !== process.env.WORKFLOW_SHA ||
               mapping.platform !== 'linux/amd64' ||
               mapping.navigationTag !== `sha-${process.env.SOURCE_SHA}` ||
               !digestPattern.test(mapping.digest ?? '') ||
               mapping.deploymentRef !== `${mapping.package}@${mapping.digest}` ||
               !['published', 'adopted'].includes(mapping.publicationState) ||
+              mapping.attestation?.predicateType !== (process.env.MODE === 'TRIAL'
+                ? 'https://github.com/planetic-labs/kovcheg/attestations/source-binding/v1'
+                : 'https://slsa.dev/provenance/v1') ||
               !mapping.attestation?.id ||
               !mapping.attestation?.url
             ) {
@@ -568,11 +767,14 @@ jobs:
           }
           mappings.sort((left, right) => left.service.localeCompare(right.service));
           writeFileSync(
-            'ghcr-six-image-mapping.json',
+            `ghcr-${process.env.MODE === 'TRIAL' ? 'five' : 'six'}-image-mapping.json`,
             `${JSON.stringify({
               schemaVersion: 1,
               sourceSha: process.env.SOURCE_SHA,
               platform: 'linux/amd64',
+              mode: process.env.MODE,
+              sourceTree: process.env.SOURCE_TREE,
+              trustedWorkflowSha: process.env.WORKFLOW_SHA,
               imageCount: mappings.length,
               images: mappings,
             }, null, 2)}\n`,
@@ -583,7 +785,7 @@ jobs:
       - name: Upload aggregate six-image mapping
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ghcr-six-image-mapping-${{ needs.validate-source.outputs.source_sha }}
-          path: ghcr-six-image-mapping.json
+          name: ghcr-${{ inputs.mode == 'TRIAL' && 'five' || 'six' }}-image-mapping-${{ needs.validate-source.outputs.source_sha }}
+          path: ghcr-${{ inputs.mode == 'TRIAL' && 'five' || 'six' }}-image-mapping.json
           if-no-files-found: error
           retention-days: 30
