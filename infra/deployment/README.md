@@ -34,12 +34,13 @@ docker buildx build --platform linux/amd64 --target runtime --build-arg BUILD_CO
 
 Mutable tags and a local build are verification inputs only. A future handoff requires a registry
 reference by immutable digest for every repository-built image and direct provenance from every
-digest to the same published source commit.
+digest to its exact published source commit. WORKING publications bind all six images to the
+same current-main commit.
 
 ## Manual GHCR publication
 
 The `Publish immutable GHCR images` workflow is a manual-only publication candidate for `api`,
-`auth`, `web`, `worker`, `edge`, and `postgres`. It accepts one full source SHA and fails unless that
+`auth`, `web`, `worker`, `edge`, and `postgres` in its default `WORKING` mode. It accepts one full source SHA and fails unless that
 SHA is the current public `main` head immediately before publication. Each `linux/amd64` image uses
 the single navigation tag `sha-<full-source-sha>`, carries OCI source and revision labels, receives a
 registry provenance attestation, and produces a machine-readable service-to-package-to-digest
@@ -59,6 +60,53 @@ creates no mutable `latest` tag, and does not change package visibility. New pac
 retain the registry default visibility. Merging the workflow does not run it: publication, package
 existence, digest readback, anonymous pull, visibility changes, server handoff, and deployment all
 remain separate operations and evidence gates.
+
+`TRIAL` prepares exactly five images: `api`, `auth`, `web`, `worker`, and `edge`. PostgreSQL and
+Redis remain separately verified baseline runtime dependencies in the deployment handoff; this
+publisher does not rebuild, relabel, or republish them for a trial. The trial aggregate contains
+five images and is named `ghcr-five-image-mapping-<source-sha>`; WORKING retains the six-image
+artifact name. Image selection is fixed by the workflow, never by caller-provided service names.
+
+The existing trusted manual dispatcher checks the user's publication authorization, branch,
+base, allowed paths, expiry, and stop conditions before dispatching from `main`. It supplies
+`source_sha`, `mode=TRIAL`, and a public-only `trial_scope` JSON object with exactly `branch`
+(`refs/heads/<approved-branch>`), `baseSha`, `baseTree`, `candidateTree`, `allowedPaths`,
+`expiresAt` (UTC `YYYY-MM-DDTHH:mm:ssZ`), and `trustedWorkflowSha`. Paths are exact file names
+or directory prefixes ending in `/`; wildcards and workflow paths are rejected. No private
+envelope, target details, credentials, or user data belong in these inputs. This projection is
+data from a trusted dispatcher, not independent evidence of user authorization. No supplied
+hash grants authority. GitHub caller permissions do not prove a user's scoped approval.
+
+The trusted main workflow validates the exact same-repository branch head, commit/tree, base
+ancestry, changed paths, and expiry before building and before image or attestation publication.
+The candidate must reach the approved base through a single-parent chain of at most 64 commits
+including the base. Every intervening commit is checked, so an out-of-scope change followed by
+a revert is still rejected. PostgreSQL inputs and migrations under `infra/postgres`, workflow
+control files, and root or `infra/.gitattributes` cannot change even with a broad allowlist.
+NUL-delimited Git paths retain whitespace; path output is never trimmed. Expiry is checked again
+after provider reads and immediately before pushing an absent image, in addition to the separate
+source revalidation before attestation publication.
+Its SHA must equal both current main and `trustedWorkflowSha`; drift stops the run. TRIAL reruns
+are rejected: another attempt requires a new authorized manual dispatch. WORKING keeps its
+current-main checks and verified, non-overwriting resume behavior.
+
+Candidate code is built only in a separate job with read-only repository permissions, no registry
+login, and no publication or attestation permissions. Checkout credentials are not persisted.
+The publisher downloads only this run's image artifact and never checks out or executes candidate
+code or containers. WORKING retains the existing standard SLSA build provenance
+(`https://slsa.dev/provenance/v1`), with no custom predicate inputs. Only TRIAL uses the existing
+pinned attestation Action's custom predicate support for
+`https://github.com/planetic-labs/kovcheg/attestations/source-binding/v1`. This predicate explicitly
+records candidate commit/tree, trusted workflow commit/run, platform, package, and immutable
+digest. Each mapping identifies its `attestation.predicateType`; the aggregate rejects a type
+that does not match the mode. Consumers must verify the attested subject, signer workflow and
+mode-specific predicate contents. Standard SLSA is not custom candidate-binding evidence, and
+custom candidate binding is not standard SLSA. Workflow SHA or OCI labels alone do not establish
+candidate provenance. Neither predicate nor the public scope projection attests user approval.
+
+Publication is preparation under the existing authorized cycle. Its baseline images can already
+be fixed in that cycle; candidate digests are bound into the existing execution attempt after
+publication. No execution attempt, server operation, deployment, or admission is performed here.
 
 The local deployment smoke uses unique temporary tags and exact ownership labels for its six
 images. It first requires 20 GiB of measured free Docker-daemon storage by default, then records
