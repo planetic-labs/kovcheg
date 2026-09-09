@@ -35,6 +35,8 @@ services:
     labels: *test-labels
 
 networks:
+  auth-egress:
+    labels: *test-labels
   host-loopback:
     labels: *test-labels
   service-internal:

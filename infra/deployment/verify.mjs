@@ -178,6 +178,32 @@ if (compose.networks?.['host-loopback']?.internal === true) {
   finding('loopback-network-unusable', compose.networks?.['host-loopback']);
 }
 
+const authEgress = compose.networks?.['auth-egress'];
+if (
+  authEgress?.driver !== 'bridge' ||
+  authEgress?.internal !== false ||
+  authEgress?.external !== undefined ||
+  authEgress?.name !== undefined
+) {
+  finding('auth-egress-not-dedicated-bridge', authEgress);
+}
+const serviceNetworks = (service) =>
+  Array.isArray(service?.networks) ? service.networks : Object.keys(service?.networks ?? {});
+if (
+  JSON.stringify(serviceNetworks(services.auth).sort()) !==
+  JSON.stringify(['auth-egress', 'service-internal'])
+) {
+  finding('auth-network-boundary', serviceNetworks(services.auth));
+}
+for (const [name, service] of Object.entries(services)) {
+  if (name !== 'auth' && serviceNetworks(service).includes('auth-egress')) {
+    finding('auth-egress-shared-with-other-service', name);
+  }
+}
+if (JSON.stringify(serviceNetworks(services.postgres)) !== JSON.stringify(['service-internal'])) {
+  finding('database-network-boundary', serviceNetworks(services.postgres));
+}
+
 for (const [name, secret] of Object.entries(compose.secrets ?? {})) {
   if (!String(secret.file ?? '').startsWith('${KOVCHEG_')) {
     finding('secret-file-not-externalized', name);

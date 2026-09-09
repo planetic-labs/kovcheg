@@ -85,6 +85,23 @@ test('root Compose supplies the synthetic public OIDC client selectors to auth',
   );
 });
 
+test('deployment auth alone has dedicated outbound bridge with lifecycle ownership', async () => {
+  const compose = parse(await readFile('infra/deployment/compose.yaml', 'utf8'), { merge: true });
+  const lifecycle = parse(await readFile('infra/deployment/compose.lifecycle.yaml', 'utf8'));
+  assert.deepEqual(compose.networks['auth-egress'], { driver: 'bridge', internal: false });
+  assert.deepEqual(compose.services.auth.networks, ['service-internal', 'auth-egress']);
+  assert.equal(compose.services.auth.ports, undefined);
+  assert.equal(compose.networks['service-internal'].internal, true);
+  assert.deepEqual(compose.services.postgres.networks, ['service-internal']);
+  for (const [name, service] of Object.entries(compose.services)) {
+    if (name !== 'auth') assert.ok(!service.networks.includes('auth-egress'), name);
+  }
+  assert.deepEqual(
+    lifecycle.networks['auth-egress'].labels,
+    lifecycle.networks['service-internal'].labels,
+  );
+});
+
 test('application environment selector is explicit across local and deployment entrypoints', async () => {
   const rootCompose = parse(await readFile('compose.yaml', 'utf8'), { merge: true });
   const deploymentCompose = parse(await readFile('infra/deployment/compose.yaml', 'utf8'), {
