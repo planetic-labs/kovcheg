@@ -196,7 +196,7 @@ services:
       retries: 18
       start_period: 10s
     init: true
-    networks: [service-internal]
+    networks: [service-internal, auth-egress]
     pids_limit: 128
     read_only: true
     restart: unless-stopped
@@ -486,6 +486,10 @@ services:
         reservations: { cpus: '0.10', memory: 128M }
 
 networks:
+  # Dedicated outbound bridge for auth; not a destination allowlist.
+  auth-egress:
+    driver: bridge
+    internal: false
   host-loopback:
     driver: bridge
   service-internal:
