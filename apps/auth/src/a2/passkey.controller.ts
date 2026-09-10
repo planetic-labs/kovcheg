@@ -1,6 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
+  Get,
+  Param,
   Header,
   HttpCode,
   HttpStatus,
@@ -77,6 +80,38 @@ function finishBody<T>(
 @Controller('passkeys')
 export class PasskeyController {
   constructor(@Inject(authRuntimeToken) private readonly runtime: AuthRuntime) {}
+
+  @Get('settings')
+  @Header('Cache-Control', 'no-store')
+  async settings(@Req() request: PasskeyHttpRequest) {
+    const token = this.runtime.sessionCookie.read(header(request, 'cookie'));
+    if (token === null)
+      throw authHttpException('auth.invalid-session', request.correlationId as CorrelationId);
+    try {
+      return await this.runtime.passkeyService.readSettings(token);
+    } catch (error) {
+      toAuthHttpException(error, request.correlationId as CorrelationId);
+    }
+  }
+
+  @Delete('settings/:passkeyId')
+  @Header('Cache-Control', 'no-store')
+  async revoke(@Param('passkeyId') passkeyId: string, @Req() request: PasskeyHttpRequest) {
+    const token = this.runtime.sessionCookie.read(header(request, 'cookie'));
+    if (token === null)
+      throw authHttpException('auth.invalid-session', request.correlationId as CorrelationId);
+    if (!uuidPattern.test(passkeyId))
+      throw authHttpException('auth.invalid-input', request.correlationId as CorrelationId);
+    try {
+      return await this.runtime.passkeyService.revokeOwn(
+        token,
+        passkeyId as Uuid,
+        context(request),
+      );
+    } catch (error) {
+      toAuthHttpException(error, request.correlationId as CorrelationId);
+    }
+  }
 
   @Post('registration/options')
   @HttpCode(HttpStatus.OK)

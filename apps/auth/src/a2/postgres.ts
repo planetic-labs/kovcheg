@@ -14,6 +14,9 @@ import {
 } from './contracts.js';
 import type {
   AccountRecord,
+  AccountDetail,
+  AccountListPage,
+  OwnPasskeySettings,
   AccountStatus,
   AuthPasskeyCredential,
   AuthPasskeySignCountStatus,
@@ -286,6 +289,121 @@ export class PostgresAuthRepository implements AuthRepository {
   readonly productionSafe = true;
 
   constructor(private readonly client: AuthPostgresClient) {}
+
+  async listAccountsAsAdministrator(
+    input: Parameters<AuthRepository['listAccountsAsAdministrator']>[0],
+  ): Promise<AccountListPage> {
+    const rows = await query<AccountRow & { has_more: boolean }>(
+      this.client,
+      'SELECT account_id, email, display_name, account_status, has_more FROM kovcheg.admin_list_role_capable_accounts($1, $2, $3, $4)',
+      [input.actorSessionVerifier, input.afterAccountId, input.pageSize, new Date(input.now)],
+    );
+    if (
+      rows.length > input.pageSize ||
+      rows.some(
+        (row) =>
+          typeof row.has_more !== 'boolean' ||
+          typeof row.email !== 'string' ||
+          typeof row.display_name !== 'string',
+      )
+    )
+      throw unavailable();
+    const items = rows.map((row) => ({
+      userId: identifier<UserId>(row.account_id),
+      displayName: row.display_name,
+      email: row.email,
+      status: accountStatus(row.account_status),
+    }));
+    if (new Set(items.map((item) => item.userId)).size !== items.length) throw unavailable();
+    return {
+      items,
+      nextAfterAccountId: rows[0]?.has_more === true ? (items.at(-1)?.userId ?? null) : null,
+    };
+  }
+
+  async readAccountAsAdministrator(
+    input: Parameters<AuthRepository['readAccountAsAdministrator']>[0],
+  ): Promise<AccountDetail> {
+    const rows = await query<
+      AccountRow & { authorization_version: string | number; is_server_owner: boolean }
+    >(
+      this.client,
+      'SELECT account_id, email, display_name, account_access, account_status, domain_status, functional_grants, authorization_version, is_server_owner FROM kovcheg.admin_read_role_capable_account($1, $2, $3)',
+      [input.actorSessionVerifier, input.userId, new Date(input.now)],
+    );
+    const row = rows[0];
+    const account = mapAccount(row);
+    if (
+      rows.length !== 1 ||
+      account === null ||
+      row === undefined ||
+      typeof row.is_server_owner !== 'boolean'
+    )
+      throw unavailable();
+    const version = boundedInteger(row.authorization_version, Number.MAX_SAFE_INTEGER - 1);
+    if (version < 1) throw unavailable();
+    return {
+      ...account,
+      nextAuthorizationVersion: version + 1,
+      isServerOwner: row.is_server_owner,
+    };
+  }
+
+  async readOwnPasskeySettings(sessionVerifier: string, now: number): Promise<OwnPasskeySettings> {
+    const rows = await query<QueryResultRow>(
+      this.client,
+      'SELECT ever_added, active_passkey_count, active_passkeys FROM kovcheg.read_own_auth_passkey_settings($1, $2)',
+      [sessionVerifier, new Date(now)],
+    );
+    const row = rows[0];
+    if (
+      rows.length !== 1 ||
+      row === undefined ||
+      typeof row.ever_added !== 'boolean' ||
+      !Array.isArray(row.active_passkeys)
+    )
+      throw unavailable();
+    const count = boundedInteger(row.active_passkey_count);
+    const activePasskeys = row.active_passkeys.map((value: unknown) => {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) throw unavailable();
+      const key = value as Record<string, unknown>;
+      if (
+        Object.keys(key).sort().join(',') !== 'createdAt,id,lastUsedAt,status' ||
+        typeof key.id !== 'string' ||
+        key.status !== 'active' ||
+        typeof key.createdAt !== 'string' ||
+        !Number.isFinite(Date.parse(key.createdAt)) ||
+        (key.lastUsedAt !== null &&
+          (typeof key.lastUsedAt !== 'string' || !Number.isFinite(Date.parse(key.lastUsedAt))))
+      )
+        throw unavailable();
+      return {
+        id: identifier<Uuid>(key.id),
+        createdAt: key.createdAt,
+        lastUsedAt: key.lastUsedAt as string | null,
+        status: 'active' as const,
+      };
+    });
+    if (
+      count !== activePasskeys.length ||
+      new Set(activePasskeys.map((key) => key.id)).size !== count ||
+      (!row.ever_added && count > 0)
+    )
+      throw unavailable();
+    return { everAdded: row.ever_added, activePasskeyCount: count, activePasskeys };
+  }
+
+  async revokeOwnPasskey(
+    input: Parameters<AuthRepository['revokeOwnPasskey']>[0],
+  ): Promise<boolean> {
+    const rows = await query<BooleanRow>(
+      this.client,
+      'SELECT kovcheg.revoke_own_auth_passkey($1, $2, $3, $4) AS result',
+      [input.sessionVerifier, input.passkeyId, new Date(input.now), input.correlationId],
+    );
+    if (rows.length !== 1 || typeof rows[0]?.result !== 'boolean') throw unavailable();
+    return rows[0].result;
+  }
 
   async adminSecurityResetAuthAccess(
     input: Parameters<AuthRepository['adminSecurityResetAuthAccess']>[0],

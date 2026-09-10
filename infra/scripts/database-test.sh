@@ -103,6 +103,8 @@ run_upgrade_scenario() {
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-v15 database-test
   compose --profile data run --rm -e MIGRATION_TARGET=0016 migrate
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-v16 database-test
+  compose --profile data run --rm -e MIGRATION_TARGET=0017 migrate
+  compose --profile data run --rm -e TEST_SCENARIO=upgrade-v17 database-test
   compose --profile data run --rm migrate
   compose --profile data run --rm -e TEST_SCENARIO=upgrade-latest database-test
   compose --profile data run --rm migrate

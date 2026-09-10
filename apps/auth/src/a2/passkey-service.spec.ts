@@ -318,6 +318,35 @@ async function register(
 }
 
 describe('A6 passkey registration', () => {
+  it('reads only own metadata, permits last-key revoke and keeps ever-added after idempotent revoke', async () => {
+    const value = await fixture();
+    expect(await value.service.readSettings(value.memberSession.sessionToken)).toEqual({
+      everAdded: false,
+      activePasskeyCount: 0,
+      activePasskeys: [],
+    });
+    await register(value, 'settings-credential');
+    const settings = await value.service.readSettings(value.memberSession.sessionToken);
+    expect(settings.activePasskeyCount).toBe(1);
+    const key = settings.activePasskeys[0];
+    expect(key).toBeDefined();
+    expect(Object.keys(key ?? {}).sort()).toEqual(['createdAt', 'id', 'lastUsedAt', 'status']);
+    await expect(
+      value.service.revokeOwn(value.administratorSession.sessionToken, key!.id, context),
+    ).rejects.toMatchObject({ code: 'auth.not-found' });
+    const after = await value.service.revokeOwn(value.memberSession.sessionToken, key!.id, context);
+    expect(after).toEqual({ everAdded: true, activePasskeyCount: 0, activePasskeys: [] });
+    expect(
+      await value.service.revokeOwn(value.memberSession.sessionToken, key!.id, context),
+    ).toEqual(after);
+    await expect(value.service.readSettings('invalid-session')).rejects.toMatchObject({
+      code: 'auth.invalid-session',
+    });
+    await value.auth.logout(value.memberSession.sessionToken);
+    await expect(
+      value.service.readSettings(value.memberSession.sessionToken),
+    ).rejects.toMatchObject({ code: 'auth.invalid-session' });
+  });
   it('requires an active application session and requests a synced discoverable credential', async () => {
     const value = await fixture();
     await expect(

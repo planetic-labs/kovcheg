@@ -1,13 +1,214 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { once } from 'node:events';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { parse } from 'yaml';
+
+test('build-only producer binds exact archive inputs and retains only its six local images', async () => {
+  const base = await realpath(await mkdtemp(path.join(tmpdir(), 'kovcheg-build-input-test-')));
+  const checkout = path.join(base, 'checkout');
+  const bin = path.join(base, 'bin');
+  const mockState = path.join(base, 'mock.json');
+  const calls = path.join(base, 'calls.jsonl');
+  await mkdir(path.join(checkout, 'infra/deployment'), { recursive: true });
+  await mkdir(path.join(checkout, 'infra/scripts'), { recursive: true });
+  await mkdir(bin);
+  for (const name of ['infra/deployment/smoke.sh', 'infra/scripts/docker-test-lifecycle.sh']) {
+    await writeFile(path.join(checkout, name), await readFile(name));
+  }
+  await writeFile(path.join(checkout, '.gitignore'), '.local/\n.artifacts/\nignored.txt\n');
+  for (const id of ['api', 'auth', 'web', 'worker', 'edge', 'postgres']) {
+    const directory = path.join(checkout, ['edge', 'postgres'].includes(id) ? 'infra' : 'apps', id);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      path.join(directory, 'Dockerfile'),
+      'FROM scratch AS runtime\n# synthetic ' + id + '\n',
+    );
+  }
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: checkout, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git('init', '-q');
+  git('config', 'user.name', 'Synthetic Fixture');
+  git('config', 'user.email', 'fixture@source.invalid');
+  git('remote', 'add', 'origin', 'https://github.com/planetic-labs/kovcheg.git');
+  git('add', '.');
+  git('commit', '-qm', 'Synthetic build fixture');
+  await writeFile(path.join(checkout, 'ignored.txt'), 'must never enter the build context');
+  const fakeDocker = String.raw`#!/usr/bin/env node
+const fs=require('node:fs'),crypto=require('node:crypto'),cp=require('node:child_process'),path=require('node:path');
+const a=process.argv.slice(2),file=process.env.BUILD_INPUT_MOCK_STATE;
+fs.appendFileSync(process.env.BUILD_INPUT_MOCK_CALLS,JSON.stringify(a)+'\n');
+let images=fs.existsSync(file)?JSON.parse(fs.readFileSync(file)): {};
+const hash=b=>'sha256:'+crypto.createHash('sha256').update(b).digest('hex');
+const save=()=>fs.writeFileSync(file,JSON.stringify(images));
+const get=ref=>images[ref]??Object.values(images).find(x=>x.id===ref);
+const print=x=>process.stdout.write(String(x)+'\n');
+if(a[0]==='buildx'&&a[1]==='version') process.exit(0);
+if(a[0]==='run'){print(30*1024*1024);process.exit(0);}
+if(a[0]==='ps'||a[0]==='network'||a[0]==='volume') process.exit(0);
+if(a[0]==='image'&&a[1]==='ls'){const ref=a.find(x=>x.startsWith('reference='));print(Object.values(images).filter(x=>!ref||x.tag===ref.slice(10)).map(x=>x.id).join('\n'));process.exit(0);}
+if(a[0]==='buildx'&&a[1]==='build'){
+  const data=fs.readFileSync(0),labels={};
+  for(let i=0;i<a.length;i++)if(a[i]==='--label'){const eq=a[i+1].indexOf('=');labels[a[i+1].slice(0,eq)]=a[i+1].slice(eq+1);}
+  if(labels['io.kovcheg.test.context-sha256']!==hash(data).slice(7))process.exit(7);
+  const listed=cp.execFileSync('tar',['-tf','-'],{input:data,encoding:'utf8'});
+  if(listed.includes('ignored.txt')||a.at(-1)!=='-'||a[a.indexOf('--platform')+1]!=='linux/amd64')process.exit(8);
+  const tag=a[a.indexOf('--tag')+1],config=JSON.stringify({os:'linux',architecture:process.env.BUILD_INPUT_MOCK_FAILURE==='platform'?'arm64':'amd64',config:{Labels:labels}});
+  const manifest=JSON.stringify({schemaVersion:2,config:{digest:hash(config),size:Buffer.byteLength(config)},layers:[]});
+  const root=JSON.stringify({schemaVersion:2,manifests:[{digest:hash(manifest),size:Buffer.byteLength(manifest),platform:{os:'linux',architecture:'amd64'}}]});
+  images[tag]={tag,id:hash(root),labels,config,manifest,root};save();process.exit(0);
+}
+if(a[0]==='image'&&a[1]==='save'){
+  const image=get(a.at(-1)),out=a[a.indexOf('--output')+1],directory=fs.mkdtempSync(path.join(path.dirname(out),'mock-oci-'));
+  fs.mkdirSync(path.join(directory,'blobs/sha256'),{recursive:true});
+  for(const raw of [image.root,image.manifest,image.config])fs.writeFileSync(path.join(directory,'blobs/sha256',hash(raw).slice(7)),raw);
+  fs.writeFileSync(path.join(directory,'index.json'),JSON.stringify({schemaVersion:2,manifests:[{digest:image.id,size:Buffer.byteLength(image.root)}]}));
+  cp.execFileSync('tar',['-cf',out,'-C',directory,'index.json','blobs']);fs.rmSync(directory,{recursive:true});process.exit(0);
+}
+if(a[0]==='image'&&a[1]==='inspect'){
+  const image=get(a.at(-1));if(!image)process.exit(1);
+  const f=a.indexOf('--format');
+  if(f<0)print(JSON.stringify([{Id:image.id,Architecture:'amd64',Config:{Labels:image.labels}}]));
+  else {const format=a[f+1],label=/index .Config.Labels "([^"]+)"/u.exec(format);print(label?image.labels[label[1]]:format==='{{.Id}}'?image.id:format==='{{.Architecture}}'?'amd64':'');}
+  process.exit(0);
+}
+if(a[0]==='image'&&a[1]==='rm'){for(const [k,v] of Object.entries(images))if(k===a[2]||v.id===a[2])delete images[k];save();process.exit(0);}
+process.stderr.write('Unexpected mock Docker operation\n');process.exit(9);
+`;
+  await writeFile(path.join(bin, 'docker'), fakeDocker, { mode: 0o755 });
+  const environment = {
+    ...process.env,
+    PATH: bin + path.delimiter + process.env.PATH,
+    BUILD_INPUT_MOCK_STATE: mockState,
+    BUILD_INPUT_MOCK_CALLS: calls,
+  };
+  const invoke = (output, extra = {}) =>
+    spawnSync('sh', ['infra/deployment/smoke.sh', '--build-only', output], {
+      cwd: checkout,
+      encoding: 'utf8',
+      env: { ...environment, ...extra },
+      timeout: 60_000,
+    });
+  try {
+    const output = path.join(base, 'success');
+    const result = invoke(output);
+    assert.equal(result.status, 0, result.stderr);
+    const input = JSON.parse(await readFile(path.join(output, 'local-build-input.json'), 'utf8'));
+    assert.deepEqual(Object.keys(input).sort(), ['kind', 'new', 'old']);
+    assert.equal(input.kind, 'local-installed-update-builds-v1');
+    assert.equal(input.old, null);
+    assert.equal(input.new.source_checkout, await realpath(checkout));
+    assert.equal(input.new.source_commit, git('rev-parse', 'HEAD'));
+    assert.equal(input.new.source_tree, git('rev-parse', 'HEAD^{tree}'));
+    assert.deepEqual(
+      input.new.artifacts.map((x) => x.artifact_id),
+      ['api', 'auth', 'web', 'worker', 'edge', 'postgres'],
+    );
+    for (const item of input.new.artifacts) {
+      assert.deepEqual(Object.keys(item).sort(), [
+        'artifact_id',
+        'context',
+        'context_archive_sha256',
+        'context_tree',
+        'dockerfile',
+        'dockerfile_sha256',
+        'image_archive',
+        'image_archive_sha256',
+        'image_config_digest',
+        'index_digest',
+        'platform_manifest_digest',
+      ]);
+      for (const name of ['context_archive_sha256', 'dockerfile_sha256', 'image_archive_sha256'])
+        assert.match(item[name], /^[a-f0-9]{64}$/u);
+      for (const name of ['index_digest', 'platform_manifest_digest', 'image_config_digest'])
+        assert.match(item[name], /^sha256:[a-f0-9]{64}$/u);
+      const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+      assert.equal(item.image_archive_sha256, hash(await readFile(item.image_archive)));
+      const archiveRef =
+        item.context === '.'
+          ? input.new.source_commit
+          : input.new.source_commit + ':' + item.context;
+      const contextBytes = spawnSync(
+        'git',
+        ['archive', '--format=tar', '--mtime=1970-01-01T00:00:00Z', archiveRef],
+        { cwd: checkout },
+      );
+      assert.equal(contextBytes.status, 0);
+      assert.equal(item.context_archive_sha256, hash(contextBytes.stdout));
+      for (const name of ['index_digest', 'platform_manifest_digest', 'image_config_digest']) {
+        const blob = spawnSync('tar', [
+          '-xOf',
+          item.image_archive,
+          'blobs/sha256/' + item[name].slice(7),
+        ]);
+        assert.equal(blob.status, 0);
+        assert.equal(item[name], 'sha256:' + hash(blob.stdout));
+      }
+    }
+    const operations = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(operations.filter((a) => a[0] === 'buildx' && a[1] === 'build').length, 6);
+    assert.equal(operations.filter((a) => a[0] === 'image' && a[1] === 'save').length, 6);
+    assert(
+      !operations.some(
+        (a) =>
+          a.includes('compose') || a.includes('push') || a.includes('login') || a.includes('load'),
+      ),
+    );
+    assert.equal(
+      operations.filter((a) => a[0] === 'run' || a[0] === 'rm' || a[1] === 'rm').length,
+      0,
+    );
+    const retained = JSON.parse(await readFile(mockState, 'utf8'));
+    assert.equal(Object.keys(retained).length, 6);
+    assert.equal(git('status', '--porcelain', '--untracked-files=all'), '');
+    const before = await readFile(calls, 'utf8');
+    assert.notEqual(invoke(output).status, 0);
+    assert.equal(await readFile(calls, 'utf8'), before);
+    await writeFile(path.join(checkout, 'untracked.txt'), 'synthetic dirty source');
+    assert.notEqual(invoke(path.join(base, 'dirty')).status, 0);
+    assert.equal(await readFile(calls, 'utf8'), before);
+    await rm(path.join(checkout, 'untracked.txt'));
+    const failure = invoke(path.join(base, 'wrong-platform'), {
+      BUILD_INPUT_MOCK_FAILURE: 'platform',
+    });
+    assert.notEqual(failure.status, 0);
+    await assert.rejects(readFile(path.join(base, 'wrong-platform/local-build-input.json')));
+    assert.equal(Object.keys(JSON.parse(await readFile(mockState, 'utf8'))).length, 7);
+    assert(
+      (await readFile(path.join(base, 'wrong-platform/lifecycle-images.tsv'), 'utf8')).length > 0,
+    );
+    assert.equal(git('status', '--porcelain', '--untracked-files=all'), '');
+    const afterFailure = JSON.parse(await readFile(mockState, 'utf8'));
+    for (const [tag, record] of Object.entries(retained))
+      assert.deepEqual(afterFailure[tag], record);
+    const afterCalls = await readFile(calls, 'utf8');
+    await symlink('ignored.txt', path.join(checkout, 'context-link'));
+    git('add', 'context-link');
+    git('commit', '-qm', 'Synthetic unsupported context link');
+    assert.notEqual(invoke(path.join(base, 'context-link-output')).status, 0);
+    assert.equal(await readFile(calls, 'utf8'), afterCalls);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
 
 const dockerEntrypoints = [
   'infra/deployment/smoke.sh',

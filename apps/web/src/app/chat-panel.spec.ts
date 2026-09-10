@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 import { describe, expect, it } from 'vitest';
+import { TextComposer } from './text-composer';
 
-const sourceUrl = new URL('./chat-panel.tsx', import.meta.url);
-const styleUrl = new URL('./globals.css', import.meta.url);
 const assetUrl = new URL('../../public/SERDTsA.png', import.meta.url);
 
 describe('A6 visible send control', () => {
@@ -15,19 +16,31 @@ describe('A6 visible send control', () => {
     );
   });
 
-  it('exposes a visible accessible submit that follows the draft state', async () => {
-    const [source, styles] = await Promise.all([
-      readFile(sourceUrl, 'utf8'),
-      readFile(styleUrl, 'utf8'),
-    ]);
-
-    expect(source).toContain('<form className="composer" onSubmit={submitDraft}>');
-    expect(source).toMatch(
-      /aria-label="Отправить сообщение"[\s\S]*className="send-button"[\s\S]*disabled=\{draft\.trim\(\)\.length === 0\}[\s\S]*type="submit"/u,
-    );
-    expect(source).not.toContain('className="visually-hidden" type="submit"');
-    expect(styles).toContain("url('/SERDTsA.png')");
-    expect(styles).toContain('border: 1px solid var(--line);');
-    expect(styles).toContain('.send-button:disabled');
-  });
+  it.each(['', '   ', 'synthetic text'])(
+    'renders two action groups and safe draft controls for %j',
+    (draft) => {
+      const markup = renderToStaticMarkup(
+        createElement(TextComposer, {
+          draft,
+          onDraftChange: () => undefined,
+          onSubmit: () => undefined,
+        }),
+      );
+      const buttons = [...markup.matchAll(/<button\b[^>]*>/gu)].map((match) => match[0]);
+      expect(buttons).toHaveLength(6);
+      for (const button of buttons.slice(0, 5)) {
+        expect(button).toContain('disabled=""');
+        expect(button).toContain('type="button"');
+        expect(button).toContain('пока недоступно');
+      }
+      expect(buttons[5]).toContain('type="submit"');
+      expect(buttons[5]?.includes('disabled=""')).toBe(draft.trim().length === 0);
+      expect(markup.match(/role="group"/gu)).toHaveLength(2);
+      expect(markup.indexOf('</textarea>')).toBeLessThan(
+        markup.indexOf('class="composer-actions"'),
+      );
+      expect(markup).toContain('for="message-draft"');
+      expect(markup).toContain('aria-describedby="composer-keyboard-hint"');
+    },
+  );
 });

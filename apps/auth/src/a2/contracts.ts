@@ -27,6 +27,28 @@ export interface AccountRecord {
   readonly userId: UserId;
 }
 
+export interface AccountDetail extends AccountRecord {
+  readonly nextAuthorizationVersion: number;
+  readonly isServerOwner: boolean;
+}
+
+type AccountListItem = Pick<AccountRecord, 'userId' | 'displayName' | 'email' | 'status'>;
+export interface AccountListPage {
+  readonly items: readonly AccountListItem[];
+  readonly nextAfterAccountId: UserId | null;
+}
+
+export interface OwnPasskeySettings {
+  readonly everAdded: boolean;
+  readonly activePasskeyCount: number;
+  readonly activePasskeys: readonly Readonly<{
+    id: Uuid;
+    createdAt: string;
+    lastUsedAt: string | null;
+    status: 'active';
+  }>[];
+}
+
 export interface BootstrapAdministratorInput {
   readonly bootstrapId: string;
   readonly displayName: string;
@@ -145,6 +167,7 @@ export interface EmailChallengeMessage {
   readonly challengeId: Uuid;
   readonly code: string;
   readonly expiresAt: number;
+  readonly issuedAt: number;
   readonly recipient: string;
 }
 

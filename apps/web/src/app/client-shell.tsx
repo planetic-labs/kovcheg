@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
-import { parseSessionPrincipal } from '../a6/contracts';
-import type { SessionPrincipal } from '../a6/contracts';
+import { parseOwnPasskeySettings, parseSessionPrincipal } from '../a6/contracts';
+import type { OwnPasskeySettings, SessionPrincipal } from '../a6/contracts';
 import { parseEmailChallengeResponse, prepareEmailSubmission } from '../a6/email-auth';
 import {
   attemptConditionalPasskey,
@@ -15,9 +15,10 @@ import { AdministrationPanel } from './administration-panel';
 import { ChatPanel } from './chat-panel';
 import { CodeInput } from './code-input';
 import { ProblemReportEntry } from './problem-report-entry';
+import { PasskeySettingsPanel } from './passkey-settings-panel';
 
 type SessionState = 'loading' | SessionPrincipal | null;
-type WorkspaceView = 'chats' | 'users';
+type WorkspaceView = 'chats' | 'users' | 'settings';
 
 async function jsonOrNull(response: Response): Promise<unknown> {
   return response.json().catch(() => null);
@@ -332,12 +333,85 @@ function Workspace({
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [passkeyStatus, setPasskeyStatus] = useState('');
+  const [passkeySettings, setPasskeySettings] = useState<OwnPasskeySettings | null>(null);
+  const [registeredHere, setRegisteredHere] = useState(false);
+  const passkeyRequest = useRef(0);
+
+  const refreshPasskeys = useCallback(async () => {
+    const request = ++passkeyRequest.current;
+    try {
+      const response = await fetch('/bff/auth/passkeys/settings', { cache: 'no-store' });
+      if (request !== passkeyRequest.current) return;
+      if (response.status === 401) {
+        onSessionInvalid();
+        return;
+      }
+      const settings = response.ok ? parseOwnPasskeySettings(await jsonOrNull(response)) : null;
+      if (request !== passkeyRequest.current) return;
+      if (settings?.everAdded === true) setRegisteredHere(true);
+      setPasskeySettings(settings);
+      setPasskeyStatus(
+        settings === null ? 'Не удалось получить данные ключей. Повторите в настройках.' : '',
+      );
+    } catch {
+      if (request === passkeyRequest.current) {
+        setPasskeySettings(null);
+        setPasskeyStatus('Не удалось получить данные ключей.');
+      }
+    }
+  }, [onSessionInvalid]);
+
+  useEffect(() => {
+    void refreshPasskeys();
+    function resumePasskeys() {
+      if (document.visibilityState === 'visible') void refreshPasskeys();
+    }
+    window.addEventListener('online', resumePasskeys);
+    document.addEventListener('visibilitychange', resumePasskeys);
+    return () => {
+      window.removeEventListener('online', resumePasskeys);
+      document.removeEventListener('visibilitychange', resumePasskeys);
+      passkeyRequest.current++;
+    };
+  }, [refreshPasskeys]);
+
+  async function revokePasskey(id: string) {
+    if (passkeyBusy) return;
+    setPasskeyBusy(true);
+    setPasskeyStatus('');
+    try {
+      const response = await fetch('/bff/auth/passkeys/settings/' + encodeURIComponent(id), {
+        method: 'DELETE',
+      });
+      if (response.status === 401) {
+        onSessionInvalid();
+        return;
+      }
+      const settings = response.ok ? parseOwnPasskeySettings(await jsonOrNull(response)) : null;
+      if (settings === null) {
+        setPasskeyStatus('Отзыв ключа не подтверждён. Обновите данные.');
+        return;
+      }
+      passkeyRequest.current++;
+      if (settings.everAdded) setRegisteredHere(true);
+      setPasskeySettings(settings);
+      setPasskeyStatus('Ключ отозван, состояние подтверждено сервером.');
+    } catch {
+      setPasskeyStatus('Не удалось подтвердить отзыв ключа.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
 
   async function addPasskey(): Promise<void> {
     if (passkeyBusy) return;
     setPasskeyBusy(true);
     setPasskeyStatus('');
     const result = await registerPasskey();
+    if (result === 'registered') {
+      setRegisteredHere(true);
+      await refreshPasskeys();
+    }
     setPasskeyStatus(
       result === 'registered'
         ? 'Passkey добавлен.'
@@ -371,7 +445,8 @@ function Workspace({
             onClick={() => setView('chats')}
             type="button"
           >
-            Чаты
+            <span aria-hidden="true">◫</span>
+            <small>Чаты</small>
           </button>
           {hasAdministrativeAccess && (
             <button
@@ -379,42 +454,67 @@ function Workspace({
               onClick={() => setView('users')}
               type="button"
             >
-              Пользователи
+              <span aria-hidden="true">АП</span>
+              <small>Пользователи</small>
             </button>
           )}
+          <button
+            aria-current={view === 'settings' ? 'page' : undefined}
+            onClick={() => {
+              setView('settings');
+              void refreshPasskeys();
+            }}
+            type="button"
+          >
+            <small>Настройки</small>
+          </button>
         </nav>
         <div className="header-actions">
           <ProblemReportEntry />
-          <button
-            aria-describedby="passkey-registration-status"
-            aria-busy={passkeyBusy}
-            className="passkey-button"
-            disabled={passkeyBusy}
-            onClick={() => void addPasskey()}
-            type="button"
-          >
-            Добавить passkey
-          </button>
-          <span
-            aria-atomic="true"
-            aria-live="polite"
-            className="visually-hidden"
-            id="passkey-registration-status"
-            role="status"
-          >
-            {passkeyStatus}
-          </span>
+          {passkeySettings?.everAdded === false && !registeredHere && view !== 'settings' && (
+            <button
+              aria-describedby="passkey-registration-status"
+              aria-busy={passkeyBusy}
+              className="passkey-button"
+              disabled={passkeyBusy}
+              onClick={() => void addPasskey()}
+              type="button"
+            >
+              Добавить passkey
+            </button>
+          )}
+          {passkeySettings?.everAdded === false && !registeredHere && view !== 'settings' && (
+            <span
+              aria-atomic="true"
+              aria-live="polite"
+              className="visually-hidden"
+              id="passkey-registration-status"
+              role="status"
+            >
+              {passkeyStatus}
+            </span>
+          )}
           <button className="session-button" disabled={logoutBusy} onClick={() => void logout()}>
             {logoutBusy ? 'Завершаем…' : 'Завершить сеанс'}
           </button>
         </div>
       </header>
       <div className="workspace-content" id="workspace-content" tabIndex={-1}>
-        {view === 'users' && hasAdministrativeAccess ? (
+        {view === 'settings' ? (
+          <PasskeySettingsPanel
+            settings={passkeySettings}
+            busy={passkeyBusy}
+            status={passkeyStatus}
+            onRefresh={() => void refreshPasskeys()}
+            onAdd={() => void addPasskey()}
+            onRevoke={(id) => void revokePasskey(id)}
+          />
+        ) : view === 'users' && hasAdministrativeAccess ? (
           <AdministrationPanel onSessionInvalid={onSessionInvalid} principal={principal} />
-        ) : (
+        ) : null}
+        <div className="chat-view" hidden={view !== 'chats'}>
           <ChatPanel onSessionInvalid={onSessionInvalid} principalUserId={principal.userId} />
-        )}
+        </div>
       </div>
     </main>
   );

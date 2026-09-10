@@ -10,9 +10,9 @@ END;
 $$;
 
 SELECT pg_temp.assert_true(
-  kovcheg.current_migration_version() = '0017'
-  AND (SELECT count(*) = 17 FROM kovcheg_meta.schema_migrations),
-  'the complete seventeen-migration chain must be recorded'
+  kovcheg.current_migration_version() = '0018'
+  AND (SELECT count(*) = 18 FROM kovcheg_meta.schema_migrations),
+  'the complete eighteen-migration chain must be recorded'
 );
 
 SELECT pg_temp.assert_true(
@@ -155,7 +155,7 @@ SELECT pg_temp.assert_true(
       )
       AND (
         event.outcome <> 'success'
-        OR event.migration_version <> '0017'
+        OR event.migration_version <> '0018'
         OR NOT kovcheg.event_metadata_is_sanitized(event.details)
         OR event.details::text ~* '(email|otp|token|cookie|secret|code|verifier|contact|credential|public.?key)'
         OR event.details::text LIKE '%@%'

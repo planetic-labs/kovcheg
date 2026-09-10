@@ -18,20 +18,32 @@ import {
   parseRealtimeSubscribeResult,
 } from '../a6/contracts';
 import {
+  createMessageHistoryCatchUp,
   emptyMessageTimeline,
   enqueueOptimisticMessage,
   failOptimisticMessage,
   mergeStoredMessages,
+  mergeReadHistory,
+  pendingMessageTimeline,
 } from '../a6/message-state';
 import type { MessageTimelineState, TimelineItem } from '../a6/message-state';
 import { acceptRealtimeEvent, emptyRealtimeProjection } from '../a6/realtime-state';
-import { shouldSubmitComposerKey } from './composer-keyboard';
+import { TextComposer } from './text-composer';
 
 const zeroChatMarker = 'kovcheg:a6-zero-chat-seen';
 const maximumRenderedItems = 400;
 
 type ConnectionState = 'connected' | 'connecting' | 'offline';
 type ListState = 'checking' | 'error' | 'ready';
+
+interface ChatHistoryScope {
+  readonly chatId: Uuid;
+  readonly abort: AbortController;
+  readonly catchUp: ReturnType<typeof createMessageHistoryCatchUp>;
+  readonly startRealtime: () => void;
+  initialCursor: string | null;
+  loadingLatest: boolean;
+}
 
 async function jsonOrNull(response: Response): Promise<unknown> {
   return response.json().catch(() => null);
@@ -72,33 +84,67 @@ export function ChatPanel({
   const chatButtonRefs = useRef(new Map<Uuid, HTMLButtonElement>());
   const mobileBackRef = useRef<HTMLButtonElement>(null);
   const timelineRef = useRef(timeline);
+  const historyScopeRef = useRef<ChatHistoryScope | null>(null);
   const realtimeProjectionRef = useRef(emptyRealtimeProjection());
+  const loadedChatsRef = useRef(false);
+  const listRequestRef = useRef(0);
+  const draftsRef = useRef(new Map<Uuid, string>());
+  const pendingSendsRef = useRef(new Map<Uuid, MessageTimelineState>());
+
+  const rememberPending = useCallback((chatId: Uuid, state: MessageTimelineState) => {
+    const pending = pendingMessageTimeline(state);
+    if (pending.items.length === 0) pendingSendsRef.current.delete(chatId);
+    else pendingSendsRef.current.set(chatId, pending);
+  }, []);
 
   const updateTimeline = useCallback(
     (update: (current: MessageTimelineState) => MessageTimelineState) => {
-      setTimeline((current) => {
-        const next = boundedTimeline(update(current));
-        timelineRef.current = next;
-        return next;
-      });
+      const next = boundedTimeline(update(timelineRef.current));
+      const chatId = historyScopeRef.current?.chatId;
+      if (chatId !== undefined) rememberPending(chatId, next);
+      timelineRef.current = next;
+      setTimeline(next);
     },
-    [],
+    [rememberPending],
   );
 
   const loadChats = useCallback(async () => {
-    setListState('checking');
+    const request = ++listRequestRef.current;
+    if (!loadedChatsRef.current) setListState('checking');
     try {
       const response = await fetch('/bff/chats', { cache: 'no-store' });
+      if (request !== listRequestRef.current) return;
       if (isSessionFailure(response.status)) {
         onSessionInvalid();
         return;
       }
       const payload = response.ok ? parseChatListResponse(await jsonOrNull(response)) : null;
+      if (request !== listRequestRef.current) return;
+      if (response.status === 403) {
+        pendingSendsRef.current.clear();
+        draftsRef.current.clear();
+        setChats(Object.freeze([]));
+        setSelectedChatId(null);
+        setListState('error');
+        return;
+      }
       if (payload === null) {
         setListState('error');
         return;
       }
       const readable = payload.items.filter((chat) => chat.capabilities.canRead);
+      for (const chatId of pendingSendsRef.current.keys()) {
+        if (!readable.some((chat) => chat.id === chatId)) pendingSendsRef.current.delete(chatId);
+      }
+      for (const chatId of draftsRef.current.keys()) {
+        if (!readable.some((chat) => chat.id === chatId)) draftsRef.current.delete(chatId);
+      }
+      if (loadedChatsRef.current && readable.length === 0) {
+        setChats(Object.freeze([]));
+        setSelectedChatId(null);
+        setListState('error');
+        return;
+      }
       const sawZero = globalThis.sessionStorage.getItem(zeroChatMarker) === '1';
       const outcome = resolveChatListOutcome(readable.length, sawZero);
       if (outcome.kind === 'reload-required') {
@@ -112,6 +158,7 @@ export function ChatPanel({
       }
       globalThis.sessionStorage.removeItem(zeroChatMarker);
       setChats(Object.freeze(readable));
+      loadedChatsRef.current = true;
       setSelectedChatId((current) =>
         current !== null && readable.some((chat) => chat.id === current)
           ? current
@@ -119,7 +166,7 @@ export function ChatPanel({
       );
       setListState('ready');
     } catch {
-      setListState('error');
+      if (request === listRequestRef.current) setListState('error');
     }
   }, [onSessionInvalid]);
 
@@ -127,36 +174,68 @@ export function ChatPanel({
     void loadChats();
   }, [loadChats]);
 
+  useEffect(() => {
+    const pending = pendingSendsRef.current;
+    const drafts = draftsRef.current;
+    return () => {
+      pending.clear();
+      drafts.clear();
+    };
+  }, []);
+
   const selectedChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
+  // A refreshed list can select another chat before its history effect runs.
+  // Never render the previous conversation under that new selection.
+  const visibleItems = historyScopeRef.current?.chatId === selectedChatId ? timeline.items : [];
 
   const requestHistory = useCallback(
-    async (chatId: Uuid, query: URLSearchParams) => {
+    async (chatId: Uuid, query: URLSearchParams, signal: AbortSignal) => {
       const response = await fetch(`/bff/chats/${chatId}/messages?${query.toString()}`, {
         cache: 'no-store',
+        signal,
       });
+      if (signal.aborted) return null;
       if (isSessionFailure(response.status)) {
         onSessionInvalid();
         return null;
       }
-      if (response.status === 403) void loadChats();
+      if (response.status === 403) {
+        if (historyScopeRef.current?.chatId === chatId) {
+          updateTimeline(() => emptyMessageTimeline());
+          setChats((current) => current.filter((chat) => chat.id !== chatId));
+          setSelectedChatId(null);
+        }
+        void loadChats();
+      }
       return response.ok ? parseMessageHistoryPage(await jsonOrNull(response)) : null;
     },
-    [loadChats, onSessionInvalid],
+    [loadChats, onSessionInvalid, updateTimeline],
   );
 
   const loadLatest = useCallback(
-    async (chatId: Uuid) => {
+    async (scope: ChatHistoryScope) => {
+      if (scope.loadingLatest || scope.abort.signal.aborted) return;
+      scope.loadingLatest = true;
       setHistoryLoading(true);
       setHistoryError(false);
-      const page = await requestHistory(chatId, new URLSearchParams({ limit: '50' })).catch(
-        () => null,
-      );
+      const page = await requestHistory(
+        scope.chatId,
+        new URLSearchParams({ limit: '50' }),
+        scope.abort.signal,
+      ).catch(() => null);
+      scope.loadingLatest = false;
+      if (historyScopeRef.current !== scope) return;
       if (page === null) {
         setHistoryError(true);
       } else {
-        updateTimeline((current) => mergeStoredMessages(current, page.items));
+        updateTimeline((current) => mergeReadHistory(current, page.items));
         setHasOlder(page.hasMore && page.nextBeforeSequence !== null);
         setNextBeforeSequence(page.nextBeforeSequence);
+        if (scope.initialCursor === null) {
+          scope.initialCursor = timelineRef.current.historySequence;
+          scope.catchUp.request();
+          scope.startRealtime();
+        }
       }
       setHistoryLoading(false);
     },
@@ -164,60 +243,69 @@ export function ChatPanel({
   );
 
   useEffect(() => {
-    const empty = emptyMessageTimeline();
-    timelineRef.current = empty;
-    setTimeline(empty);
-    setDraft('');
+    const initial =
+      (selectedChatId === null ? null : pendingSendsRef.current.get(selectedChatId)) ??
+      emptyMessageTimeline();
+    timelineRef.current = initial;
+    setTimeline(initial);
+    setDraft(selectedChatId === null ? '' : (draftsRef.current.get(selectedChatId) ?? ''));
     setHasOlder(false);
     setNextBeforeSequence(null);
     realtimeProjectionRef.current = emptyRealtimeProjection();
-    if (selectedChatId !== null) void loadLatest(selectedChatId);
-  }, [loadLatest, selectedChatId]);
-
-  const catchUp = useCallback(
-    async (chatId: Uuid, initialAfterSequence: string) => {
-      let cursor = initialAfterSequence;
-      for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
-        const page = await requestHistory(
-          chatId,
-          new URLSearchParams({ afterSequence: cursor, limit: '100' }),
-        ).catch(() => null);
-        if (page === null) {
-          setConnection('offline');
-          return;
-        }
-        updateTimeline((current) => mergeStoredMessages(current, page.items));
-        if (!page.hasMore) return;
-        if (page.nextAfterSequence === null || page.nextAfterSequence === cursor) {
-          setConnection('offline');
-          return;
-        }
-        cursor = page.nextAfterSequence;
-      }
-      setConnection('offline');
-    },
-    [requestHistory, updateTimeline],
-  );
-
-  useEffect(() => {
     if (selectedChatId === null) return;
     setConnection('connecting');
     const socket = io({
+      autoConnect: false,
       path: realtimeSocketPath,
       transports: ['polling', 'websocket'],
       withCredentials: true,
     });
+    const abort = new AbortController();
+    const catchUp = createMessageHistoryCatchUp({
+      readCursor: () => scope.initialCursor,
+      readPage: (cursor) =>
+        requestHistory(
+          selectedChatId,
+          new URLSearchParams({ afterSequence: cursor, limit: '100' }),
+          abort.signal,
+        ),
+      applyPage: (messages) => updateTimeline((current) => mergeReadHistory(current, messages)),
+      onFailure: () => setConnection('offline'),
+      onSuccess: () => {
+        setHistoryError(false);
+        if (socket.connected) setConnection('connected');
+      },
+    });
+    const scope: ChatHistoryScope = {
+      abort,
+      catchUp,
+      chatId: selectedChatId,
+      initialCursor: null,
+      loadingLatest: false,
+      startRealtime: () => {
+        socket.connect();
+      },
+    };
+    historyScopeRef.current = scope;
+    void loadLatest(scope);
+
+    function resumeHistory() {
+      if (document.visibilityState === 'visible') catchUp.request();
+    }
+    window.addEventListener('online', resumeHistory);
+    document.addEventListener('visibilitychange', resumeHistory);
 
     socket.on(realtimeSocketEvents.ready, () => {
       setConnection('connected');
       void loadChats();
-      const afterSequence = timelineRef.current.lastSequence;
+      const afterSequence = timelineRef.current.historySequence;
       socket
         .timeout(5_000)
         .emit(
           realtimeSocketEvents.subscribe,
           { afterSequence, chatId: selectedChatId },
           (error: Error | null, value: unknown) => {
+            if (historyScopeRef.current !== scope) return;
             if (error !== null) {
               setConnection('offline');
               return;
@@ -227,8 +315,8 @@ export function ChatPanel({
               setConnection('offline');
               return;
             }
-            updateTimeline((current) => mergeStoredMessages(current, result.history));
-            void catchUp(selectedChatId, result.nextAfterSequence);
+            updateTimeline((current) => mergeReadHistory(current, result.history));
+            catchUp.request();
           },
         );
     });
@@ -240,12 +328,13 @@ export function ChatPanel({
       const accepted = acceptRealtimeEvent(realtimeProjectionRef.current, event);
       realtimeProjectionRef.current = accepted.state;
       if (!accepted.accepted) return;
-      void catchUp(selectedChatId, timelineRef.current.lastSequence);
+      catchUp.request();
     });
     socket.on(realtimeSocketEvents.error, () => {
       setConnection('offline');
       void fetch('/bff/session', { cache: 'no-store' })
         .then((response) => {
+          if (historyScopeRef.current !== scope) return;
           if (isSessionFailure(response.status)) onSessionInvalid();
         })
         .catch(() => undefined);
@@ -256,18 +345,26 @@ export function ChatPanel({
       void loadChats();
     });
     return () => {
+      historyScopeRef.current = null;
+      catchUp.dispose();
+      abort.abort();
+      window.removeEventListener('online', resumeHistory);
+      document.removeEventListener('visibilitychange', resumeHistory);
       socket.removeAllListeners();
       socket.disconnect();
     };
-  }, [catchUp, loadChats, onSessionInvalid, selectedChatId, updateTimeline]);
+  }, [loadChats, loadLatest, onSessionInvalid, requestHistory, selectedChatId, updateTimeline]);
 
   async function loadOlderMessages(): Promise<void> {
-    if (selectedChatId === null || nextBeforeSequence === null || historyLoading) return;
+    const scope = historyScopeRef.current;
+    if (scope === null || nextBeforeSequence === null || historyLoading) return;
     setHistoryLoading(true);
     const page = await requestHistory(
-      selectedChatId,
+      scope.chatId,
       new URLSearchParams({ beforeSequence: nextBeforeSequence, limit: '50' }),
+      scope.abort.signal,
     ).catch(() => null);
+    if (historyScopeRef.current !== scope) return;
     if (page === null) {
       setHistoryError(true);
     } else {
@@ -285,6 +382,16 @@ export function ChatPanel({
     clearDraft: boolean,
   ): Promise<void> {
     if (selectedChat === null || !selectedChat.capabilities.canWrite) return;
+    const scope = historyScopeRef.current;
+    if (scope === null || scope.chatId !== selectedChat.id) return;
+    const chatId = selectedChat.id;
+    function updateSend(update: (current: MessageTimelineState) => MessageTimelineState) {
+      const pending = pendingSendsRef.current.get(chatId);
+      // Permission removal or unmount invalidates a late result, including a prior session.
+      if (pending === undefined) return;
+      if (historyScopeRef.current?.chatId === chatId) updateTimeline(update);
+      else rememberPending(chatId, update(pending));
+    }
     updateTimeline((current) =>
       enqueueOptimisticMessage(current, {
         clientMessageId,
@@ -292,32 +399,38 @@ export function ChatPanel({
         text,
       }),
     );
-    if (clearDraft) setDraft('');
+    if (clearDraft) {
+      draftsRef.current.delete(selectedChat.id);
+      setDraft('');
+    }
     try {
       const response = await fetch(`/bff/chats/${selectedChat.id}/messages`, {
         body: JSON.stringify({ clientMessageId, text }),
         headers: { 'content-type': 'application/json' },
         method: 'POST',
       });
+      if (!pendingSendsRef.current.has(chatId)) return;
       if (isSessionFailure(response.status)) {
         onSessionInvalid();
         return;
       }
       if (response.status === 403) {
-        updateTimeline((current) => failOptimisticMessage(current, clientMessageId));
+        updateSend((current) => failOptimisticMessage(current, clientMessageId));
         await loadChats();
         return;
       }
       const payload = response.ok
         ? parseCreateTextMessageResponse(await jsonOrNull(response))
         : null;
+      if (!pendingSendsRef.current.has(chatId)) return;
       if (payload === null) {
-        updateTimeline((current) => failOptimisticMessage(current, clientMessageId));
+        updateSend((current) => failOptimisticMessage(current, clientMessageId));
         return;
       }
-      updateTimeline((current) => mergeStoredMessages(current, [payload.message]));
+      updateSend((current) => mergeStoredMessages(current, [payload.message]));
+      if (historyScopeRef.current?.chatId === chatId) historyScopeRef.current.catchUp.request();
     } catch {
-      updateTimeline((current) => failOptimisticMessage(current, clientMessageId));
+      updateSend((current) => failOptimisticMessage(current, clientMessageId));
     }
   }
 
@@ -329,6 +442,15 @@ export function ChatPanel({
   }
 
   function openConversation(chatId: Uuid): void {
+    if (selectedChatId !== null) draftsRef.current.set(selectedChatId, draft);
+    if (chatId !== selectedChatId) {
+      const empty = emptyMessageTimeline();
+      timelineRef.current = empty;
+      setTimeline(empty);
+      setHasOlder(false);
+      setHistoryError(false);
+      setDraft(draftsRef.current.get(chatId) ?? '');
+    }
     setSelectedChatId(chatId);
     if (globalThis.matchMedia('(max-width: 820px)').matches) {
       setMobileConversation(true);
@@ -343,7 +465,7 @@ export function ChatPanel({
     });
   }
 
-  if (listState !== 'ready') {
+  if (!loadedChatsRef.current && listState !== 'ready') {
     return (
       <section className="workspace-stage">
         <div
@@ -384,6 +506,14 @@ export function ChatPanel({
           <p className="eyebrow">Чаты</p>
           <h1>Разговоры</h1>
         </header>
+        {listState === 'error' && (
+          <p role="alert">
+            Список не обновлён или доступ изменился.{' '}
+            <button type="button" onClick={() => void loadChats()}>
+              Повторить
+            </button>
+          </p>
+        )}
         <ul className="chat-list">
           {chats.map((chat) => (
             <li key={chat.id}>
@@ -406,7 +536,9 @@ export function ChatPanel({
       </aside>
 
       <article className="conversation-panel">
-        {selectedChat === null ? null : (
+        {selectedChat === null ? (
+          <p className="workspace-stage">Выберите доступный чат</p>
+        ) : (
           <>
             <header className="conversation-header">
               <button
@@ -437,6 +569,9 @@ export function ChatPanel({
               className="message-list"
               role="log"
             >
+              {historyLoading && visibleItems.length === 0 && (
+                <p role="status">Загружаем сообщения…</p>
+              )}
               {hasOlder && (
                 <button
                   className="history-button"
@@ -450,13 +585,16 @@ export function ChatPanel({
               {historyError && (
                 <button
                   className="history-button error"
-                  onClick={() => void loadLatest(selectedChat.id)}
+                  onClick={() => {
+                    const scope = historyScopeRef.current;
+                    if (scope !== null) void loadLatest(scope);
+                  }}
                   type="button"
                 >
                   История недоступна. Повторить
                 </button>
               )}
-              {timeline.items.map((item) => (
+              {visibleItems.map((item) => (
                 <MessageBubble
                   item={item}
                   key={item.id}
@@ -469,43 +607,7 @@ export function ChatPanel({
             </div>
 
             {selectedChat.capabilities.canWrite ? (
-              <form className="composer" onSubmit={submitDraft}>
-                <label className="visually-hidden" htmlFor="message-draft">
-                  Текст сообщения
-                </label>
-                <textarea
-                  aria-describedby="composer-keyboard-hint"
-                  id="message-draft"
-                  maxLength={20_000}
-                  onChange={(event) => setDraft(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    const isComposing = event.nativeEvent.isComposing || event.keyCode === 229;
-                    if (
-                      shouldSubmitComposerKey({
-                        finePointer: globalThis.matchMedia('(pointer: fine)').matches,
-                        isComposing,
-                        key: event.key,
-                        shiftKey: event.shiftKey,
-                      })
-                    ) {
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
-                    }
-                  }}
-                  placeholder="Сообщение"
-                  rows={2}
-                  value={draft}
-                />
-                <span className="composer-hint" id="composer-keyboard-hint">
-                  Enter — отправить · Shift+Enter — новая строка
-                </span>
-                <button
-                  aria-label="Отправить сообщение"
-                  className="send-button"
-                  disabled={draft.trim().length === 0}
-                  type="submit"
-                />
-              </form>
+              <TextComposer draft={draft} onDraftChange={setDraft} onSubmit={submitDraft} />
             ) : (
               <p aria-live="polite" className="read-only-notice" role="status">
                 В этом чате доступно только чтение.

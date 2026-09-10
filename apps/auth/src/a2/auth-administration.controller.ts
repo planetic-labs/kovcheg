@@ -10,6 +10,8 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
+  Query,
   Header,
   HttpCode,
   HttpStatus,
@@ -204,6 +206,52 @@ function functionalGrant(value: string, request: AdministrationRequest): Functio
 @Controller('admin/accounts')
 export class AuthAdministrationController {
   constructor(@Inject(authRuntimeToken) private readonly runtime: AuthRuntime) {}
+
+  @Get()
+  @Header('Cache-Control', 'no-store')
+  async listAccounts(
+    @Query() query: Readonly<Record<string, unknown>>,
+    @Req() request: AdministrationRequest,
+  ) {
+    const pageSize =
+      query.limit === undefined
+        ? 50
+        : typeof query.limit === 'string' && /^(?:[1-9]\d?|100)$/u.test(query.limit)
+          ? Number(query.limit)
+          : null;
+    if (
+      Object.keys(query).some((key) => key !== 'limit' && key !== 'afterAccountId') ||
+      pageSize === null ||
+      (query.afterAccountId !== undefined && typeof query.afterAccountId !== 'string')
+    )
+      throw authHttpException('auth.invalid-input', correlationId(request));
+    const after =
+      query.afterAccountId === undefined ? null : userId(query.afterAccountId as string, request);
+    try {
+      return await this.runtime.authService.listAccounts(
+        this.administratorSessionToken(request),
+        after,
+        pageSize,
+        correlationId(request),
+      );
+    } catch (error) {
+      toAuthHttpException(error, correlationId(request));
+    }
+  }
+
+  @Get(':accountId')
+  @Header('Cache-Control', 'no-store')
+  async readAccount(@Param('accountId') accountId: string, @Req() request: AdministrationRequest) {
+    try {
+      return await this.runtime.authService.readAccount(
+        this.administratorSessionToken(request),
+        userId(accountId, request),
+        correlationId(request),
+      );
+    } catch (error) {
+      toAuthHttpException(error, correlationId(request));
+    }
+  }
 
   @ApiBody({
     schema: {
