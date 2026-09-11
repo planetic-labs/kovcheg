@@ -61,7 +61,7 @@
       "required": true,
       "secret": false,
       "constraint": "registry reference ending in @sha256:<64 lowercase hex>",
-      "restart": "migration and database operations require the exact same approved image",
+      "restart": "bootstrap and ordinary database operations require the same approved source-package image for runtime and jobs; only an explicitly approved installed update may use a separately verified immutable migration image while retaining the verified installed PostgreSQL image for runtime and backup, with separate exact artifact/runtime bindings and independent readback; this exception does not authorize PostgreSQL recreation or restart",
       "rotation": "not applicable"
     },
     {

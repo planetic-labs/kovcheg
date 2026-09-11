@@ -6,7 +6,7 @@ import {
   realtimeSocketPath,
 } from '@kovcheg/contracts';
 import type { AvailableChat, UserId, Uuid } from '@kovcheg/contracts';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { io } from 'socket.io-client';
 
@@ -83,6 +83,13 @@ export function ChatPanel({
   const [draft, setDraft] = useState('');
   const chatButtonRefs = useRef(new Map<Uuid, HTMLButtonElement>());
   const mobileBackRef = useRef<HTMLButtonElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const scrollPositionRef = useRef<{
+    chatId: Uuid;
+    atEnd: boolean;
+    anchorId: string | null;
+    anchorOffset: number;
+  } | null>(null);
   const timelineRef = useRef(timeline);
   const historyScopeRef = useRef<ChatHistoryScope | null>(null);
   const realtimeProjectionRef = useRef(emptyRealtimeProjection());
@@ -187,6 +194,72 @@ export function ChatPanel({
   // A refreshed list can select another chat before its history effect runs.
   // Never render the previous conversation under that new selection.
   const visibleItems = historyScopeRef.current?.chatId === selectedChatId ? timeline.items : [];
+
+  const rememberScrollPosition = useCallback(() => {
+    const list = messageListRef.current;
+    const scope = historyScopeRef.current;
+    if (
+      list === null ||
+      list.clientHeight === 0 ||
+      scope?.chatId !== selectedChatId ||
+      scope.initialCursor === null
+    )
+      return;
+    const top = list.getBoundingClientRect().top;
+    const anchor = Array.from(list.children).find(
+      (row) => row.hasAttribute('data-message-id') && row.getBoundingClientRect().bottom > top,
+    );
+    scrollPositionRef.current = {
+      chatId: scope.chatId,
+      atEnd: list.scrollHeight - list.clientHeight - list.scrollTop <= 2,
+      anchorId: anchor?.getAttribute('data-message-id') ?? null,
+      anchorOffset: anchor === undefined ? 0 : anchor.getBoundingClientRect().top - top,
+    };
+  }, [selectedChatId]);
+
+  const restoreScrollPosition = useCallback(() => {
+    const list = messageListRef.current;
+    const scope = historyScopeRef.current;
+    // Pending sends or a late render from another chat must not consume initial positioning.
+    if (
+      list === null ||
+      list.clientHeight === 0 ||
+      scope?.chatId !== selectedChatId ||
+      scope.initialCursor === null
+    )
+      return;
+    const previous = scrollPositionRef.current;
+    if (previous?.chatId !== selectedChatId || previous.atEnd) {
+      list.scrollTop = list.scrollHeight;
+    } else {
+      const anchor = Array.from(list.children).find(
+        (row) =>
+          previous.anchorId !== null && row.getAttribute('data-message-id') === previous.anchorId,
+      );
+      // Preserve a visible message, including after prepend or bounded-history eviction.
+      // If the anchor itself was evicted, the earliest retained message is the closest boundary.
+      list.scrollTop =
+        anchor === undefined
+          ? 0
+          : list.scrollTop +
+            anchor.getBoundingClientRect().top -
+            list.getBoundingClientRect().top -
+            previous.anchorOffset;
+    }
+    rememberScrollPosition();
+  }, [rememberScrollPosition, selectedChatId]);
+
+  useLayoutEffect(() => {
+    restoreScrollPosition();
+  }, [restoreScrollPosition, visibleItems, mobileConversation, historyLoading, hasOlder]);
+
+  useLayoutEffect(() => {
+    const list = messageListRef.current;
+    if (list === null) return;
+    const observer = new ResizeObserver(restoreScrollPosition);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [restoreScrollPosition]);
 
   const requestHistory = useCallback(
     async (chatId: Uuid, query: URLSearchParams, signal: AbortSignal) => {
@@ -453,6 +526,7 @@ export function ChatPanel({
     }
     setSelectedChatId(chatId);
     if (globalThis.matchMedia('(max-width: 820px)').matches) {
+      scrollPositionRef.current = null;
       setMobileConversation(true);
       requestAnimationFrame(() => mobileBackRef.current?.focus());
     }
@@ -567,6 +641,8 @@ export function ChatPanel({
               aria-live="polite"
               aria-relevant="additions text"
               className="message-list"
+              onScroll={rememberScrollPosition}
+              ref={messageListRef}
               role="log"
             >
               {historyLoading && visibleItems.length === 0 && (
@@ -638,6 +714,7 @@ function MessageBubble({
     <article
       aria-label={outgoing ? 'Исходящее сообщение' : 'Входящее сообщение'}
       className={`message-row${outgoing ? ' outgoing' : ''}`}
+      data-message-id={item.clientMessageId}
     >
       <div className={`message-bubble${item.kind === 'optimistic' ? ` ${item.status}` : ''}`}>
         <p>{text}</p>

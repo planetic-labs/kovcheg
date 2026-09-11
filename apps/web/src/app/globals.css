@@ -910,7 +910,7 @@ textarea {
 }
 
 .message-list {
-  align-content: end;
+  align-content: safe end;
   display: grid;
   gap: 9px;
   min-width: 0;
@@ -920,7 +920,6 @@ textarea {
 }
 
 .message-row {
-  content-visibility: auto;
   display: flex;
   min-width: 0;
 }
