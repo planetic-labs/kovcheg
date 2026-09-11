@@ -37,10 +37,24 @@ export function TextComposer({
         maxLength={20_000}
         onChange={(event) => onDraftChange(event.currentTarget.value)}
         onKeyDown={(event) => {
+          const isComposing = event.nativeEvent.isComposing || event.keyCode === 229;
+          if (!isComposing && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            const element = event.currentTarget;
+            const nextLength =
+              element.value.length - (element.selectionEnd - element.selectionStart) + 1;
+            if (nextLength <= element.maxLength) {
+              element.setRangeText('\n', element.selectionStart, element.selectionEnd, 'end');
+              onDraftChange(element.value);
+            }
+            return;
+          }
           if (
             shouldSubmitComposerKey({
+              ctrlKey: event.ctrlKey,
+              metaKey: event.metaKey,
               finePointer: globalThis.matchMedia('(pointer: fine)').matches,
-              isComposing: event.nativeEvent.isComposing || event.keyCode === 229,
+              isComposing,
               key: event.key,
               shiftKey: event.shiftKey,
             })
@@ -123,8 +137,8 @@ export function TextComposer({
         </div>
       </div>
       <span className="visually-hidden" id="composer-keyboard-hint">
-        На компьютере Enter — отправить, Shift+Enter — новая строка. На телефоне Enter — новая
-        строка.
+        На компьютере Enter — отправить; Shift+Enter, Command+Enter или Control+Enter — новая
+        строка. На телефоне Enter — новая строка.
       </span>
     </form>
   );
