@@ -61,17 +61,25 @@ retain the registry default visibility. Merging the workflow does not run it: pu
 existence, digest readback, anonymous pull, visibility changes, server handoff, and deployment all
 remain separate operations and evidence gates.
 
-`TRIAL` prepares exactly five images: `api`, `auth`, `web`, `worker`, and `edge`. PostgreSQL and
-Redis remain separately verified baseline runtime dependencies in the deployment handoff; this
-publisher does not rebuild, relabel, or republish them for a trial. The trial aggregate contains
-five images and is named `ghcr-five-image-mapping-<source-sha>`; WORKING retains the six-image
-artifact name. Image selection is fixed by the workflow, never by caller-provided service names.
+Without `trial_scope.artifactSet`, `TRIAL` prepares exactly five images: `api`, `auth`, `web`,
+`worker`, and `edge`. PostgreSQL and Redis remain separately verified baseline runtime dependencies;
+this default trial does not rebuild, relabel, or republish them. An explicitly authorized full trial
+sets `artifactSet` to the sole accepted value `schema-changing-six`, adding exactly `postgres`.
+Its PostgreSQL image supplies the migration job; publishing it does not authorize replacing the
+retained database runtime or changing data. Redis is never a seventh publication artifact.
+
+The default trial aggregate is named `ghcr-five-image-mapping-<source-sha>`; full trials and WORKING
+use `ghcr-six-image-mapping-<source-sha>`. The JSON filenames have the same five/six distinction.
+Image selection is fixed by the trusted workflow, never by caller-provided service names.
 
 The existing trusted manual dispatcher checks the user's publication authorization, branch,
 base, allowed paths, expiry, and stop conditions before dispatching from `main`. It supplies
 `source_sha`, `mode=TRIAL`, and a public-only `trial_scope` JSON object with exactly `branch`
 (`refs/heads/<approved-branch>`), `baseSha`, `baseTree`, `candidateTree`, `allowedPaths`,
-`expiresAt` (UTC `YYYY-MM-DDTHH:mm:ssZ`), and `trustedWorkflowSha`. Paths are exact file names
+`expiresAt` (UTC `YYYY-MM-DDTHH:mm:ssZ`), and `trustedWorkflowSha`, plus the optional
+`artifactSet: "schema-changing-six"`. An empty, null, alternative, or non-string selector is rejected;
+omit the key for the default five-image trial. WORKING continues to reject any trial scope.
+Paths are exact file names
 or directory prefixes ending in `/`; wildcards and workflow paths are rejected. No private
 envelope, target details, credentials, or user data belong in these inputs. This projection is
 data from a trusted dispatcher, not independent evidence of user authorization. No supplied
@@ -81,8 +89,12 @@ The trusted main workflow validates the exact same-repository branch head, commi
 ancestry, changed paths, and expiry before building and before image or attestation publication.
 The candidate must reach the approved base through a single-parent chain of at most 64 commits
 including the base. Every intervening commit is checked, so an out-of-scope change followed by
-a revert is still rejected. PostgreSQL inputs and migrations under `infra/postgres`, workflow
-control files, and root or `infra/.gitattributes` cannot change even with a broad allowlist.
+a revert is still rejected. PostgreSQL inputs and migrations under `infra/postgres` may change only
+in a full trial and only within the approved `allowedPaths` in every intervening commit. Default
+trials reject these changes even with a broad allowlist. Workflow control files remain forbidden
+in every trial. Full trials also reject any file with basename `.gitattributes`, at every depth,
+including `infra/postgres/.gitattributes`, throughout the intervening history even if later reverted.
+Default trials retain their existing root and `infra/.gitattributes` protections.
 NUL-delimited Git paths retain whitespace; path output is never trimmed. Expiry is checked again
 after provider reads and immediately before pushing an absent image, in addition to the separate
 source revalidation before attestation publication.
@@ -103,6 +115,30 @@ that does not match the mode. Consumers must verify the attested subject, signer
 mode-specific predicate contents. Standard SLSA is not custom candidate-binding evidence, and
 custom candidate binding is not standard SLSA. Workflow SHA or OCI labels alone do not establish
 candidate provenance. Neither predicate nor the public scope projection attests user approval.
+
+For full trials, the source-binding/v1 predicate additionally contains the top-level string
+`artifactSet: "schema-changing-six"`. The same field is required in every inventory record,
+inventory aggregate, per-image digest mapping, and final aggregate; `schemaVersion` remains `1`.
+The final aggregate has `mode: "TRIAL"`, `imageCount: 6`, and exactly the fixed six unique service/package
+pairs. The inventory and mapping validators reject missing, extra, duplicate, or mixed-set records.
+The default five-image trial and WORKING omit this field and retain their existing output contracts;
+WORKING continues to use standard SLSA provenance. A full-trial record is rejected in either legacy
+mode. The internal `artifact_set` output and `ARTIFACT_SET` environment value come exclusively from
+the trusted source validator, not an additional dispatcher input.
+
+A full-trial consumer must require this exact marker in the aggregate, each mapping, and each verified
+custom attestation predicate, as well as verifying the subject package/digest, source commit/tree,
+trusted workflow identity and mode. It must reject an absent or different marker rather than infer
+full-trial authorization from the image count or filename. The marker binds the artifact set; it
+neither proves approval nor encodes installer, migration-stage, or runtime authority. The existing
+infrastructure envelope separately binds the exact application source, six immutable digests,
+published installer source, retained runtime baseline, approved operations, expiry and single-use
+claim. Installer identifiers and private envelope contents do not belong in this public scope.
+
+The trusted publisher upgrade is a separate reviewed tooling change based on trusted main. It must
+be independently authorized and merged before dispatching a full-trial candidate. The application
+and installer under trial remain unmerged; they cannot supply or modify the trusted workflow or
+approve themselves. Merging the tooling change does not authorize its dispatch or any runtime effect.
 
 Publication is preparation under the existing authorized cycle. Its baseline images can already
 be fixed in that cycle; candidate digests are bound into the existing execution attempt after

@@ -1,5 +1,10 @@
 FROM postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0 AS runtime
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0=10.42-1+deb12u1 \
+  && test "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" = '10.42-1+deb12u1' \
+  && rm -rf /var/lib/apt/lists/*
+
 ARG BUILD_COMMIT_SHA=""
 
 LABEL org.opencontainers.image.revision=$BUILD_COMMIT_SHA

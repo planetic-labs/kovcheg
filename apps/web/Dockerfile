@@ -24,6 +24,11 @@ RUN find /workspace/apps/web/.next/standalone -type f \( -name '*.map' -o -name 
 
 FROM node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0=10.42-1+deb12u1 \
+  && test "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" = '10.42-1+deb12u1' \
+  && rm -rf /var/lib/apt/lists/*
+
 ARG BUILD_COMMIT_SHA=""
 
 LABEL org.opencontainers.image.revision=$BUILD_COMMIT_SHA
