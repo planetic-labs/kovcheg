@@ -4,6 +4,7 @@ import { principalAuthorizationContractVersion } from '@kovcheg/contracts';
 import type { DomainStatus, FunctionalGrant, UserId, Uuid } from '@kovcheg/contracts';
 
 import {
+  AuthError,
   AuthRepositoryAuthorizationError,
   AuthRepositoryConflictError,
   AuthRepositoryNotFoundError,
@@ -139,6 +140,7 @@ class ExclusiveQueue {
 
 export class LocalAuthRepository implements AuthRepository {
   private readonly accountsByEmail = new Map<string, StoredAccount>();
+  private readonly authorizationVersions = new Map<UserId, number>();
   private readonly accountsById = new Map<UserId, StoredAccount>();
   private readonly bootstrapAccounts = new Map<string, UserId>();
   private readonly challenges = new Map<Uuid, StoredChallenge>();
@@ -158,7 +160,7 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['adminSecurityResetAuthAccess']>[0],
   ): Promise<AuthSecurityResetResult> {
     return this.queue.run(() => {
-      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      this.requireAdministrator(input.actorSessionVerifier, input.now, input.accountId);
       this.requireAccount(input.accountId);
       let invalidatedChallengeCount = 0;
       for (const challenge of this.challenges.values()) {
@@ -442,6 +444,85 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
+  listAccountsAsAdministrator(
+    input: Parameters<AuthRepository['listAccountsAsAdministrator']>[0],
+  ): ReturnType<AuthRepository['listAccountsAsAdministrator']> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const all = [...this.accountsById.values()]
+        .sort((a, b) => a.userId.localeCompare(b.userId))
+        .filter(
+          (account) => input.afterAccountId === null || account.userId > input.afterAccountId,
+        );
+      const items = all.slice(0, input.pageSize).map((account) => ({
+        userId: account.userId,
+        displayName: account.displayName,
+        email: account.email,
+        status: account.status,
+      }));
+      return {
+        items,
+        nextAfterAccountId: all.length > input.pageSize ? (items.at(-1)?.userId ?? null) : null,
+      };
+    });
+  }
+
+  readAccountAsAdministrator(
+    input: Parameters<AuthRepository['readAccountAsAdministrator']>[0],
+  ): ReturnType<AuthRepository['readAccountAsAdministrator']> {
+    return this.queue.run(() => {
+      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const account = this.requireAccount(input.userId);
+      return {
+        ...cloneAccount(account),
+        isServerOwner: account.isServerOwner,
+        nextAuthorizationVersion: (this.authorizationVersions.get(account.userId) ?? 1) + 1,
+      };
+    });
+  }
+
+  async readOwnPasskeySettings(
+    verifier: string,
+    now: number,
+  ): ReturnType<AuthRepository['readOwnPasskeySettings']> {
+    const principal = await this.validateSession(verifier, now);
+    if (principal === null) throw new AuthRepositoryAuthorizationError();
+    return this.queue.run(() => {
+      const all = [...this.passkeysById.values()].filter(
+        (key) => key.accountId === principal.userId,
+      );
+      const activePasskeys = all
+        .filter((key) => key.revokedAt === null)
+        .sort((a, b) => a.createdAt - b.createdAt || a.passkeyId.localeCompare(b.passkeyId))
+        .map((key) => ({
+          id: key.passkeyId,
+          createdAt: new Date(key.createdAt).toISOString(),
+          lastUsedAt: key.lastUsedAt === null ? null : new Date(key.lastUsedAt).toISOString(),
+          status: 'active' as const,
+        }));
+      return {
+        everAdded: all.length > 0,
+        activePasskeyCount: activePasskeys.length,
+        activePasskeys,
+      };
+    });
+  }
+
+  async revokeOwnPasskey(
+    input: Parameters<AuthRepository['revokeOwnPasskey']>[0],
+  ): Promise<boolean> {
+    const principal = await this.validateSession(input.sessionVerifier, input.now);
+    if (principal === null) throw new AuthRepositoryAuthorizationError();
+    return this.queue.run(() => {
+      const key = this.passkeysById.get(input.passkeyId);
+      if (key === undefined || key.accountId !== principal.userId)
+        throw new AuthRepositoryNotFoundError();
+      if (key.revokedAt !== null) return false;
+      key.revokedAt = input.now;
+      return true;
+    });
+  }
+
   findAccountById(userId: UserId): Promise<AccountRecord | null> {
     return this.queue.run(() => {
       const account = this.accountsById.get(userId);
@@ -453,7 +534,7 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['grantFunctionalGrantAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     return this.queue.run(() => {
-      const actor = this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const actor = this.requireAdministrator(input.actorSessionVerifier, input.now, input.userId);
       if (input.grant === 'platform_administrator' && !actor.isServerOwner) {
         throw new AuthRepositoryAuthorizationError();
       }
@@ -461,6 +542,7 @@ export class LocalAuthRepository implements AuthRepository {
       if (!account.functionalGrants.includes(input.grant)) {
         account.functionalGrants.push(input.grant);
       }
+      this.authorizationVersions.set(account.userId, input.version);
       return cloneAccount(account);
     });
   }
@@ -604,7 +686,7 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['revokeAllSessionsAsAdministrator']>[0],
   ): Promise<number> {
     return this.queue.run(() => {
-      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      this.requireAdministrator(input.actorSessionVerifier, input.now, input.userId);
       if (!this.accountsById.has(input.userId)) {
         throw new AuthRepositoryNotFoundError();
       }
@@ -623,7 +705,7 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['revokeFunctionalGrantAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     return this.queue.run(() => {
-      const actor = this.requireAdministrator(input.actorSessionVerifier, input.now);
+      const actor = this.requireAdministrator(input.actorSessionVerifier, input.now, input.userId);
       if (input.grant === 'platform_administrator' && !actor.isServerOwner) {
         throw new AuthRepositoryAuthorizationError();
       }
@@ -632,6 +714,7 @@ export class LocalAuthRepository implements AuthRepository {
         throw new AuthRepositoryConflictError();
       }
       account.functionalGrants = account.functionalGrants.filter((grant) => grant !== input.grant);
+      this.authorizationVersions.set(account.userId, input.version);
       return cloneAccount(account);
     });
   }
@@ -640,7 +723,7 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['revokeSessionAsAdministrator']>[0],
   ): Promise<boolean> {
     return this.queue.run(() => {
-      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      this.requireAdministrator(input.actorSessionVerifier, input.now, input.userId);
       if (!this.accountsById.has(input.userId)) {
         throw new AuthRepositoryNotFoundError();
       }
@@ -673,7 +756,7 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['setAccountStatusAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     return this.queue.run(() => {
-      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      this.requireAdministrator(input.actorSessionVerifier, input.now, input.userId);
       const account = this.accountsById.get(input.userId);
       if (account === undefined) {
         throw new AuthRepositoryNotFoundError();
@@ -708,9 +791,10 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['setDomainStatusAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     return this.queue.run(() => {
-      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      this.requireAdministrator(input.actorSessionVerifier, input.now, input.userId);
       const account = this.requireAccount(input.userId);
       account.domainStatus = input.domainStatus;
+      this.authorizationVersions.set(account.userId, input.version);
       return cloneAccount(account);
     });
   }
@@ -719,7 +803,7 @@ export class LocalAuthRepository implements AuthRepository {
     input: Parameters<AuthRepository['updateAccountAsAdministrator']>[0],
   ): Promise<AccountRecord> {
     return this.queue.run(() => {
-      this.requireAdministrator(input.actorSessionVerifier, input.now);
+      this.requireAdministrator(input.actorSessionVerifier, input.now, input.userId);
       const account = this.accountsById.get(input.userId);
       if (account === undefined) {
         throw new AuthRepositoryNotFoundError();
@@ -736,7 +820,11 @@ export class LocalAuthRepository implements AuthRepository {
     });
   }
 
-  private requireAdministrator(actorSessionVerifier: string, now: number): StoredAccount {
+  private requireAdministrator(
+    actorSessionVerifier: string,
+    now: number,
+    targetAccountId?: UserId,
+  ): StoredAccount {
     const session = this.sessionsByVerifier.get(actorSessionVerifier);
     if (
       session === undefined ||
@@ -755,6 +843,21 @@ export class LocalAuthRepository implements AuthRepository {
     ) {
       throw new AuthRepositoryAuthorizationError();
     }
+    if (targetAccountId !== undefined) {
+      const owners = new Set(this.bootstrapAccounts.values());
+      const ownerId = [...owners][0];
+      if (
+        owners.size !== 1 ||
+        ownerId === undefined ||
+        !this.accountsById.get(ownerId)?.isServerOwner
+      ) {
+        throw new AuthError('auth.unavailable', 'Server owner boundary is unavailable');
+      }
+      if (targetAccountId === ownerId && account.userId !== ownerId) {
+        throw new AuthRepositoryAuthorizationError();
+      }
+    }
+    // Like the SQL transaction, a denied target must not even refresh the actor session.
     session.lastSeenAt = now;
     session.idleExpiresAt = Math.min(session.absoluteExpiresAt, now + session.idleLifetimeMs);
     return account;

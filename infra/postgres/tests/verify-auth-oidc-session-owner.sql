@@ -10,9 +10,9 @@ END;
 $$;
 
 SELECT pg_temp.assert_true(
-  kovcheg.current_migration_version() = '0017'
-  AND (SELECT count(*) = 17 FROM kovcheg_meta.schema_migrations),
-  'the complete seventeen-migration OIDC application-session chain must be recorded'
+  kovcheg.current_migration_version() = '0018'
+  AND (SELECT count(*) = 18 FROM kovcheg_meta.schema_migrations),
+  'the complete eighteen-migration OIDC application-session chain must be recorded'
 );
 
 SELECT pg_temp.assert_true(
@@ -74,7 +74,7 @@ SELECT pg_temp.assert_true(
 SELECT pg_temp.assert_true(
   (
     SELECT count(*) = 1
-      AND bool_and(event.migration_version = '0017')
+      AND bool_and(event.migration_version = '0018')
       AND bool_and(event.actor_account_id = '00000000-0000-4000-8000-000000003002')
       AND bool_and(event.target_type = 'auth_session')
       AND bool_and(event.outcome = 'success')

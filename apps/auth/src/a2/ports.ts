@@ -9,6 +9,9 @@ import type {
 
 import type {
   AccountRecord,
+  AccountDetail,
+  AccountListPage,
+  OwnPasskeySettings,
   AccountStatus,
   AuthPasskeyCredential,
   AuthPasskeySignCountStatus,
@@ -178,6 +181,24 @@ export interface AuthRepository {
     readonly userId: UserId;
     readonly version: number;
   }): Promise<AccountRecord>;
+  listAccountsAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly afterAccountId: UserId | null;
+    readonly pageSize: number;
+    readonly now: number;
+  }): Promise<AccountListPage>;
+  readAccountAsAdministrator(input: {
+    readonly actorSessionVerifier: string;
+    readonly userId: UserId;
+    readonly now: number;
+  }): Promise<AccountDetail>;
+  readOwnPasskeySettings(sessionVerifier: string, now: number): Promise<OwnPasskeySettings>;
+  revokeOwnPasskey(input: {
+    readonly sessionVerifier: string;
+    readonly passkeyId: Uuid;
+    readonly now: number;
+    readonly correlationId: CorrelationId;
+  }): Promise<boolean>;
   findAccountById(userId: UserId): Promise<AccountRecord | null>;
   invalidateChallenge(challengeId: Uuid, now: number): Promise<void>;
   isReady(): Promise<boolean>;

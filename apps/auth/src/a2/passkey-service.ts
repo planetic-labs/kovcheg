@@ -103,6 +103,37 @@ export class PasskeyService {
     }
   }
 
+  async readSettings(sessionToken: string) {
+    try {
+      return await this.dependencies.repository.readOwnPasskeySettings(
+        this.dependencies.crypto.sessionTokenVerifier(sessionToken),
+        this.dependencies.clock.now(),
+      );
+    } catch (error) {
+      if (error instanceof AuthRepositoryAuthorizationError)
+        throw new AuthError('auth.invalid-session', 'The session is invalid');
+      throw error;
+    }
+  }
+
+  async revokeOwn(sessionToken: string, passkeyId: Uuid, context: PasskeyRequestContext) {
+    try {
+      await this.dependencies.repository.revokeOwnPasskey({
+        sessionVerifier: this.dependencies.crypto.sessionTokenVerifier(sessionToken),
+        passkeyId,
+        now: this.dependencies.clock.now(),
+        correlationId: context.correlationId,
+      });
+      return await this.readSettings(sessionToken);
+    } catch (error) {
+      if (error instanceof AuthRepositoryAuthorizationError)
+        throw new AuthError('auth.invalid-session', 'The session is invalid');
+      if (error instanceof AuthRepositoryNotFoundError)
+        throw new AuthError('auth.not-found', 'The key is unavailable');
+      throw error;
+    }
+  }
+
   async beginRegistration(
     sessionToken: string,
     context: PasskeyRequestContext,

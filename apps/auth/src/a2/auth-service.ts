@@ -316,6 +316,7 @@ export class AuthService {
             challengeId: result.challengeId,
             code,
             expiresAt: now + this.dependencies.policy.challenge.ttlMs,
+            issuedAt: now,
             recipient: result.recipient,
           },
           now,
@@ -575,6 +576,36 @@ export class AuthService {
       if (decision === 'unavailable') {
         throw new AuthError('auth.unavailable', 'Authentication rate limiting is unavailable');
       }
+    }
+  }
+
+  async listAccounts(
+    sessionToken: string,
+    afterAccountId: UserId | null,
+    pageSize: number,
+    correlationId: CorrelationId,
+  ) {
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)
+      throw new AuthError('auth.invalid-input', 'Invalid page size');
+    try {
+      return await this.dependencies.repository.listAccountsAsAdministrator({
+        ...this.administrativeContext(sessionToken, correlationId),
+        afterAccountId,
+        pageSize,
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
+    }
+  }
+
+  async readAccount(sessionToken: string, userId: UserId, correlationId: CorrelationId) {
+    try {
+      return await this.dependencies.repository.readAccountAsAdministrator({
+        ...this.administrativeContext(sessionToken, correlationId),
+        userId,
+      });
+    } catch (error) {
+      this.mapAdministrativeError(error);
     }
   }
 

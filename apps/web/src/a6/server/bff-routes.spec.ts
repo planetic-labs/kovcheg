@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { POST as requestChallenge } from '../../app/bff/auth/challenge/route';
 import { POST as verifyChallenge } from '../../app/bff/auth/challenge/verify/route';
 import { POST as createAccount } from '../../app/bff/admin/accounts/[[...path]]/route';
+import { GET as readAccounts } from '../../app/bff/admin/accounts/[[...path]]/route';
 import { GET as readChats } from '../../app/bff/chats/route';
 import { DELETE as logout } from '../../app/bff/session/route';
 
@@ -50,6 +51,37 @@ function principal(canManageAccounts: boolean) {
 }
 
 describe('A6 same-origin auth BFF', () => {
+  it('requires current administrative capability before forwarding paged account reads', async () => {
+    const upstream = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(principal(false))));
+    vi.stubGlobal('fetch', upstream);
+    expect(
+      (await readAccounts(request('/bff/admin/accounts'), { params: Promise.resolve({}) })).status,
+    ).toBe(403);
+    expect(upstream).toHaveBeenCalledTimes(1);
+    upstream
+      .mockResolvedValueOnce(new Response(JSON.stringify(principal(true))))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [], nextAfterAccountId: null })));
+    const response = await readAccounts(request('/bff/admin/accounts?limit=50'), {
+      params: Promise.resolve({}),
+    });
+    expect(response.status).toBe(200);
+    expect(upstream.mock.calls.at(-1)?.[0]).toBe('http://auth:3002/admin/accounts?limit=50');
+    expect(upstream.mock.calls.at(-1)?.[1]).toMatchObject({ method: 'GET', cache: 'no-store' });
+  });
+
+  it('rejects duplicate or arbitrary list query fields', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(principal(true)))),
+    );
+    expect(
+      (
+        await readAccounts(request('/bff/admin/accounts?limit=1&limit=2'), {
+          params: Promise.resolve({}),
+        })
+      ).status,
+    ).toBe(400);
+  });
   it('keeps the external challenge response neutral and the challenge ID HTTP-only', async () => {
     const upstream = vi.fn().mockResolvedValue(
       new Response(

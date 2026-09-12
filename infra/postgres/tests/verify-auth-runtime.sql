@@ -106,6 +106,11 @@ SELECT pg_temp.assert_true(
   )
   AND NOT has_function_privilege(
     current_user,
+    'kovcheg.require_active_auth_administrator_for_target(text,uuid,timestamp with time zone)',
+    'EXECUTE'
+  )
+  AND NOT has_function_privilege(
+    current_user,
     'kovcheg.provision_account_with_starter_set(uuid,character varying)',
     'EXECUTE'
   ),

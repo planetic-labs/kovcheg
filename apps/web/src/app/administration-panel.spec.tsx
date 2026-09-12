@@ -1,46 +1,73 @@
-import { readFile } from 'node:fs/promises';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-const sourceUrl = new URL('./administration-panel.tsx', import.meta.url);
+import { parseSessionPrincipal } from '../a6/contracts';
+import { AdministrationPanel } from './administration-panel';
 
-function attributeValues(markup: string, attribute: string): string[] {
-  return Array.from(markup.matchAll(new RegExp(`\\s${attribute}="([^"]+)"`, 'gu')), (match) =>
-    String(match[1]),
-  );
-}
+const principal = parseSessionPrincipal({
+  accountAccess: 'member',
+  accountStatus: 'active',
+  administrativeCapabilities: {
+    canManageAccounts: true,
+    canManageDomainStatus: true,
+    canManageFunctionalGrants: true,
+    canManagePlatformAdministrators: true,
+  },
+  contractVersion: 2,
+  diagnosticCapabilities: {
+    canReadBuildAndMigrationVersions: false,
+    canReadHealthAndReadiness: false,
+    canReadQueueAndTechnicalState: false,
+    canReadSanitizedDiagnostics: false,
+  },
+  domainStatus: 'disciple',
+  functionalGrants: ['platform_administrator'],
+  isServerOwner: true,
+  materialCapabilities: [],
+  sensitiveCapabilities: { canPerformSensitiveActions: false },
+  sessionId: '00000000-0000-4000-8000-000000000501',
+  sessionStatus: 'active',
+  userId: '00000000-0000-4000-8000-000000000502',
+});
+if (principal === null) throw new Error('Invalid synthetic principal');
 
-describe('AdministrationPanel semantics', () => {
-  it('gives each form instance its own field identifiers', async () => {
-    const source = await readFile(sourceUrl, 'utf8');
-    const fieldCalls = Array.from(source.matchAll(/<Field\b[\s\S]*?\/>/gu), (match) => match[0]);
-
-    expect(fieldCalls).toHaveLength(9);
-    for (const field of fieldCalls) expect(field).toMatch(/\bid=/u);
-    expect(source).toContain("mode === 'create' ? 'account-create' : 'account-update'");
-    expect(source).toContain('<AuthorizationFields idPrefix="domain-status" />');
-    expect(source).toContain('<AuthorizationFields idPrefix="functional-grant" />');
-    expect(source).not.toContain('field-${name}');
-    expect(source).not.toContain('authorization-version');
-  });
-
-  it('associates every field and static control with exactly one label', async () => {
-    const source = await readFile(sourceUrl, 'utf8');
-    const literalIds = attributeValues(source, 'id');
-    const literalLabelTargets = attributeValues(source, 'htmlFor');
-    const literalControlIds = Array.from(
-      source.matchAll(/<(?:input|select)\b[^>]*\sid="([^"]+)"[^>]*>/gu),
-      (match) => String(match[1]),
+describe('AdministrationPanel initial rendering', () => {
+  it('renders the list surface without claiming an unread list is empty or saved', () => {
+    const markup = renderToStaticMarkup(
+      <AdministrationPanel principal={principal} onSessionInvalid={() => undefined} />,
     );
 
-    expect(literalIds).toHaveLength(new Set(literalIds).size);
-    for (const id of literalControlIds) {
-      expect(literalLabelTargets.filter((target) => target === id)).toHaveLength(1);
-    }
-    expect(source).toContain('<label htmlFor={id}>{label}</label>');
-    expect(source).toContain('<input id={id}');
-    expect(source).toContain('<label htmlFor={versionId}>Следующая версия права</label>');
-    expect(source).toContain('<input id={versionId}');
-    expect(source).toContain('id: string;');
-    expect(source).toContain('const versionId = `${idPrefix}-version`;');
+    expect(markup).toContain('<h1>Пользователи</h1>');
+    expect(markup).toContain('aria-label="Список пользователей"');
+    expect(markup).toContain('Обновить</button>');
+    expect(markup).toContain('Создать пользователя</button>');
+    expect(markup).toContain('Выберите пользователя из списка.');
+    expect(markup).not.toContain('Список не содержит пользователей.');
+    expect(markup).not.toContain('Сохранено и подтверждено сервером.');
+    expect(markup).not.toMatch(/<(?:input|select)\b/u);
+    expect(markup).not.toContain('Следующая версия права');
   });
+
+  it.each([false, true])(
+    'does not substitute another capability for account-list access: %s',
+    (otherCapabilities) => {
+      const denied = {
+        ...principal,
+        administrativeCapabilities: {
+          canManageAccounts: false,
+          canManageDomainStatus: otherCapabilities,
+          canManageFunctionalGrants: otherCapabilities,
+          canManagePlatformAdministrators: otherCapabilities,
+        },
+      };
+      const markup = renderToStaticMarkup(
+        <AdministrationPanel principal={denied} onSessionInvalid={() => undefined} />,
+      );
+
+      expect(markup).toContain('role="alert"');
+      expect(markup).toContain('Недостаточно прав для просмотра списка.');
+      expect(markup).not.toContain('aria-label="Список пользователей"');
+      expect(markup).not.toMatch(/<(?:button|input|select|form)\b/u);
+    },
+  );
 });

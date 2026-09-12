@@ -38,6 +38,110 @@ export interface ChatListResponse {
   readonly items: readonly AvailableChat[];
 }
 
+export interface AccountDetail extends AccountRecord {
+  readonly nextAuthorizationVersion: number;
+  readonly isServerOwner: boolean;
+}
+export type AccountListItem = Pick<AccountRecord, 'userId' | 'displayName' | 'email' | 'status'>;
+export interface AccountListPage {
+  readonly items: readonly AccountListItem[];
+  readonly nextAfterAccountId: UserId | null;
+}
+export interface OwnPasskeySettings {
+  readonly everAdded: boolean;
+  readonly activePasskeyCount: number;
+  readonly activePasskeys: readonly Readonly<{
+    id: Uuid;
+    createdAt: string;
+    lastUsedAt: string | null;
+    status: 'active';
+  }>[];
+}
+
+export function parseAccountDetail(value: unknown): AccountDetail | null {
+  const account = parseAccountRecord(value);
+  if (
+    account === null ||
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.nextAuthorizationVersion) ||
+    (value.nextAuthorizationVersion as number) < 2 ||
+    typeof value.isServerOwner !== 'boolean'
+  )
+    return null;
+  return {
+    ...account,
+    nextAuthorizationVersion: value.nextAuthorizationVersion as number,
+    isServerOwner: value.isServerOwner,
+  };
+}
+
+export function parseAccountListPage(value: unknown): AccountListPage | null {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.items) ||
+    value.items.length > 100 ||
+    (value.nextAfterAccountId !== null && !isUuid(value.nextAfterAccountId))
+  )
+    return null;
+  const items: AccountListItem[] = [];
+  for (const item of value.items) {
+    if (
+      !isRecord(item) ||
+      !isUuid(item.userId) ||
+      typeof item.displayName !== 'string' ||
+      typeof item.email !== 'string' ||
+      (item.status !== 'active' && item.status !== 'deactivated')
+    )
+      return null;
+    items.push({
+      userId: item.userId as UserId,
+      displayName: item.displayName,
+      email: item.email,
+      status: item.status,
+    });
+  }
+  if (
+    new Set(items.map((item) => item.userId)).size !== items.length ||
+    (value.nextAfterAccountId !== null && value.nextAfterAccountId !== items.at(-1)?.userId)
+  )
+    return null;
+  return { items, nextAfterAccountId: value.nextAfterAccountId as UserId | null };
+}
+
+export function parseOwnPasskeySettings(value: unknown): OwnPasskeySettings | null {
+  if (
+    !isRecord(value) ||
+    typeof value.everAdded !== 'boolean' ||
+    !Number.isSafeInteger(value.activePasskeyCount) ||
+    !Array.isArray(value.activePasskeys) ||
+    value.activePasskeyCount !== value.activePasskeys.length ||
+    (!value.everAdded && value.activePasskeyCount !== 0)
+  )
+    return null;
+  const keys: OwnPasskeySettings['activePasskeys'][number][] = [];
+  for (const key of value.activePasskeys) {
+    if (
+      !isRecord(key) ||
+      Object.keys(key).sort().join(',') !== 'createdAt,id,lastUsedAt,status' ||
+      !isUuid(key.id) ||
+      key.status !== 'active' ||
+      typeof key.createdAt !== 'string' ||
+      !Number.isFinite(Date.parse(key.createdAt)) ||
+      (key.lastUsedAt !== null &&
+        (typeof key.lastUsedAt !== 'string' || !Number.isFinite(Date.parse(key.lastUsedAt))))
+    )
+      return null;
+    keys.push({
+      id: key.id,
+      createdAt: key.createdAt,
+      lastUsedAt: key.lastUsedAt as string | null,
+      status: 'active',
+    });
+  }
+  if (new Set(keys.map((key) => key.id)).size !== keys.length) return null;
+  return { everAdded: value.everAdded, activePasskeyCount: keys.length, activePasskeys: keys };
+}
+
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const sequencePattern = /^(0|[1-9][0-9]*)$/u;
 const clientMessageIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;

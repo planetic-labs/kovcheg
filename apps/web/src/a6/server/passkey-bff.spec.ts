@@ -5,6 +5,8 @@ import { POST as authenticationOptions } from '../../app/bff/auth/passkeys/authe
 import { POST as authenticationVerify } from '../../app/bff/auth/passkeys/authentication/verify/route';
 import { POST as registrationOptions } from '../../app/bff/auth/passkeys/registration/options/route';
 import { POST as registrationVerify } from '../../app/bff/auth/passkeys/registration/verify/route';
+import { GET as readSettings } from '../../app/bff/auth/passkeys/settings/route';
+import { DELETE as revokeKey } from '../../app/bff/auth/passkeys/settings/[passkeyId]/route';
 
 const ceremonyId = '00000000-0000-4000-8000-000000000711';
 const sessionId = '00000000-0000-4000-8000-000000000712';
@@ -27,6 +29,46 @@ afterEach(() => {
 });
 
 describe('A6 passkey same-origin BFF', () => {
+  it('reads settings and revokes only through authenticated session-only transport and safe readback', async () => {
+    const payload = { everAdded: true, activePasskeyCount: 0, activePasskeys: [] };
+    const upstream = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(payload)));
+    vi.stubGlobal('fetch', upstream);
+    const response = await readSettings(
+      request('/bff/auth/passkeys/settings', {
+        headers: { cookie: 'kovcheg_session=synthetic-session; unrelated=value' },
+      }),
+    );
+    expect(await response.json()).toEqual(payload);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(new Headers(upstream.mock.calls[0]?.[1].headers).get('cookie')).toBe(
+      'kovcheg_session=synthetic-session',
+    );
+    const revoked = await revokeKey(
+      request('/bff/auth/passkeys/settings/' + userId, { method: 'DELETE' }),
+      { params: Promise.resolve({ passkeyId: userId }) },
+    );
+    expect(await revoked.json()).toEqual(payload);
+    expect(upstream.mock.calls[1]?.[1].method).toBe('DELETE');
+    expect(
+      (
+        await revokeKey(request('/bff/auth/passkeys/settings/invalid', { method: 'DELETE' }), {
+          params: Promise.resolve({ passkeyId: 'invalid' }),
+        })
+      ).status,
+    ).toBe(400);
+    expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([401, 403, 404, 503])(
+    'does not convert key-management failure %s into success',
+    async (status) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(jsonResponse({ error: 'synthetic-denied' }, status)),
+      );
+      expect((await readSettings(request('/bff/auth/passkeys/settings'))).status).toBe(status);
+    },
+  );
   it('forwards only the application session cookie to authenticated registration', async () => {
     const upstream = vi.fn().mockResolvedValue(
       jsonResponse({

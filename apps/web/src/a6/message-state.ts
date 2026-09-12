@@ -1,4 +1,4 @@
-import type { TextMessage, UserId, Uuid } from '@kovcheg/contracts';
+import type { MessageHistoryPage, TextMessage, UserId, Uuid } from '@kovcheg/contracts';
 
 export type TimelineItem =
   | {
@@ -17,12 +17,21 @@ export type TimelineItem =
     };
 
 export interface MessageTimelineState {
+  readonly historySequence: string;
   readonly items: readonly TimelineItem[];
   readonly lastSequence: string;
 }
 
 export function emptyMessageTimeline(): MessageTimelineState {
-  return Object.freeze({ items: Object.freeze([]), lastSequence: '0' });
+  return Object.freeze({ historySequence: '0', items: Object.freeze([]), lastSequence: '0' });
+}
+
+// Keep only local sends across a conversation switch. Reopening must read history anew.
+export function pendingMessageTimeline(state: MessageTimelineState): MessageTimelineState {
+  return Object.freeze({
+    ...emptyMessageTimeline(),
+    items: Object.freeze(state.items.filter((item) => item.kind === 'optimistic')),
+  });
 }
 
 function sequenceMaximum(left: string, right: string): string {
@@ -42,7 +51,8 @@ function sortTimeline(items: readonly TimelineItem[]): readonly TimelineItem[] {
   return Object.freeze(
     [...items].sort((left, right) => {
       if (left.kind === 'optimistic' && right.kind === 'optimistic') {
-        return left.clientMessageId.localeCompare(right.clientMessageId);
+        // Stable sort preserves enqueue order, including a retry with the original ID.
+        return 0;
       }
       if (left.kind === 'optimistic') {
         return 1;
@@ -119,7 +129,109 @@ export function mergeStoredMessages(
   }
 
   return Object.freeze({
+    historySequence: state.historySequence,
     items: sortTimeline([...byMessageId.values()]),
     lastSequence,
+  });
+}
+
+// Only an authoritative history page establishes a read cursor. A POST acknowledgement
+// can arrive before earlier messages from another device have been read.
+export function mergeReadHistory(
+  state: MessageTimelineState,
+  messages: readonly TextMessage[],
+): MessageTimelineState {
+  return Object.freeze({
+    ...mergeStoredMessages(state, messages),
+    historySequence: messages.reduce(
+      (cursor, message) => sequenceMaximum(cursor, message.chatSequence),
+      state.historySequence,
+    ),
+  });
+}
+
+export function createMessageHistoryCatchUp(
+  input: Readonly<{
+    readCursor: () => string | null;
+    readPage: (cursor: string) => Promise<MessageHistoryPage | null>;
+    applyPage: (messages: readonly TextMessage[]) => void;
+    onFailure: () => void;
+    onSuccess: () => void;
+  }>,
+) {
+  let disposed = false;
+  let running = false;
+  let requested = false;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let retryDelay = 1_000;
+  // Wait for the initial latest page before establishing the forward boundary.
+  // Thereafter only this ordered drain advances it, across failures and yields;
+  // a newer display/POST/subscribe response cannot skip an unread interval.
+  let cursor: string | null = null;
+
+  function scheduleRetry() {
+    retry = setTimeout(() => {
+      retry = undefined;
+      request();
+    }, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 10_000);
+  }
+
+  async function drain() {
+    if (cursor === null) return;
+    running = true;
+    try {
+      for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+        requested = false;
+        const page = await input.readPage(cursor);
+        if (disposed) return;
+        if (
+          page === null ||
+          (page.hasMore &&
+            (page.nextAfterSequence === null || BigInt(page.nextAfterSequence) <= BigInt(cursor)))
+        ) {
+          throw new Error('History catch-up unavailable');
+        }
+        input.applyPage(page.items);
+        cursor =
+          page.nextAfterSequence ??
+          page.items.reduce(
+            (current, message) => sequenceMaximum(current, message.chatSequence),
+            cursor,
+          );
+        if (!page.hasMore && !requested) {
+          retryDelay = 1_000;
+          input.onSuccess();
+          return;
+        }
+      }
+      // Yield between bounded batches without abandoning unread history.
+      scheduleRetry();
+    } catch {
+      if (!disposed) {
+        input.onFailure();
+        scheduleRetry();
+      }
+    } finally {
+      running = false;
+    }
+  }
+
+  function request() {
+    if (disposed) return;
+    cursor ??= input.readCursor();
+    if (cursor === null) return;
+    requested = true;
+    if (retry !== undefined) clearTimeout(retry);
+    retry = undefined;
+    if (!running) void drain();
+  }
+
+  return Object.freeze({
+    request,
+    dispose() {
+      disposed = true;
+      if (retry !== undefined) clearTimeout(retry);
+    },
   });
 }

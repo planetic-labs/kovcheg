@@ -2,6 +2,34 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
 import { copySessionSetCookie, requestAuth } from './internal-http';
+import { parseOwnPasskeySettings } from '../contracts';
+
+export async function passkeySettings(request: NextRequest, passkeyId?: string) {
+  if (
+    request.nextUrl.searchParams.size > 0 ||
+    (passkeyId !== undefined && !uuidPattern.test(passkeyId))
+  )
+    return passkeyError(400);
+  try {
+    const upstream = await requestAuth(
+      request,
+      `/passkeys/settings${passkeyId === undefined ? '' : `/${passkeyId}`}`,
+      { cookies: 'session', method: passkeyId === undefined ? 'GET' : 'DELETE' },
+    );
+    if (!upstream.ok)
+      return passkeyError(
+        upstream.status >= 500
+          ? 503
+          : [401, 403, 404].includes(upstream.status)
+            ? upstream.status
+            : 400,
+      );
+    const payload = parseOwnPasskeySettings(await upstream.json().catch(() => null));
+    return payload === null ? passkeyError(503) : passkeyJson(payload);
+  } catch {
+    return passkeyError(503);
+  }
+}
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 

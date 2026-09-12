@@ -6,6 +6,8 @@ describe('A6 desktop composer keyboard contract', () => {
   it('submits plain Enter only for a fine-pointer desktop context', () => {
     expect(
       shouldSubmitComposerKey({
+        ctrlKey: false,
+        metaKey: false,
         finePointer: true,
         isComposing: false,
         key: 'Enter',
@@ -17,6 +19,8 @@ describe('A6 desktop composer keyboard contract', () => {
   it('keeps Shift+Enter as a newline and never submits during IME composition', () => {
     expect(
       shouldSubmitComposerKey({
+        ctrlKey: false,
+        metaKey: false,
         finePointer: true,
         isComposing: false,
         key: 'Enter',
@@ -25,6 +29,8 @@ describe('A6 desktop composer keyboard contract', () => {
     ).toBe(false);
     expect(
       shouldSubmitComposerKey({
+        ctrlKey: false,
+        metaKey: false,
         finePointer: true,
         isComposing: true,
         key: 'Enter',
@@ -36,7 +42,27 @@ describe('A6 desktop composer keyboard contract', () => {
   it('does not turn Enter into submit on coarse-pointer mobile/touch input', () => {
     expect(
       shouldSubmitComposerKey({
+        ctrlKey: false,
+        metaKey: false,
         finePointer: false,
+        isComposing: false,
+        key: 'Enter',
+        shiftKey: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('modified Enter', () => {
+  it.each([
+    { ctrlKey: true, metaKey: false },
+    { ctrlKey: false, metaKey: true },
+    { ctrlKey: true, metaKey: true },
+  ])('never submits with $ctrlKey Control / $metaKey Command', (modifiers) => {
+    expect(
+      shouldSubmitComposerKey({
+        ...modifiers,
+        finePointer: true,
         isComposing: false,
         key: 'Enter',
         shiftKey: false,

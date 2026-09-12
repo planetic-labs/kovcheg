@@ -327,6 +327,89 @@ async function main(): Promise<void> {
     try {
       integrationStage = 'administrative-http';
       const administratorCookie = `${runtime.sessionCookie.name}=${administratorSession.sessionToken}`;
+      integrationStage = 'owner-target-http-denial';
+      const delegated = await runtime.authService.createAccount(
+        administratorSession.sessionToken,
+        { displayName: 'Synthetic Delegate', email: `delegate-${suffix}@auth.invalid` },
+        correlationId(`integration-owner-delegate-create-${suffix}`),
+      );
+      await runtime.authService.grantFunctionalGrant(
+        administratorSession.sessionToken,
+        delegated.userId,
+        'platform_administrator',
+        { reason: 'synthetic-delegation', version: 2 },
+        correlationId(`integration-owner-delegate-grant-${suffix}`),
+      );
+      const delegatedChallenge = await runtime.authService.requestEmailChallenge({
+        email: delegated.email,
+        fingerprint: `delegate-${suffix}`,
+        networkAddress: 'integration-delegate-network',
+      });
+      const delegatedMessage = delivery.messages.at(-1);
+      assert(
+        delegatedMessage?.challengeId === delegatedChallenge.challengeId,
+        'Synthetic delegate challenge must be delivered',
+      );
+      const delegatedSession = await runtime.authService.verifyEmailChallenge({
+        challengeId: delegatedChallenge.challengeId,
+        code: delegatedMessage.code,
+        networkAddress: 'integration-delegate-network',
+      });
+      const ownerBefore = await runtime.authService.readAccount(
+        administratorSession.sessionToken,
+        administratorId,
+        correlationId(`integration-owner-before-${suffix}`),
+      );
+      const authorization = {
+        reason: 'synthetic-owner-denied',
+        version: ownerBefore.nextAuthorizationVersion,
+      };
+      const targetPath = `/admin/accounts/${administratorId}`;
+      const forbiddenOwnerRequests = [
+        {
+          method: 'PATCH',
+          path: targetPath,
+          body: { email: `denied-${suffix}@auth.invalid`, displayName: 'Synthetic Denied' },
+        },
+        { method: 'PATCH', path: `${targetPath}/status`, body: { status: 'deactivated' } },
+        {
+          method: 'PATCH',
+          path: `${targetPath}/domain-status`,
+          body: { ...authorization, domainStatus: 'disciple' },
+        },
+        { method: 'PUT', path: `${targetPath}/functional-grants/editor`, body: authorization },
+        { method: 'DELETE', path: `${targetPath}/functional-grants/editor`, body: authorization },
+        { method: 'DELETE', path: `${targetPath}/sessions/${administratorSession.sessionId}` },
+        { method: 'DELETE', path: `${targetPath}/sessions` },
+        { method: 'POST', path: `${targetPath}/auth-security-reset` },
+      ] as const;
+      for (const [index, request] of forbiddenOwnerRequests.entries()) {
+        const denied = await administrativeRequest({
+          ...request,
+          baseUrl,
+          cookie: `${runtime.sessionCookie.name}=${delegatedSession.sessionToken}`,
+          correlationId: `integration-owner-target-denied-${index}-${suffix}`,
+        });
+        assert(
+          denied.status === 403 && (await readJson(denied)).error === 'auth.forbidden',
+          'Delegated owner-target mutations must map PostgreSQL denial to HTTP 403',
+        );
+        const ownerAfter = await runtime.authService.readAccount(
+          administratorSession.sessionToken,
+          administratorId,
+          correlationId(`integration-owner-after-${index}-${suffix}`),
+        );
+        assert(
+          JSON.stringify(ownerBefore) === JSON.stringify(ownerAfter),
+          'Denied owner-target operations must preserve identity, status, grants and authorization version',
+        );
+        assert(
+          (await runtime.authService.authenticateSession(administratorSession.sessionToken))
+            .isServerOwner,
+          'Denied owner-target operations must preserve the existing owner session',
+        );
+      }
+      integrationStage = 'administrative-http';
       const httpManagedEmail = `http-managed-${suffix}@auth.invalid`;
       const httpCreate = await administrativeRequest({
         baseUrl,
@@ -361,6 +444,103 @@ async function main(): Promise<void> {
       assert(
         httpUpdatedAccount.displayName === 'Synthetic HTTP Managed Account Updated',
         'The protected HTTP update must normalize the display name',
+      );
+
+      integrationStage = 'account-management-readback-postgres';
+      const readAccount = () =>
+        fetch(`${baseUrl}/admin/accounts/${httpManagedAccountId}`, {
+          headers: { cookie: administratorCookie },
+        });
+      const detailResponse = await readAccount();
+      assert(
+        detailResponse.status === 200 && detailResponse.headers.get('cache-control') === 'no-store',
+        'The selected account must be read from PostgreSQL without caching',
+      );
+      const detail = await readJson(detailResponse);
+      assert(
+        detail.userId === httpManagedAccountId &&
+          detail.email === httpManagedEmail &&
+          detail.displayName === httpUpdatedAccount.displayName &&
+          detail.isServerOwner === false &&
+          Number.isSafeInteger(detail.nextAuthorizationVersion) &&
+          Number(detail.nextAuthorizationVersion) >= 2,
+        'Account detail must map the authoritative identity and next authorization version',
+      );
+      const domainUpdate = await administrativeRequest({
+        baseUrl,
+        cookie: administratorCookie,
+        correlationId: `integration-domain-readback-${suffix}`,
+        method: 'PATCH',
+        path: `/admin/accounts/${httpManagedAccountId}/domain-status`,
+        body: {
+          domainStatus: 'disciple',
+          version: detail.nextAuthorizationVersion,
+          reason: 'account-management',
+        },
+      });
+      assert(domainUpdate.status === 200, 'Readback version must be usable for the next mutation');
+      const changedDetail = await readJson(await readAccount());
+      assert(
+        changedDetail.domainStatus === 'disciple' &&
+          changedDetail.nextAuthorizationVersion === Number(detail.nextAuthorizationVersion) + 1,
+        'Successful authorization mutation must be reflected by the next detail read',
+      );
+      const listedIds = new Set<string>();
+      let after: string | null = null;
+      for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
+        const pageResponse = await fetch(
+          `${baseUrl}/admin/accounts?limit=1${after === null ? '' : `&afterAccountId=${after}`}`,
+          { headers: { cookie: administratorCookie } },
+        );
+        assert(
+          pageResponse.status === 200 && pageResponse.headers.get('cache-control') === 'no-store',
+          'Account list must use authenticated no-store HTTP',
+        );
+        const page = await readJson(pageResponse);
+        assert(
+          Array.isArray(page.items) && page.items.length <= 1,
+          'Account page must respect the limit',
+        );
+        for (const item of page.items as Record<string, unknown>[]) {
+          assert(
+            Object.keys(item).sort().join(',') === 'displayName,email,status,userId' &&
+              typeof item.userId === 'string' &&
+              typeof item.email === 'string' &&
+              typeof item.displayName === 'string' &&
+              ['active', 'deactivated'].includes(String(item.status)) &&
+              !listedIds.has(item.userId) &&
+              (after === null || item.userId > after),
+            'List mapping must expose only minimal fields in exclusive stable order',
+          );
+          listedIds.add(item.userId);
+        }
+        if (page.nextAfterAccountId === null) break;
+        assert(
+          typeof page.nextAfterAccountId === 'string' &&
+            page.items.length === 1 &&
+            page.nextAfterAccountId === (page.items[0] as Record<string, unknown>).userId,
+          'Continuation must be bound to the final item',
+        );
+        after = page.nextAfterAccountId;
+        assert(pageNumber < 99, 'Pagination must terminate');
+      }
+      assert(
+        listedIds.has(httpManagedAccountId) &&
+          listedIds.has(activeAccount.userId) &&
+          listedIds.has(inactiveAccount.userId),
+        'Both active and deactivated role-capable accounts must be discoverable',
+      );
+      const emptyPage = await readJson(
+        await fetch(
+          `${baseUrl}/admin/accounts?afterAccountId=ffffffff-ffff-4fff-bfff-ffffffffffff`,
+          { headers: { cookie: administratorCookie } },
+        ),
+      );
+      assert(
+        Array.isArray(emptyPage.items) &&
+          emptyPage.items.length === 0 &&
+          emptyPage.nextAfterAccountId === null,
+        'An exhausted list must map to a genuine empty page, not unavailable',
       );
 
       const httpConflict = await administrativeRequest({
@@ -616,6 +796,19 @@ async function main(): Promise<void> {
       );
 
       integrationStage = 'passkey-http-postgres';
+      const emptySettingsResponse = await fetch(`${baseUrl}/passkeys/settings`, {
+        headers: { cookie: secondBrowserCookie },
+      });
+      const emptySettings = await readJson(emptySettingsResponse);
+      assert(
+        emptySettingsResponse.status === 200 &&
+          emptySettingsResponse.headers.get('cache-control') === 'no-store' &&
+          emptySettings.everAdded === false &&
+          emptySettings.activePasskeyCount === 0 &&
+          Array.isArray(emptySettings.activePasskeys) &&
+          emptySettings.activePasskeys.length === 0,
+        'Never-enrolled owner settings must map the genuine empty PostgreSQL state',
+      );
       const registrationOptionsResponse = await fetch(`${baseUrl}/passkeys/registration/options`, {
         headers: {
           [correlationIdHeaderName]: `integration-passkey-register-begin-${suffix}`,
@@ -706,6 +899,84 @@ async function main(): Promise<void> {
       });
       assert(unknownPasskey.status === 401, 'Unknown passkeys must fail closed and neutral');
 
+      integrationStage = 'own-passkey-settings-readback-postgres';
+      const ownSettings = await readJson(
+        await fetch(`${baseUrl}/passkeys/settings`, { headers: { cookie: secondBrowserCookie } }),
+      );
+      assert(
+        ownSettings.everAdded === true &&
+          ownSettings.activePasskeyCount === 1 &&
+          Array.isArray(ownSettings.activePasskeys),
+        'Registered credentials must appear only in their owner settings',
+      );
+      const ownKey = (ownSettings.activePasskeys as Record<string, unknown>[])[0];
+      assert(
+        ownKey !== undefined &&
+          Object.keys(ownKey).sort().join(',') === 'createdAt,id,lastUsedAt,status' &&
+          typeof ownKey.id === 'string' &&
+          ownKey.status === 'active' &&
+          typeof ownKey.createdAt === 'string' &&
+          Number.isFinite(Date.parse(ownKey.createdAt)) &&
+          typeof ownKey.lastUsedAt === 'string' &&
+          Number.isFinite(Date.parse(ownKey.lastUsedAt)),
+        'Passkey metadata must map SQL timestamps and never credential bytes',
+      );
+      const foreignRevoke = await fetch(`${baseUrl}/passkeys/settings/${String(ownKey.id)}`, {
+        method: 'DELETE',
+        headers: { cookie: administratorCookie },
+      });
+      assert(
+        foreignRevoke.status === 404,
+        'Even an administrator must not revoke another owner key through self-settings',
+      );
+      const deniedSettings = await fetch(`${baseUrl}/passkeys/settings`);
+      assert(deniedSettings.status === 401, 'Settings must reject a missing application session');
+      // Exercise last-key revocation on the administrator, leaving the other owner's
+      // active key intact for the existing deactivation/security regression below.
+      const ownerOptions = await readJson(
+        await fetch(`${baseUrl}/passkeys/registration/options`, {
+          method: 'POST',
+          headers: { cookie: administratorCookie },
+        }),
+      );
+      const ownerRegistration = await fetch(`${baseUrl}/passkeys/registration/verify`, {
+        method: 'POST',
+        headers: { cookie: administratorCookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ceremonyId: ownerOptions.ceremonyId,
+          response: integrationRegistrationResponse(
+            Buffer.from(`settings-owner-${suffix}`).toString('base64url'),
+          ),
+        }),
+      });
+      assert(
+        ownerRegistration.status === 201,
+        'Settings owner must register its own synthetic key',
+      );
+      const ownerSettings = await readJson(
+        await fetch(`${baseUrl}/passkeys/settings`, { headers: { cookie: administratorCookie } }),
+      );
+      assert(
+        Array.isArray(ownerSettings.activePasskeys) && ownerSettings.activePasskeys.length === 1,
+        'Owner settings must not include the other account key',
+      );
+      const ownerKey = ownerSettings.activePasskeys[0] as Record<string, unknown>;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const revoked = await fetch(`${baseUrl}/passkeys/settings/${String(ownerKey.id)}`, {
+          method: 'DELETE',
+          headers: { cookie: administratorCookie },
+        });
+        const settings = await readJson(revoked);
+        assert(
+          revoked.status === 200 &&
+            settings.everAdded === true &&
+            settings.activePasskeyCount === 0 &&
+            Array.isArray(settings.activePasskeys) &&
+            settings.activePasskeys.length === 0,
+          'Last own key revoke must be idempotent and preserve historical enrollment',
+        );
+      }
+
       integrationStage = 'deactivation';
       clock.advance(emailChallengePolicy.resendCooldownMs);
       const deactivationChallengeResponse = await requestChallenge(
@@ -726,6 +997,15 @@ async function main(): Promise<void> {
       );
       assert(deactivationVerification.status === 200, 'Email-code authentication must succeed');
       const deactivationSessionCookie = responseCookie(deactivationVerification);
+      for (const path of ['/admin/accounts', `/admin/accounts/${httpManagedAccountId}`]) {
+        const denied = await fetch(`${baseUrl}${path}`, {
+          headers: { cookie: deactivationSessionCookie },
+        });
+        assert(
+          denied.status === 403 && (await readJson(denied)).error === 'auth.forbidden',
+          'Non-administrator account list and detail must fail closed through SQL and HTTP',
+        );
+      }
       const forbiddenAdministrativeRequest = await administrativeRequest({
         baseUrl,
         body: {

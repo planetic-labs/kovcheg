@@ -42,6 +42,7 @@ function target(
 }
 
 function upstreamTarget(method: string, path: readonly string[]): UpstreamTarget | null {
+  if (method === 'GET' && path.length === 0) return target('/admin/accounts', 'canManageAccounts');
   if (method === 'POST' && path.length === 0) {
     return target('/admin/accounts', 'canManageAccounts');
   }
@@ -52,6 +53,8 @@ function upstreamTarget(method: string, path: readonly string[]): UpstreamTarget
   if (method === 'PATCH' && path.length === 1) {
     return target(`/admin/accounts/${accountId}`, 'canManageAccounts');
   }
+  if (method === 'GET' && path.length === 1)
+    return target(`/admin/accounts/${accountId}`, 'canManageAccounts');
   if (method === 'PATCH' && path.length === 2 && path[1] === 'status') {
     return target(`/admin/accounts/${accountId}/status`, 'canManageAccounts');
   }
@@ -108,14 +111,28 @@ async function forward(request: NextRequest, context: RouteContext) {
   const functionalGrantDeletion = request.method === 'DELETE' && path[1] === 'functional-grants';
   const bodylessSecurityOperation = path[1] === 'auth-security-reset';
   const body =
-    (request.method === 'DELETE' && !functionalGrantDeletion) || bodylessSecurityOperation
+    request.method === 'GET' ||
+    (request.method === 'DELETE' && !functionalGrantDeletion) ||
+    bodylessSecurityOperation
       ? undefined
       : await request.text();
   try {
+    let upstreamPath = route.path;
+    if (request.method === 'GET') {
+      const params = request.nextUrl.searchParams;
+      if (
+        [...params.keys()].some(
+          (key) => !['limit', 'afterAccountId'].includes(key) || params.getAll(key).length !== 1,
+        ) ||
+        (path.length > 0 && params.size > 0)
+      )
+        return bffError(400, 'a6.invalid-request');
+      if (params.size > 0) upstreamPath += `?${params.toString()}`;
+    }
     return relayJson(
-      await requestAuth(request, route.path, {
+      await requestAuth(request, upstreamPath, {
         ...(body === undefined ? {} : { body }),
-        method: request.method as 'DELETE' | 'PATCH' | 'POST' | 'PUT',
+        method: request.method as 'DELETE' | 'GET' | 'PATCH' | 'POST' | 'PUT',
       }),
     );
   } catch {
@@ -124,6 +141,10 @@ async function forward(request: NextRequest, context: RouteContext) {
 }
 
 export function POST(request: NextRequest, context: RouteContext) {
+  return forward(request, context);
+}
+
+export function GET(request: NextRequest, context: RouteContext) {
   return forward(request, context);
 }
 

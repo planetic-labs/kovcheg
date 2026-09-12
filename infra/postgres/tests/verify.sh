@@ -150,8 +150,8 @@ verify_latest_migration_state() {
       FROM kovcheg_meta.schema_migrations
     "
   )
-  if [ "$latest_state" != '0017:17' ]; then
-    echo 'The complete seventeen-migration chain was not recorded.' >&2
+  if [ "$latest_state" != '0018:18' ]; then
+    echo 'The complete eighteen-migration chain was not recorded.' >&2
     exit 1
   fi
 }
@@ -309,6 +309,53 @@ run_auth_tests() {
     "$test_root/verify-auth-variant-e.sql"
   run_sql kovcheg_auth_app "$auth_password" \
     "$test_root/verify-auth-passkey.sql"
+  run_sql kovcheg_auth_app "$auth_password" \
+    "$test_root/verify-auth-account-passkey-management.sql"
+
+  own_passkey_revoke_result_root="/tmp/kovcheg-own-passkey-revoke-$$"
+  parallel_number=1
+  parallel_pids=''
+  while [ "$parallel_number" -le 12 ]; do
+    PGPASSWORD="$auth_password" psql --no-psqlrc --tuples-only --no-align --quiet \
+      --set=ON_ERROR_STOP=1 --username kovcheg_auth_app --command="
+        SELECT kovcheg.revoke_own_auth_passkey(
+          repeat('P', 42) || '8',
+          '00000000-0000-4000-8000-000000018203',
+          '2030-01-01 00:31:00+00',
+          'own-passkey-revoke-race'
+        )
+      " >"$own_passkey_revoke_result_root-$parallel_number" &
+    parallel_pids="$parallel_pids $!"
+    parallel_number=$((parallel_number + 1))
+  done
+
+  for parallel_pid in $parallel_pids; do
+    wait "$parallel_pid"
+  done
+
+  own_passkey_revoke_true_count=$(grep -h -c '^t$' "$own_passkey_revoke_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
+  own_passkey_revoke_false_count=$(grep -h -c '^f$' "$own_passkey_revoke_result_root"-* | awk '{ total += $1 } END { print total + 0 }')
+  if [ "$own_passkey_revoke_true_count" -ne 1 ] \
+    || [ "$own_passkey_revoke_false_count" -ne 11 ]; then
+    echo 'Concurrent own-passkey revocation was not exactly idempotent.' >&2
+    exit 1
+  fi
+
+  own_passkey_revoke_state=$(query_as_migration "
+    SELECT
+      (SELECT revoked_at = '2030-01-01 00:31:00+00'::timestamptz
+       FROM kovcheg.auth_passkey_credentials
+       WHERE id = '00000000-0000-4000-8000-000000018203')::text || ':' ||
+      (SELECT count(*)
+       FROM kovcheg.audit_events
+       WHERE correlation_id = 'own-passkey-revoke-race'
+         AND action = 'auth.passkey.revoked')
+  ")
+  if [ "$own_passkey_revoke_state" != 'true:1' ]; then
+    echo 'Concurrent own-passkey revocation did not preserve one mutation and audit.' >&2
+    exit 1
+  fi
+  find /tmp -maxdepth 1 -name 'kovcheg-own-passkey-revoke-*' -type f -delete
 
   variant_email_race_result_root="/tmp/kovcheg-variant-email-race-$$"
   parallel_number=1
@@ -412,6 +459,8 @@ run_auth_tests() {
     "$test_root/verify-auth-variant-e-owner.sql"
   run_sql kovcheg_migrator "$migration_password" \
     "$test_root/verify-auth-oidc-session-owner.sql"
+  run_sql kovcheg_migrator "$migration_password" \
+    "$test_root/verify-auth-account-passkey-management-owner.sql"
 
   parallel_number=1
   parallel_pids=''
@@ -767,6 +816,10 @@ case "$scenario" in
   upgrade-v16)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
     run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v16.sql"
+    ;;
+  upgrade-v17)
+    run_sql postgres "$superuser_password" "$test_root/verify-security.sql"
+    run_sql kovcheg_migrator "$migration_password" "$test_root/verify-v17.sql"
     ;;
   upgrade-latest)
     run_sql postgres "$superuser_password" "$test_root/verify-security.sql"

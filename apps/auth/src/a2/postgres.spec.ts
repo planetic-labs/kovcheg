@@ -1,4 +1,4 @@
-import type { CorrelationId } from '@kovcheg/contracts';
+import type { CorrelationId, UserId, Uuid } from '@kovcheg/contracts';
 import type { QueryResultRow } from 'pg';
 import { describe, expect, it } from 'vitest';
 
@@ -38,6 +38,116 @@ class QueryFixture implements AuthPostgresClient {
 }
 
 describe('A2 PostgreSQL auth repository', () => {
+  it('binds read-management queries and maps authoritative version and safe key metadata', async () => {
+    const id = '00000000-0000-4000-8000-000000000050' as UserId;
+    const keyId = '00000000-0000-4000-8000-000000000051' as Uuid;
+    const row = {
+      account_id: id,
+      email: 'reader@example.invalid',
+      display_name: 'Synthetic Reader',
+      account_status: 'active',
+    };
+    const key = {
+      id: keyId,
+      createdAt: '2026-01-01T12:00:00Z',
+      lastUsedAt: null,
+      status: 'active',
+    };
+    const client = new QueryFixture([
+      [{ ...row, has_more: true }],
+      [
+        {
+          ...row,
+          account_access: 'member',
+          domain_status: 'disciple',
+          functional_grants: [],
+          authorization_version: '7',
+          is_server_owner: false,
+        },
+      ],
+      [{ ever_added: true, active_passkey_count: '1', active_passkeys: [key] }],
+      [{ result: false }],
+    ]);
+    const repository = new PostgresAuthRepository(client);
+    expect(
+      await repository.listAccountsAsAdministrator({
+        actorSessionVerifier: 'synthetic-verifier',
+        afterAccountId: null,
+        pageSize: 1,
+        now: 0,
+      }),
+    ).toMatchObject({ nextAfterAccountId: id });
+    expect(
+      await repository.readAccountAsAdministrator({
+        actorSessionVerifier: 'synthetic-verifier',
+        userId: id,
+        now: 0,
+      }),
+    ).toMatchObject({ nextAuthorizationVersion: 8, isServerOwner: false });
+    expect(await repository.readOwnPasskeySettings('synthetic-verifier', 0)).toEqual({
+      everAdded: true,
+      activePasskeyCount: 1,
+      activePasskeys: [key],
+    });
+    expect(
+      await repository.revokeOwnPasskey({
+        sessionVerifier: 'synthetic-verifier',
+        passkeyId: keyId,
+        now: 0,
+        correlationId: 'synthetic-revoke' as CorrelationId,
+      }),
+    ).toBe(false);
+    expect(client.calls.map((call) => call.text)).toEqual([
+      expect.stringContaining('admin_list_role_capable_accounts($1, $2, $3, $4)'),
+      expect.stringContaining('admin_read_role_capable_account($1, $2, $3)'),
+      expect.stringContaining('read_own_auth_passkey_settings($1, $2)'),
+      expect.stringContaining('revoke_own_auth_passkey($1, $2, $3, $4)'),
+    ]);
+    expect(client.calls[3]?.values).toEqual([
+      'synthetic-verifier',
+      keyId,
+      new Date(0),
+      'synthetic-revoke',
+    ]);
+  });
+
+  it.each([
+    { ever_added: false, active_passkey_count: 1, active_passkeys: [] },
+    {
+      ever_added: true,
+      active_passkey_count: 1,
+      active_passkeys: [
+        {
+          id: 'unexpected',
+          createdAt: 'invalid',
+          lastUsedAt: null,
+          status: 'active',
+          credential: 'synthetic-forbidden-field',
+        },
+      ],
+    },
+  ])('rejects malformed key metadata', async (row) => {
+    await expect(
+      new PostgresAuthRepository(new QueryFixture([[row]])).readOwnPasskeySettings(
+        'synthetic-verifier',
+        0,
+      ),
+    ).rejects.toMatchObject({ code: 'auth.unavailable' });
+  });
+
+  it.each(['42501', 'P0002'])(
+    'maps management SQLSTATE %s without exposing database errors',
+    async (code) => {
+      const repository = new PostgresAuthRepository(
+        new QueryFixture([{ error: { code, message: 'synthetic-private-detail' } }]),
+      );
+      await expect(
+        repository.readOwnPasskeySettings('synthetic-verifier', 0),
+      ).rejects.toBeInstanceOf(
+        code === '42501' ? AuthRepositoryAuthorizationError : AuthRepositoryNotFoundError,
+      );
+    },
+  );
   const principal = Object.freeze({
     accountAccess: 'member',
     accountStatus: 'active',

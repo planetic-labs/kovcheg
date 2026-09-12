@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseAccountRecord,
+  parseAccountDetail,
+  parseAccountListPage,
+  parseOwnPasskeySettings,
   parseChatListResponse,
   parseMessageHistoryPage,
   parseSessionPrincipal,
@@ -34,6 +37,51 @@ const session = Object.freeze({
 });
 
 describe('A6 browser contract parsing', () => {
+  it('requires authoritative versions, bounded unique account pages and value-free own keys', () => {
+    const item = {
+      userId: session.userId,
+      displayName: 'Synthetic Member',
+      email: 'member@example.invalid',
+      status: 'active',
+    };
+    expect(parseAccountListPage({ items: [item], nextAfterAccountId: null })).not.toBeNull();
+    expect(parseAccountListPage({ items: [item, item], nextAfterAccountId: null })).toBeNull();
+    expect(
+      parseAccountListPage({ items: [item], nextAfterAccountId: session.sessionId }),
+    ).toBeNull();
+    const account = {
+      ...item,
+      accountAccess: 'member',
+      domainStatus: 'disciple',
+      functionalGrants: [],
+      nextAuthorizationVersion: 2,
+      isServerOwner: false,
+    };
+    expect(parseAccountDetail(account)).not.toBeNull();
+    expect(parseAccountDetail({ ...account, nextAuthorizationVersion: 1 })).toBeNull();
+    expect(parseAccountDetail({ ...account, functionalGrants: ['invented'] })).toBeNull();
+    const key = {
+      id: session.userId,
+      createdAt: '2026-01-01T12:00:00Z',
+      lastUsedAt: null,
+      status: 'active',
+    };
+    const settings = { everAdded: true, activePasskeyCount: 1, activePasskeys: [key] };
+    expect(parseOwnPasskeySettings(settings)).not.toBeNull();
+    expect(parseOwnPasskeySettings({ ...settings, everAdded: false })).toBeNull();
+    expect(
+      parseOwnPasskeySettings({
+        ...settings,
+        activePasskeys: [{ ...key, publicKey: 'unexpected' }],
+      }),
+    ).toBeNull();
+    expect(
+      parseOwnPasskeySettings({ ...settings, activePasskeys: [key, key], activePasskeyCount: 2 }),
+    ).toBeNull();
+    expect(
+      parseOwnPasskeySettings({ everAdded: true, activePasskeyCount: 0, activePasskeys: [] }),
+    ).not.toBeNull();
+  });
   it('accepts the server principal and rejects invented browser grants', () => {
     expect(parseSessionPrincipal(session)).not.toBeNull();
     expect(parseSessionPrincipal({ ...session, functionalGrants: ['invented-grant'] })).toBeNull();

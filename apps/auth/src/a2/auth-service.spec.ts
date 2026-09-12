@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CorrelationId, UserId } from '@kovcheg/contracts';
+import type { CorrelationId, UserId, Uuid } from '@kovcheg/contracts';
 
 import { AuthService } from './auth-service.js';
 import {
@@ -110,6 +110,240 @@ async function login(fixture: ReturnType<typeof createFixture>, email: string, s
 }
 
 describe('A2 administrator and account use cases', () => {
+  describe.each([
+    'delegated-owner',
+    'missing-boundary',
+    'owner-self',
+    'delegated-ordinary',
+  ] as const)('target guard: %s', (scenario) => {
+    it.each([
+      'identity',
+      'status',
+      'domain',
+      'grant',
+      'revoke-grant',
+      'one-session',
+      'all-sessions',
+      'security-reset',
+    ] as const)('enforces %s before changing any repository state', async (mutation) => {
+      const fixture = createFixture();
+      await bootstrap(fixture);
+      const ownerSession = await login(fixture, 'administrator@example.invalid', 'guard-owner');
+      const delegated = await fixture.service.createAccount(
+        ownerSession.sessionToken,
+        { displayName: 'Synthetic Delegate', email: 'delegate@example.invalid' },
+        administrationCorrelationId,
+      );
+      await fixture.service.grantFunctionalGrant(
+        ownerSession.sessionToken,
+        delegated.userId,
+        'platform_administrator',
+        { reason: 'synthetic-delegation', version: 2 },
+        administrationCorrelationId,
+      );
+      const delegatedSession = await login(fixture, delegated.email, 'guard-delegate');
+      const target =
+        scenario === 'delegated-ordinary'
+          ? await fixture.service.createAccount(
+              ownerSession.sessionToken,
+              { displayName: 'Synthetic Target', email: 'target@example.invalid' },
+              administrationCorrelationId,
+            )
+          : (await fixture.repository.findAccountById(administratorId))!;
+      const targetSession =
+        scenario === 'delegated-ordinary'
+          ? await login(fixture, target.email, 'guard-target')
+          : ownerSession;
+      await fixture.service.grantFunctionalGrant(
+        ownerSession.sessionToken,
+        target.userId,
+        'editor',
+        { reason: 'synthetic-existing-grant', version: 2 },
+        administrationCorrelationId,
+      );
+      const credentialId = Uint8Array.from([11, 22, 33]);
+      await fixture.repository.registerPasskey({
+        correlationId: administrationCorrelationId,
+        actorSessionVerifier: fixture.dependencies.crypto.sessionTokenVerifier(
+          targetSession.sessionToken,
+        ),
+        aaguid: '00000000-0000-0000-0000-000000000000' as Uuid,
+        attestationFormat: 'none',
+        backupEligible: false,
+        backupState: false,
+        credentialId,
+        now: fixture.clock.now(),
+        passkeyId: '00000000-0000-4000-8000-000000000088' as Uuid,
+        publicKey: Uint8Array.from([4, 5, 6]),
+        signCount: 0,
+        transports: [],
+        userVerified: true,
+      });
+      fixture.clock.advance(emailChallengePolicy.resendCooldownMs);
+      await fixture.service.requestEmailChallenge({
+        email: target.email,
+        fingerprint: 'pending-guard',
+        networkAddress: 'synthetic-guard-network',
+      });
+      if (scenario === 'missing-boundary') {
+        // Corrupt only the synthetic repository to exercise missing singleton metadata.
+        const boundary = Reflect.get(fixture.repository, 'bootstrapAccounts') as Map<
+          string,
+          UserId
+        >;
+        expect(boundary.size).toBe(1);
+        boundary.clear();
+      }
+      const snapshot = () =>
+        structuredClone(
+          Object.fromEntries(Object.entries(fixture.repository).filter(([key]) => key !== 'queue')),
+        );
+      const before = snapshot();
+      fixture.clock.advance(1_000);
+      const token =
+        scenario === 'owner-self' ? ownerSession.sessionToken : delegatedSession.sessionToken;
+      const id = target.userId;
+      function mutate() {
+        switch (mutation) {
+          case 'identity':
+            return fixture.service.updateAccount(
+              token,
+              id,
+              { displayName: 'Synthetic Changed', email: 'changed@example.invalid' },
+              administrationCorrelationId,
+            );
+          case 'status':
+            return fixture.service.setAccountStatus(
+              token,
+              id,
+              'deactivated',
+              administrationCorrelationId,
+            );
+          case 'domain':
+            return fixture.service.setDomainStatus(
+              token,
+              id,
+              'disciple',
+              { reason: 'synthetic-change', version: 3 },
+              administrationCorrelationId,
+            );
+          case 'grant':
+            return fixture.service.grantFunctionalGrant(
+              token,
+              id,
+              'warrior',
+              { reason: 'synthetic-change', version: 3 },
+              administrationCorrelationId,
+            );
+          case 'revoke-grant':
+            return fixture.service.revokeFunctionalGrant(
+              token,
+              id,
+              'editor',
+              { reason: 'synthetic-change', version: 3 },
+              administrationCorrelationId,
+            );
+          case 'one-session':
+            return fixture.service.revokeSession(
+              token,
+              id,
+              targetSession.sessionId,
+              administrationCorrelationId,
+            );
+          case 'all-sessions':
+            return fixture.service.revokeAllSessions(token, id, administrationCorrelationId);
+          case 'security-reset':
+            return fixture.service.securityResetAuthAccess(token, id, administrationCorrelationId);
+        }
+      }
+      if (scenario === 'delegated-owner' || scenario === 'missing-boundary') {
+        await expect(mutate()).rejects.toMatchObject({
+          code: scenario === 'delegated-owner' ? 'auth.forbidden' : 'auth.unavailable',
+        });
+        expect(snapshot()).toEqual(before);
+        return;
+      }
+      const result = await mutate();
+      if (mutation === 'identity')
+        expect(result).toMatchObject({
+          userId: id,
+          email: 'changed@example.invalid',
+          displayName: 'Synthetic Changed',
+        });
+      if (mutation === 'domain') expect(result).toMatchObject({ domainStatus: 'disciple' });
+      if (mutation === 'grant')
+        expect((await fixture.repository.findAccountById(id))?.functionalGrants).toContain(
+          'warrior',
+        );
+      if (mutation === 'revoke-grant')
+        expect((await fixture.repository.findAccountById(id))?.functionalGrants).not.toContain(
+          'editor',
+        );
+      if (mutation === 'one-session') expect(result).toBe(true);
+      if (mutation === 'all-sessions') expect(result).toBe(1);
+      if (mutation === 'security-reset')
+        expect(result).toEqual({
+          invalidatedChallengeCount: 1,
+          revokedApplicationSessionCount: 1,
+          revokedPasskeyCount: 1,
+        });
+      if (['status', 'one-session', 'all-sessions', 'security-reset'].includes(mutation)) {
+        expect(
+          await fixture.repository.validateSession(
+            fixture.dependencies.crypto.sessionTokenVerifier(targetSession.sessionToken),
+            fixture.clock.now(),
+          ),
+        ).toBeNull();
+      }
+      if (mutation === 'status') expect(result).toMatchObject({ status: 'deactivated' });
+    });
+  });
+  it('reads paged shared accounts and authoritative versions only for an active administrator', async () => {
+    const value = createFixture();
+    await bootstrap(value);
+    const admin = await login(value, 'administrator@example.invalid', 'read-admin');
+    const member = await value.service.createAccount(
+      admin.sessionToken,
+      { displayName: 'Synthetic Reader', email: 'reader@example.invalid' },
+      administrationCorrelationId,
+    );
+    const page = await value.service.listAccounts(
+      admin.sessionToken,
+      null,
+      1,
+      administrationCorrelationId,
+    );
+    expect(page.items).toHaveLength(1);
+    expect(page.nextAfterAccountId).not.toBeNull();
+    const next = await value.service.listAccounts(
+      admin.sessionToken,
+      page.nextAfterAccountId,
+      1,
+      administrationCorrelationId,
+    );
+    expect(next.items).toHaveLength(1);
+    expect(next.items[0]?.userId).not.toBe(page.items[0]?.userId);
+    const detail = await value.service.readAccount(
+      admin.sessionToken,
+      member.userId,
+      administrationCorrelationId,
+    );
+    expect(detail).toMatchObject({
+      nextAuthorizationVersion: 2,
+      isServerOwner: false,
+      email: 'reader@example.invalid',
+    });
+    const session = await login(value, 'reader@example.invalid', 'reader');
+    await expect(
+      value.service.listAccounts(session.sessionToken, null, 50, administrationCorrelationId),
+    ).rejects.toMatchObject({ code: 'auth.forbidden' });
+    await expect(
+      value.service.readAccount(session.sessionToken, administratorId, administrationCorrelationId),
+    ).rejects.toMatchObject({ code: 'auth.forbidden' });
+    await expect(
+      value.service.listAccounts(admin.sessionToken, null, 101, administrationCorrelationId),
+    ).rejects.toMatchObject({ code: 'auth.invalid-input' });
+  });
   it('bootstraps exactly one administrator under concurrent retries', async () => {
     const fixture = createFixture();
     const results = await Promise.all(Array.from({ length: 12 }, async () => bootstrap(fixture)));
@@ -641,6 +875,28 @@ describe('A2 email challenge security', () => {
     expect((fixture.delivery as LocalEmailChallengeDelivery).messages.at(-1)?.recipient).toBe(
       'user.name+tag@example.invalid',
     );
+  });
+
+  it('passes the exact policy lifetime to delivery without exposing it in the neutral response', async () => {
+    const policy = createPolicy();
+    const fixture = createFixture({
+      policy: { ...policy, challenge: { ...policy.challenge, ttlMs: 92_000 } },
+    });
+    await bootstrap(fixture);
+    const result = await fixture.service.requestEmailChallenge({
+      email: 'administrator@example.invalid',
+      fingerprint: 'fingerprint-lifetime',
+      networkAddress: 'network-lifetime',
+    });
+    const delivery = fixture.delivery as LocalEmailChallengeDelivery;
+    expect(delivery.messages[0]).toMatchObject({
+      challengeId: result.challengeId,
+      issuedAt: startTime,
+      expiresAt: startTime + 92_000,
+    });
+    expect(result).not.toHaveProperty('issuedAt');
+    expect(result).not.toHaveProperty('expiresAt');
+    expect(result).not.toHaveProperty('code');
   });
 
   it('keeps resend and no-challenge verification neutral', async () => {
