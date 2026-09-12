@@ -47,6 +47,7 @@ jobs:
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       source_tree: ${{ steps.source.outputs.source_tree }}
+      artifact_set: ${{ steps.source.outputs.artifact_set }}
       matrix: ${{ steps.source.outputs.matrix }}
     steps:
       - &source-gate
@@ -60,6 +61,7 @@ jobs:
             const sha = /^[0-9a-f]{40}$/;
             const fail = () => { throw new Error('source or publication scope rejected'); };
             let expiresAt = '';
+            let artifactSet = '';
             if (env.REPOSITORY !== 'planetic-labs/kovcheg' ||
                 !sha.test(env.SOURCE_SHA ?? '') || !sha.test(env.WORKFLOW_SHA ?? '') ||
                 env.WORKFLOW_REF !== 'refs/heads/main' ||
@@ -71,7 +73,13 @@ jobs:
               let scope;
               try { scope = JSON.parse(env.TRIAL_SCOPE); } catch { fail(); }
               const keys = ['branch', 'baseSha', 'baseTree', 'candidateTree', 'allowedPaths', 'expiresAt', 'trustedWorkflowSha'];
-              if (!scope || Array.isArray(scope) || Object.keys(scope).sort().join() !== keys.sort().join()) fail();
+              if (!scope || typeof scope !== 'object' || Array.isArray(scope)) fail();
+              if (Object.hasOwn(scope, 'artifactSet')) {
+                if (scope.artifactSet !== 'schema-changing-six') fail();
+                keys.push('artifactSet');
+                artifactSet = scope.artifactSet;
+              }
+              if (Object.keys(scope).sort().join() !== keys.sort().join()) fail();
               if (!/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(scope.branch ?? '') ||
                   scope.branch === 'refs/heads/main' || scope.branch.includes('..') ||
                   scope.branch.includes('//') || scope.branch.endsWith('/') || scope.branch.endsWith('.lock') ||
@@ -101,8 +109,9 @@ jobs:
                 const parents = provider.parents(cursor);
                 if (parents.length !== 1 || !sha.test(parents[0])) fail();
                 const changed = provider.paths(parents[0], cursor);
-                if (changed.some(p => p === 'infra/postgres' || p.startsWith('infra/postgres/') ||
+                if (changed.some(p => (!artifactSet && (p === 'infra/postgres' || p.startsWith('infra/postgres/'))) ||
                     p === '.gitattributes' || p === 'infra/.gitattributes' ||
+                    (artifactSet && p.split('/').at(-1) === '.gitattributes') ||
                     p === '.github' || p.startsWith('.github/') || !scope.allowedPaths.some(a =>
                     a.endsWith('/') ? p.startsWith(a) : p === a))) fail();
                 cursor = parents[0];
@@ -111,8 +120,8 @@ jobs:
             const sourceTree = provider.tree(env.SOURCE_SHA);
             // Provider reads may consume the remaining validity window.
             if (expiresAt && Date.parse(expiresAt) <= clock()) fail();
-            const services = ['api', 'auth', 'web', 'worker', 'edge', ...(env.MODE === 'WORKING' ? ['postgres'] : [])];
-            return { source_sha: env.SOURCE_SHA, source_tree: sourceTree, expires_at: expiresAt,
+            const services = ['api', 'auth', 'web', 'worker', 'edge', ...(env.MODE === 'WORKING' || artifactSet ? ['postgres'] : [])];
+            return { source_sha: env.SOURCE_SHA, source_tree: sourceTree, expires_at: expiresAt, artifact_set: artifactSet,
               matrix: { include: services.map(service => ({ service,
                 package: `ghcr.io/planetic-labs/kovcheg-${service}`,
                 context: ['edge', 'postgres'].includes(service) ? `infra/${service}` : '.',
@@ -155,6 +164,8 @@ jobs:
     needs: validate-source
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      ARTIFACT_SET: ${{ needs.validate-source.outputs.artifact_set }}
     steps:
       - *source-gate
       - name: Set up Buildx
@@ -183,7 +194,7 @@ jobs:
             'postgres=ghcr.io/planetic-labs/kovcheg-postgres'
           do
             service="${item%%=*}"
-            if [ "$MODE" = TRIAL ] && [ "$service" = postgres ]; then continue; fi
+            if [ "$MODE" = TRIAL ] && [ -z "$ARTIFACT_SET" ] && [ "$service" = postgres ]; then continue; fi
             package="${item#*=}"
             tag="sha-${SOURCE_SHA}"
             reference="${package}:${tag}"
@@ -223,6 +234,7 @@ jobs:
               state: 'existing',
               digest: manifest.digest,
               sourceSha: process.env.SOURCE_SHA,
+              artifactSet: process.env.ARTIFACT_SET || undefined,
               navigationTag: process.env.TAG,
               platform: 'linux/amd64',
               deploymentRef: `${process.env.PACKAGE}@${manifest.digest}`,
@@ -245,6 +257,7 @@ jobs:
               state: 'absent',
               digest: null,
               sourceSha: process.env.SOURCE_SHA,
+              artifactSet: process.env.ARTIFACT_SET || undefined,
               navigationTag: process.env.TAG,
               platform: 'linux/amd64',
               deploymentRef: null,
@@ -268,8 +281,12 @@ jobs:
             ['edge', 'ghcr.io/planetic-labs/kovcheg-edge'],
             ['postgres', 'ghcr.io/planetic-labs/kovcheg-postgres'],
           ]);
-          if (!['WORKING', 'TRIAL'].includes(process.env.MODE)) throw new Error('invalid publication mode');
-          if (process.env.MODE === 'TRIAL') expected.delete('postgres');
+          const artifactSet = process.env.ARTIFACT_SET || undefined;
+          if (!['WORKING', 'TRIAL'].includes(process.env.MODE) ||
+              (artifactSet !== undefined && (process.env.MODE !== 'TRIAL' || artifactSet !== 'schema-changing-six'))) {
+            throw new Error('invalid publication mode or artifact set');
+          }
+          if (process.env.MODE === 'TRIAL' && !artifactSet) expected.delete('postgres');
           const digestPattern = /^sha256:[0-9a-f]{64}$/;
           const files = readdirSync('publication-inventory').filter((file) => file.endsWith('.json'));
           if (files.length !== expected.size) {
@@ -290,6 +307,7 @@ jobs:
               throw new Error(`${record.service}: unexpected package mapping`);
             }
             if (
+              record.artifactSet !== artifactSet ||
               record.sourceSha !== process.env.SOURCE_SHA ||
               record.navigationTag !== `sha-${process.env.SOURCE_SHA}` ||
               record.platform !== 'linux/amd64'
@@ -322,6 +340,7 @@ jobs:
             `${JSON.stringify({
               schemaVersion: 1,
               sourceSha: process.env.SOURCE_SHA,
+              artifactSet: process.env.ARTIFACT_SET || undefined,
               platform: 'linux/amd64',
               images: records,
             }, null, 2)}\n`,
@@ -346,6 +365,7 @@ jobs:
       contents: read
     env:
       DOCKER_BUILD_RECORD_UPLOAD: 'false'
+      ARTIFACT_SET: ${{ needs.validate-source.outputs.artifact_set }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.validate-source.outputs.matrix) }}
@@ -374,6 +394,8 @@ jobs:
           );
           const record = inventory.images?.find((item) => item.service === process.env.SERVICE);
           if (
+            inventory.artifactSet !== (process.env.ARTIFACT_SET || undefined) ||
+            record?.artifactSet !== inventory.artifactSet ||
             inventory.sourceSha !== process.env.SOURCE_SHA ||
             inventory.platform !== 'linux/amd64' ||
             record?.package !== process.env.PACKAGE ||
@@ -442,6 +464,8 @@ jobs:
     needs: [validate-source, inventory, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      ARTIFACT_SET: ${{ needs.validate-source.outputs.artifact_set }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.validate-source.outputs.matrix) }}
@@ -611,19 +635,23 @@ jobs:
           node --input-type=module <<'NODE'
           // BEGIN PROVENANCE_VALIDATOR
           export function sourcePredicate(env) {
-            if (!/^[0-9a-f]{40}$/.test(env.SOURCE_TREE ?? '') ||
+            const artifactSet = env.ARTIFACT_SET || undefined;
+            if ((artifactSet !== undefined && artifactSet !== 'schema-changing-six') ||
+                !/^[0-9a-f]{40}$/.test(env.SOURCE_TREE ?? '') ||
                 !/^[0-9a-f]{40}$/.test(env.SOURCE_SHA ?? '') ||
                 !/^[0-9a-f]{40}$/.test(env.WORKFLOW_SHA ?? '') ||
                 !/^sha256:[0-9a-f]{64}$/.test(env.DIGEST ?? '') ||
                 env.MODE !== 'TRIAL' || env.RUN_ATTEMPT !== '1' ||
                 !/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID ?? '') ||
                 env.REPOSITORY !== 'planetic-labs/kovcheg' ||
-                !/^ghcr\.io\/planetic-labs\/kovcheg-(api|auth|web|worker|edge)$/.test(env.PACKAGE ?? '')) {
+                !/^ghcr\.io\/planetic-labs\/kovcheg-(api|auth|web|worker|edge|postgres)$/.test(env.PACKAGE ?? '') ||
+                (env.PACKAGE === 'ghcr.io/planetic-labs/kovcheg-postgres' && !artifactSet)) {
               throw new Error('invalid source provenance binding');
             }
             return { source: { repository: 'https://github.com/planetic-labs/kovcheg', commit: env.SOURCE_SHA, tree: env.SOURCE_TREE },
               workflow: { commit: env.WORKFLOW_SHA, path: '.github/workflows/publish-ghcr-images.yml', runId: env.GITHUB_RUN_ID, attempt: env.RUN_ATTEMPT },
-              image: { package: env.PACKAGE, digest: env.DIGEST, platform: 'linux/amd64' }, mode: env.MODE };
+              image: { package: env.PACKAGE, digest: env.DIGEST, platform: 'linux/amd64' }, mode: env.MODE,
+              ...(artifactSet ? { artifactSet } : {}) };
           }
           // END PROVENANCE_VALIDATOR
           import { writeFileSync } from 'node:fs';
@@ -664,6 +692,7 @@ jobs:
             package: process.env.PACKAGE,
             digest: process.env.DIGEST,
             sourceSha: process.env.SOURCE_SHA,
+            artifactSet: process.env.ARTIFACT_SET || undefined,
             sourceTree: process.env.SOURCE_TREE,
             trustedWorkflowSha: process.env.WORKFLOW_SHA,
             navigationTag: process.env.TAG,
@@ -695,6 +724,8 @@ jobs:
       - validate-source
       - publish
     runs-on: ubuntu-latest
+    env:
+      ARTIFACT_SET: ${{ needs.validate-source.outputs.artifact_set }}
     steps:
       - name: Download exactly the fixed digest mappings
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -721,8 +752,12 @@ jobs:
             ['edge', 'ghcr.io/planetic-labs/kovcheg-edge'],
             ['postgres', 'ghcr.io/planetic-labs/kovcheg-postgres'],
           ]);
-          if (!['WORKING', 'TRIAL'].includes(process.env.MODE)) throw new Error('invalid publication mode');
-          if (process.env.MODE === 'TRIAL') expected.delete('postgres');
+          const artifactSet = process.env.ARTIFACT_SET || undefined;
+          if (!['WORKING', 'TRIAL'].includes(process.env.MODE) ||
+              (artifactSet !== undefined && (process.env.MODE !== 'TRIAL' || artifactSet !== 'schema-changing-six'))) {
+            throw new Error('invalid publication mode or artifact set');
+          }
+          if (process.env.MODE === 'TRIAL' && !artifactSet) expected.delete('postgres');
           const digestPattern = /^sha256:[0-9a-f]{64}$/;
           const files = readdirSync('publication-mappings').filter((file) => file.endsWith('.json'));
           if (files.length !== expected.size) {
@@ -743,6 +778,7 @@ jobs:
               throw new Error(`${mapping.service}: unexpected package mapping`);
             }
             if (
+              mapping.artifactSet !== artifactSet ||
               mapping.sourceSha !== process.env.SOURCE_SHA ||
               mapping.sourceTree !== process.env.SOURCE_TREE ||
               mapping.trustedWorkflowSha !== process.env.WORKFLOW_SHA ||
@@ -767,10 +803,11 @@ jobs:
           }
           mappings.sort((left, right) => left.service.localeCompare(right.service));
           writeFileSync(
-            `ghcr-${process.env.MODE === 'TRIAL' ? 'five' : 'six'}-image-mapping.json`,
+            `ghcr-${expected.size === 5 ? 'five' : 'six'}-image-mapping.json`,
             `${JSON.stringify({
               schemaVersion: 1,
               sourceSha: process.env.SOURCE_SHA,
+              artifactSet: process.env.ARTIFACT_SET || undefined,
               platform: 'linux/amd64',
               mode: process.env.MODE,
               sourceTree: process.env.SOURCE_TREE,
@@ -785,7 +822,7 @@ jobs:
       - name: Upload aggregate six-image mapping
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ghcr-${{ inputs.mode == 'TRIAL' && 'five' || 'six' }}-image-mapping-${{ needs.validate-source.outputs.source_sha }}
-          path: ghcr-${{ inputs.mode == 'TRIAL' && 'five' || 'six' }}-image-mapping.json
+          name: ghcr-${{ inputs.mode == 'TRIAL' && needs.validate-source.outputs.artifact_set == '' && 'five' || 'six' }}-image-mapping-${{ needs.validate-source.outputs.source_sha }}
+          path: ghcr-${{ inputs.mode == 'TRIAL' && needs.validate-source.outputs.artifact_set == '' && 'five' || 'six' }}-image-mapping.json
           if-no-files-found: error
           retention-days: 30
