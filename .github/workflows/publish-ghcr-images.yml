@@ -349,7 +349,7 @@ jobs:
           NODE
 
       - name: Upload complete pre-publication inventory
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ghcr-inventory-${{ needs.validate-source.outputs.source_sha }}
           path: publication-inventory/inventory.json
@@ -452,7 +452,7 @@ jobs:
 
       - name: Upload image for this run only
         if: steps.inventory.outputs.state == 'absent'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: publication-image-${{ matrix.service }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: image.tar
@@ -711,7 +711,7 @@ jobs:
           NODE
 
       - name: Upload digest mapping
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ghcr-digest-${{ matrix.service }}-${{ needs.validate-source.outputs.source_sha }}
           path: ${{ matrix.service }}.json
@@ -820,7 +820,7 @@ jobs:
           NODE
 
       - name: Upload aggregate six-image mapping
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ghcr-${{ inputs.mode == 'TRIAL' && needs.validate-source.outputs.artifact_set == '' && 'five' || 'six' }}-image-mapping-${{ needs.validate-source.outputs.source_sha }}
           path: ghcr-${{ inputs.mode == 'TRIAL' && needs.validate-source.outputs.artifact_set == '' && 'five' || 'six' }}-image-mapping.json
